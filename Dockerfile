@@ -161,7 +161,96 @@ RUN wget $tcc4tcl_source -O - | tar xz --strip-components=1 && \
     apk del build-dependencies && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # aws-tcl
-COPY api/* /usr/local/lib/tcl8/site-tcl/
+COPY api/*.tm /usr/local/lib/tcl8/site-tcl/
+COPY api/aws/*.tm /usr/local/lib/tcl8/site-tcl/aws/
+
+# Codeforge packages and applications up to m2
+# tbuild - tip of master
+ENV tbuild_source="https://github.com/cyanogilvie/tbuild/archive/e526a9c.tar.gz"
+# cflib - tip of master
+ENV cflib_source="https://github.com/cyanogilvie/cflib/archive/da5865b.tar.gz"
+# sop - tip of master
+ENV sop_source="https://github.com/cyanogilvie/sop/archive/cb74e34.tar.gz"
+# netdgram - tip of master
+ENV netdgram_source="https://github.com/cyanogilvie/netdgram/archive/f7bd42b.tar.gz"
+# sha1 - CHANGE TO HASH?
+# evlog - tip of master
+ENV evlog_source="https://github.com/cyanogilvie/evlog/archive/c6c2529.tar.gz"
+# dsl - tip of master
+ENV dsl_source="https://github.com/cyanogilvie/dsl/archive/f24a59e.tar.gz"
+# logging - tip of master
+ENV logging_source="https://github.com/cyanogilvie/logging/archive/e709389.tar.gz"
+# sockopt - tip of master
+ENV sockopt_source="https://github.com/cyanogilvie/sockopt/archive/c574d92.tar.gz"
+# crypto - tip of master
+ENV crypto_source="https://github.com/cyanogilvie/crypto/archive/7a04540.tar.gz"
+# m2 - tip of master
+ENV m2_source="https://github.com/cyanogilvie/m2/archive/d6b7ce1.tar.gz"
+
+# tbuild
+WORKDIR /src/tbuild
+RUN wget $tbuild_source -O - | tar xz --strip-components=1 && \
+	cp tbuild-lite.tcl /usr/local/bin/tbuild-lite && \
+	chmod +x /usr/local/bin/tbuild-lite && \
+    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
+# cflib - tip of master
+WORKDIR /src/cflib
+RUN wget $cflib_source -O - | tar xz --strip-components=1 && \
+	tbuild-lite && cp tm/tcl/* /usr/local/lib/tcl8/site-tcl/ && \
+    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
+# sop
+WORKDIR /src/sop
+RUN wget $sop_source -O - | tar xz --strip-components=1 && \
+	tbuild-lite && cp tm/tcl/* /usr/local/lib/tcl8/site-tcl/ && \
+    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
+# netdgram
+WORKDIR /src/netdgram
+RUN wget $netdgram_source -O - | tar xz --strip-components=1 && \
+	tbuild-lite && cp -r tm/tcl/* /usr/local/lib/tcl8/site-tcl/ && \
+    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
+## sha1
+# evlog
+WORKDIR /src/evlog
+RUN wget $evlog_source -O - | tar xz --strip-components=1 && \
+	tbuild-lite build_tm evlog && cp -r tm/tcl/* /usr/local/lib/tcl8/site-tcl/ && \
+    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
+# dsl
+WORKDIR /src/dsl
+RUN wget $dsl_source -O - | tar xz --strip-components=1 && \
+	tbuild-lite && cp -r tm/tcl/* /usr/local/lib/tcl8/site-tcl/ && \
+    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
+# logging
+WORKDIR /src/logging
+RUN wget $logging_source -O - | tar xz --strip-components=1 && \
+	tbuild-lite && cp -r tm/tcl/* /usr/local/lib/tcl8/site-tcl/ && \
+    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
+# sockopt
+WORKDIR /src/sockopt
+RUN wget $sockopt_source -O - | tar xz --strip-components=1 && \
+    autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
+    make -j 8 all && \
+    make install-binaries install-libraries clean && \
+    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
+# crypto
+WORKDIR /src/crypto
+RUN wget $crypto_source -O - | tar xz --strip-components=1 && \
+	tbuild-lite build_tm crypto && cp -r tm/tcl/* /usr/local/lib/tcl8/site-tcl/ && \
+    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
+# m2
+WORKDIR /src/m2
+RUN wget $m2_source -O - | tar xz --strip-components=1 && \
+	tbuild-lite build_tm m2 && cp -r tm/tcl/* /usr/local/lib/tcl8/site-tcl/ && \
+	mkdir -p /usr/local/opt/m2 && \
+	cp -r m2_node /usr/local/opt/m2/ && \
+	(echo -e "#!/usr/local/bin/tclsh\nsource /usr/local/opt/m2/m2_node/m2_node.tcl") > /usr/local/bin/m2_node && \
+	chmod +x /usr/local/bin/m2_node && \
+	cp -r tools /usr/local/opt/m2/ && \
+	(echo -e "#!/usr/local/bin/tclsh\nsource /usr/local/opt/m2/tools/keys.tcl") > /usr/local/bin/m2_keys && \
+	chmod +x /usr/local/bin/m2_keys && \
+	cp -r authenticator /usr/local/opt/m2/ && \
+	(echo -e "#!/usr/local/bin/tclsh\nsource /usr/local/opt/m2/authenticator/authenticator") > /usr/local/bin/authenticator && \
+	chmod +x /usr/local/bin/authenticator && \
+	find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # alpine-tcl-build >>>
 
 # alpine-tcl <<<
@@ -172,11 +261,21 @@ RUN sed --in-place -e 's/^typedef __builtin_va_list \(.*\)/#if defined(__GNUC__)
 COPY --from=alpine-tcl-build /usr/local /usr/local
 # alpine-tcl >>>
 
+# m2_node <<<
+FROM alpine-tcl AS m2_node
+EXPOSE 5300
+EXPOSE 5301
+EXPOSE 5350
+VOLUME /etc/codeforge
+VOLUME /tmp/m2
+#CMD ["m2_node"]
+# m2_node >>>
+
 # alpine-tcl-lambda <<<
 FROM alpine-tcl AS alpine-tcl-lambda
 WORKDIR /usr/local/bin
-ADD https://github.com/aws/aws-lambda-runtime-interface-emulator/releases/download/v1.0/aws-lambda-rie /usr/local/bin/
-RUN chmod +x aws-lambda-rie
+RUN wget https://github.com/aws/aws-lambda-runtime-interface-emulator/releases/download/v1.0/aws-lambda-rie && \
+	chmod +x aws-lambda-rie
 COPY lambda/entry.sh /usr/local/bin/
 COPY lambda/bootstrap /usr/local/bin/
 RUN mkdir /opt/extensions

@@ -1,0 +1,45 @@
+#!/usr/bin/env tclsh
+
+set res	""
+append res "| Package | Version | Source |" \n
+append res "| --- | --- | --- |" \n
+foreach p {
+	Tcl
+	Thread
+	tdbc
+	pgwire
+	tdom
+	{tls tcltls_source}
+	parse_args
+	rl_json
+	hash
+	unix_sockets
+	{tcllib tcllib_source 1.20}
+	gc_class
+	rl_http
+	sqlite3
+	tcc4tcl
+	cflib
+	sop
+	netdgram
+	evlog
+	dsl
+	logging
+	sockopt
+	crypto
+	m2
+	{aws https://github.com/cyanogilvie/aws-tcl}
+	{aws::s3 https://github.com/cyanogilvie/aws-tcl}
+	{urlencode https://github.com/cyanogilvie/aws-tcl}
+} {
+	lassign $p package source ver
+	if {$source eq ""} {set source [string tolower $package]_source}
+	if {$ver eq ""}    {set ver [package require $package]}
+	if {[info exists ::env($source)]} {
+		set source	$::env($source)
+	}
+	append res "| $package | $ver | $source |" \n
+}
+
+puts $res
+

@@ -82,6 +82,45 @@ COPY myfunc.tcl /foo
 CMD ["myfunc.handler"]
 ~~~
 
+Build Flags
+-----------
+
+Since Nov 2020 AVX2 support is available to Lambda functions in all regions
+other than China, so all the sources for this image are built with that
+support.  If you need other hardware support, override the CFLAGS arg.
+
+Included Packages
+-----------------
+
+| Package | Version | Source |
+| --- | --- | --- |
+| Tcl | 8.7a4 | https://core.tcl-lang.org/tcl/tarball/99b8ad35a258cade/tcl.tar.gz |
+| Thread | 2.9a1 | https://core.tcl-lang.org/thread/tarball/2a83440579/thread.tar.gz |
+| tdbc | 1.1.1 | https://github.com/cyanogilvie/tdbc/archive/1f8b684.tar.gz |
+| pgwire | 3.0.0a1 | https://github.com/cyanogilvie/pgwire/archive/cc8b3d4.tar.gz |
+| tdom | 0.8.3 | https://github.com/RubyLane/tdom/archive/d94dceb.tar.gz |
+| tls | 1.7.22 | https://core.tcl-lang.org/tcltls/tarball/tls-1-7-22/tcltls.tar.gz |
+| parse_args | 0.3.1 | https://github.com/RubyLane/parse_args/archive/aeeaf39.tar.gz |
+| rl_json | 0.11.0 | https://github.com/RubyLane/rl_json/archive/c5a8033.tar.gz |
+| hash | 0.3 | https://github.com/cyanogilvie/hash/archive/79c2066.tar.gz |
+| unix_sockets | 0.2 | https://github.com/cyanogilvie/unix_sockets/archive/761daa5.tar.gz |
+| tcllib | 1.20 | https://core.tcl-lang.org/tcllib/uv/tcllib-1.20.tar.gz |
+| gc_class | 1.0 | https://github.com/RubyLane/gc_class/archive/f295f65.tar.gz |
+| rl_http | 1.6 | https://github.com/RubyLane/rl_http/archive/e38f67b.tar.gz |
+| sqlite3 | 3.35.4 | https://sqlite.org/2021/sqlite-autoconf-3350400.tar.gz |
+| tcc4tcl | 0.30.1 | https://github.com/cyanogilvie/tcc4tcl/archive/b8171e0.tar.gz |
+| cflib | 1.14.1 | https://github.com/cyanogilvie/cflib/archive/da5865b.tar.gz |
+| sop | 1.7.0 | https://github.com/cyanogilvie/sop/archive/cb74e34.tar.gz |
+| netdgram | 0.9.10 | https://github.com/cyanogilvie/netdgram/archive/f7bd42b.tar.gz |
+| evlog | 0.3.1 | https://github.com/cyanogilvie/evlog/archive/c6c2529.tar.gz |
+| dsl | 0.4 | https://github.com/cyanogilvie/dsl/archive/f24a59e.tar.gz |
+| logging | 0.3 | https://github.com/cyanogilvie/logging/archive/e709389.tar.gz |
+| sockopt | 0.2 | https://github.com/cyanogilvie/sockopt/archive/c574d92.tar.gz |
+| crypto | 0.6 | https://github.com/cyanogilvie/crypto/archive/7a04540.tar.gz |
+| m2 | 0.43.10 | https://github.com/cyanogilvie/m2/archive/d6b7ce1.tar.gz |
+| aws | 1.2 | https://github.com/cyanogilvie/aws-tcl |
+| aws::s3 | 1.0 | https://github.com/cyanogilvie/aws-tcl |
+| urlencode | 1.0 | https://github.com/cyanogilvie/aws-tcl |
 
 License
 -------

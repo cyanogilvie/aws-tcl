@@ -251,6 +251,9 @@ RUN wget $m2_source -O - | tar xz --strip-components=1 && \
 	(echo -e "#!/usr/local/bin/tclsh\nsource /usr/local/opt/m2/authenticator/authenticator") > /usr/local/bin/authenticator && \
 	chmod +x /usr/local/bin/authenticator && \
 	find . -type f -not -name '*.c' -and -not -name '*.h' -delete
+# tools
+COPY tools/package_report /usr/local/bin/
+RUN chmod +x /usr/local/bin/package_report && /usr/local/bin/package_report
 # alpine-tcl-build >>>
 
 # alpine-tcl <<<

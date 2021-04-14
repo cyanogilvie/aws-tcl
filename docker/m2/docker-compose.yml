@@ -1,0 +1,55 @@
+version: "3.9"
+services:
+    node:
+        image: m2
+        volumes:
+            - "tmp:/tmp/m2"
+            - "local:/usr/local"
+        ports:
+            - 5300:5300
+            - 5350:5350
+            - 5301
+              #command: "m2_node -listen_on 'uds:///tmp/m2/5300.socket?tap=/tmp/m2/m2_node_uds.tap tcp://:5300?tap=/tmp/m2/m2_node.tap' -admin_console 'tcp://:5350?tap=/tmp/m2/m2_node_admin_console.tap' -debug 1 -loglevel trivia"
+        command: "m2_node -listen_on 'uds:///tmp/m2/5300.socket tcp://:5300' -admin_console tcp://:5350"
+
+    authenticator:
+        image: m2
+        volumes:
+            - "tmp:/tmp/m2"
+            - "config:/etc/codeforge"
+            - "local:/usr/local"
+            - "./delegations:/var/lib/codeforge"
+        #command: "authenticator -uri tcp://node:5300?tap=/tmp/m2/authenticator.tap -debug 1 -loglevel trivia"
+        command: "authenticator -uri uds:///tmp/m2/5300.socket"
+
+    admin_console:
+        image: m2
+        profiles:
+            - dontstart
+        volumes:
+            - "tmp:/tmp/m2"
+            - "local:/usr/local"
+        #command: "m2_admin_console -uri tcp://node:5350?tap=/tmp/m2/admin_console.tap -debug 1 -loglevel trivia"
+        command: "m2_admin_console -uri tcp://node:5350"
+        stdin_open: true
+        tty: true
+
+    sandbox:
+        image: m2
+        profiles:
+            - dontstart
+        volumes:
+            - "tmp:/tmp/m2"
+            - "local:/usr/local"
+            - "config:/etc/codeforge"
+            - "./sandbox:/tmp/sandbox"
+        stdin_open: true
+        tty: true
+        working_dir: "/tmp/sandbox"
+        command: "/bin/sh"
+volumes:
+    tmp:
+    delegations:
+    local:
+    config:
+# vim: expandtab

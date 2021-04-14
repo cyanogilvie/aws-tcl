@@ -172,7 +172,7 @@ ENV cflib_source="https://github.com/cyanogilvie/cflib/archive/da5865b.tar.gz"
 # sop - tip of master
 ENV sop_source="https://github.com/cyanogilvie/sop/archive/cb74e34.tar.gz"
 # netdgram - tip of master
-ENV netdgram_source="https://github.com/cyanogilvie/netdgram/archive/f7bd42b.tar.gz"
+ENV netdgram_source="https://github.com/cyanogilvie/netdgram/archive/v0.9.11.tar.gz"
 # sha1 - CHANGE TO HASH?
 # evlog - tip of master
 ENV evlog_source="https://github.com/cyanogilvie/evlog/archive/c6c2529.tar.gz"
@@ -185,7 +185,7 @@ ENV sockopt_source="https://github.com/cyanogilvie/sockopt/archive/c574d92.tar.g
 # crypto - tip of master
 ENV crypto_source="https://github.com/cyanogilvie/crypto/archive/7a04540.tar.gz"
 # m2 - tip of master
-ENV m2_source="https://github.com/cyanogilvie/m2/archive/d6b7ce1.tar.gz"
+ENV m2_source="https://github.com/cyanogilvie/m2/archive/v0.43.12.tar.gz"
 
 # tbuild
 WORKDIR /src/tbuild
@@ -250,29 +250,67 @@ RUN wget $m2_source -O - | tar xz --strip-components=1 && \
 	cp -r authenticator /usr/local/opt/m2/ && \
 	(echo -e "#!/usr/local/bin/tclsh\nsource /usr/local/opt/m2/authenticator/authenticator") > /usr/local/bin/authenticator && \
 	chmod +x /usr/local/bin/authenticator && \
+	cp -r admin_console /usr/local/opt/m2/ && \
+	(echo -e "#!/usr/local/bin/tclsh\nsource /usr/local/opt/m2/admin_console/m2_admin_console.tcl") > /usr/local/bin/m2_admin_console && \
+	chmod +x /usr/local/bin/m2_admin_console && \
+	mkdir -p /etc/codeforge/authenticator && \
+	cp -r plugins /etc/codeforge/authenticator/ && \
 	find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # tools
+
+# tclreadline - tip of master
+WORKDIR /src/tclreadline
+ENV tclreadline_source="https://github.com/cyanogilvie/tclreadline/archive/b25acfe.tar.gz"
+RUN apk add --no-cache readline && \
+	apk add --no-cache --virtual build-dependencies readline-dev && \
+	wget $tclreadline_source -O - | tar xz --strip-components=1 && \
+    autoconf && ./configure CFLAGS="${CFLAGS}" --without-tk && \
+    make install-libLTLIBRARIES install-tclrlSCRIPTS && \
+	cp sample.tclshrc ~/.tclshrc && \
+    find . -type f -not -name '*.c' -and -not -name '*.h' -delete && \
+	apk del --no-cache build-dependencies
+
+# expect: tip of trunk
+ENV expect_source="https://core.tcl-lang.org/expect/tarball/f8e8464f14/expect.tar.gz"
+WORKDIR /src/tcl
+RUN wget $expect_source -O - | tar xz --strip-components=1 && \
+    ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
+    make -j 8 all && \
+    make install-binaries install-libraries && \
+    make clean && \
+    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
+
+# meta
 COPY tools/package_report /usr/local/bin/
 RUN chmod +x /usr/local/bin/package_report && /usr/local/bin/package_report
 # alpine-tcl-build >>>
 
 # alpine-tcl <<<
 FROM alpine:3.13.4 AS alpine-tcl
-RUN apk add --no-cache musl-dev
+RUN apk add --no-cache musl-dev readline
 # Need to fix glibc-ism for tcc4tcl to work
 RUN sed --in-place -e 's/^typedef __builtin_va_list \(.*\)/#if defined(__GNUC__) \&\& __GNUC__ >= 3\ntypedef __builtin_va_list \1\n#else\ntypedef char* \1\n#endif/g' /usr/include/bits/alltypes.h
 COPY --from=alpine-tcl-build /usr/local /usr/local
+COPY --from=alpine-tcl-build /root/.tclshrc /root/
 # alpine-tcl >>>
 
-# m2_node <<<
-FROM alpine-tcl AS m2_node
+# m2 <<<
+FROM alpine-tcl AS m2
+RUN mkdir -p /etc/codeforge/authenticator/keys/env && \
+	mkdir -p /etc/codeforge/authenticator/svc_keys && \
+	mkdir -p /etc/codeforge/authenticator/plugins && \
+	mkdir -p /var/lib/codeforge/authenticator
+COPY config/authenticator.conf /etc/codeforge
+COPY m2_entrypoint /usr/local/bin
+COPY --from=alpine-tcl-build /etc/codeforge/authenticator/plugins /etc/codeforge/authenticator/plugins
 EXPOSE 5300
 EXPOSE 5301
 EXPOSE 5350
-VOLUME /etc/codeforge
+#VOLUME /etc/codeforge
+#VOLUME /var/lib/codeforge
 VOLUME /tmp/m2
-#CMD ["m2_node"]
-# m2_node >>>
+ENTRYPOINT ["m2_entrypoint"]
+# m2 >>>
 
 # alpine-tcl-lambda <<<
 FROM alpine-tcl AS alpine-tcl-lambda

@@ -111,16 +111,18 @@ Included Packages
 | tcc4tcl | 0.30.1 | https://github.com/cyanogilvie/tcc4tcl/archive/b8171e0.tar.gz |
 | cflib | 1.14.1 | https://github.com/cyanogilvie/cflib/archive/da5865b.tar.gz |
 | sop | 1.7.0 | https://github.com/cyanogilvie/sop/archive/cb74e34.tar.gz |
-| netdgram | 0.9.10 | https://github.com/cyanogilvie/netdgram/archive/f7bd42b.tar.gz |
+| netdgram | 0.9.11 | https://github.com/cyanogilvie/netdgram/archive/v0.9.11.tar.gz |
 | evlog | 0.3.1 | https://github.com/cyanogilvie/evlog/archive/c6c2529.tar.gz |
 | dsl | 0.4 | https://github.com/cyanogilvie/dsl/archive/f24a59e.tar.gz |
 | logging | 0.3 | https://github.com/cyanogilvie/logging/archive/e709389.tar.gz |
 | sockopt | 0.2 | https://github.com/cyanogilvie/sockopt/archive/c574d92.tar.gz |
 | crypto | 0.6 | https://github.com/cyanogilvie/crypto/archive/7a04540.tar.gz |
-| m2 | 0.43.10 | https://github.com/cyanogilvie/m2/archive/d6b7ce1.tar.gz |
+| m2 | 0.43.12 | https://github.com/cyanogilvie/m2/archive/v0.43.12.tar.gz |
 | aws | 1.2 | https://github.com/cyanogilvie/aws-tcl |
 | aws::s3 | 1.0 | https://github.com/cyanogilvie/aws-tcl |
 | urlencode | 1.0 | https://github.com/cyanogilvie/aws-tcl |
+| tclreadline | 2.3.8 | https://github.com/cyanogilvie/tclreadline/archive/b25acfe.tar.gz |
+| Expect | 5.45.4 | https://core.tcl-lang.org/expect/tarball/f8e8464f14/expect.tar.gz |
 
 License
 -------

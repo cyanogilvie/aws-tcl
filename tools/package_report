@@ -31,6 +31,8 @@ foreach p {
 	{aws https://github.com/cyanogilvie/aws-tcl}
 	{aws::s3 https://github.com/cyanogilvie/aws-tcl}
 	{urlencode https://github.com/cyanogilvie/aws-tcl}
+	tclreadline
+	Expect
 } {
 	lassign $p package source ver
 	if {$source eq ""} {set source [string tolower $package]_source}

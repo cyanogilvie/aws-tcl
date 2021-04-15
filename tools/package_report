@@ -33,6 +33,7 @@ foreach p {
 	{urlencode https://github.com/cyanogilvie/aws-tcl}
 	tclreadline
 	Expect
+	tclsignal
 } {
 	lassign $p package source ver
 	if {$source eq ""} {set source [string tolower $package]_source}

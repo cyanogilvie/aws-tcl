@@ -123,6 +123,7 @@ Included Packages
 | urlencode | 1.0 | https://github.com/cyanogilvie/aws-tcl |
 | tclreadline | 2.3.8 | https://github.com/cyanogilvie/tclreadline/archive/b25acfe.tar.gz |
 | Expect | 5.45.4 | https://core.tcl-lang.org/expect/tarball/f8e8464f14/expect.tar.gz |
+| tclsignal | 1.4.4.1 | https://github.com/cyanogilvie/tclsignal/archive/v1.4.4.1.tar.gz |
 
 License
 -------

@@ -280,6 +280,15 @@ RUN wget $expect_source -O - | tar xz --strip-components=1 && \
     make clean && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 
+# tclsignal
+ENV tclsignal_source="https://github.com/cyanogilvie/tclsignal/archive/v1.4.4.1.tar.gz"
+WORKDIR /src/tclsignal
+RUN wget $tclsignal_source -O - | tar xz --strip-components=1 && \
+	autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
+	make -j 8 all && \
+	make install-binaries install-libraries clean && \
+	find . -type f -not -name '*.c' -and -not -name '*.h' -delete
+
 # meta
 COPY tools/package_report /usr/local/bin/
 RUN chmod +x /usr/local/bin/package_report && /usr/local/bin/package_report

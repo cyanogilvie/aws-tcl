@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
 
-docker build --target alpine-tcl        -f $DOCKERFILE_PATH -t alpine-tcl:$SOURCE_COMMIT .
-docker build --target m2                -f $DOCKERFILE_PATH -t m2:$SOURCE_COMMIT .
+docker build --target alpine-tcl        -f $DOCKERFILE_PATH -t alpine-tcl:$DOCKER_TAG .
+docker build --target m2                -f $DOCKERFILE_PATH -t m2:$DOCKER_TAG .
 docker build --target alpine-tcl-lambda -f $DOCKERFILE_PATH -t $IMAGE_NAME .

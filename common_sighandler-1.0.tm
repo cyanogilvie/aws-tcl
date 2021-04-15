@@ -16,7 +16,7 @@ namespace eval ::common_sighandler {
 		SIGINT
 		SIGTERM
 	} {
-		signal add $sig [list got_signal $sig]
+		signal add $sig [list [namespace current]::got_signal $sig]
 	}
 }
 

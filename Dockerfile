@@ -265,9 +265,9 @@ RUN apk add --no-cache readline && \
 	wget $tclreadline_source -O - | tar xz --strip-components=1 && \
     autoconf && ./configure CFLAGS="${CFLAGS}" --without-tk && \
     make install-libLTLIBRARIES install-tclrlSCRIPTS && \
-	cp sample.tclshrc ~/.tclshrc && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete && \
 	apk del --no-cache build-dependencies
+COPY tcl/tclshrc /root/.tclshrc
 
 # expect: tip of trunk
 ENV expect_source="https://core.tcl-lang.org/expect/tarball/f8e8464f14/expect.tar.gz"
@@ -351,7 +351,9 @@ RUN mkdir -p /etc/codeforge/authenticator/keys/env && \
 	mkdir -p /etc/codeforge/authenticator/plugins && \
 	mkdir -p /var/lib/codeforge/authenticator
 COPY config/authenticator.conf /etc/codeforge
-COPY m2_entrypoint /usr/local/bin
+COPY m2/m2_entrypoint /usr/local/bin/
+COPY m2/m2_node /usr/local/bin/
+COPY m2/authenticator /usr/local/bin/
 COPY --from=alpine-tcl-build /etc/codeforge/authenticator/plugins /etc/codeforge/authenticator/plugins
 EXPOSE 5300
 EXPOSE 5301

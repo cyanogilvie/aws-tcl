@@ -1,0 +1,7 @@
+if {$tcl_interactive} {
+	package require common_sighandler
+	package require tclreadline
+	tclreadline::Loop
+}
+
+# vim: ft=tcl

@@ -1,0 +1,5 @@
+#!/usr/local/bin/tclsh
+
+package require common_sighandler
+
+source /usr/local/opt/m2/m2_node/m2_node.tcl

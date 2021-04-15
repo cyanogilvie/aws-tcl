@@ -236,26 +236,25 @@ WORKDIR /src/crypto
 RUN wget $crypto_source -O - | tar xz --strip-components=1 && \
 	tbuild-lite build_tm crypto && cp -r tm/tcl/* /usr/local/lib/tcl8/site-tcl/ && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
+# common_sighandler
+COPY common_sighandler-*.tm /usr/local/lib/tcl8/site-tcl/
 # m2
 WORKDIR /src/m2
 RUN wget $m2_source -O - | tar xz --strip-components=1 && \
 	tbuild-lite build_tm m2 && cp -r tm/tcl/* /usr/local/lib/tcl8/site-tcl/ && \
 	mkdir -p /usr/local/opt/m2 && \
 	cp -r m2_node /usr/local/opt/m2/ && \
-	(echo -e "#!/usr/local/bin/tclsh\nsource /usr/local/opt/m2/m2_node/m2_node.tcl") > /usr/local/bin/m2_node && \
-	chmod +x /usr/local/bin/m2_node && \
 	cp -r tools /usr/local/opt/m2/ && \
 	(echo -e "#!/usr/local/bin/tclsh\nsource /usr/local/opt/m2/tools/keys.tcl") > /usr/local/bin/m2_keys && \
 	chmod +x /usr/local/bin/m2_keys && \
 	cp -r authenticator /usr/local/opt/m2/ && \
-	(echo -e "#!/usr/local/bin/tclsh\nsource /usr/local/opt/m2/authenticator/authenticator") > /usr/local/bin/authenticator && \
-	chmod +x /usr/local/bin/authenticator && \
 	cp -r admin_console /usr/local/opt/m2/ && \
-	(echo -e "#!/usr/local/bin/tclsh\nsource /usr/local/opt/m2/admin_console/m2_admin_console.tcl") > /usr/local/bin/m2_admin_console && \
-	chmod +x /usr/local/bin/m2_admin_console && \
 	mkdir -p /etc/codeforge/authenticator && \
 	cp -r plugins /etc/codeforge/authenticator/ && \
 	find . -type f -not -name '*.c' -and -not -name '*.h' -delete
+COPY m2/m2_node /usr/local/bin/
+COPY m2/authenticator /usr/local/bin/
+COPY m2/m2_admin_console /usr/local/bin/
 # tools
 
 # tclreadline - tip of master
@@ -294,17 +293,59 @@ COPY tools/package_report /usr/local/bin/
 RUN chmod +x /usr/local/bin/package_report && /usr/local/bin/package_report
 # alpine-tcl-build >>>
 
+# alpine-tcl-build-stripped <<<
+FROM alpine-tcl-build as alpine-tcl-build-stripped
+RUN find /usr -name "*.so" -exec strip {} \;
+# alpine-tcl-build-stripped >>>
+
 # alpine-tcl <<<
 FROM alpine:3.13.4 AS alpine-tcl
-RUN apk add --no-cache musl-dev readline
+RUN apk add --no-cache musl-dev readline && \
+	rm /usr/lib/libc.a
 # Need to fix glibc-ism for tcc4tcl to work
 RUN sed --in-place -e 's/^typedef __builtin_va_list \(.*\)/#if defined(__GNUC__) \&\& __GNUC__ >= 3\ntypedef __builtin_va_list \1\n#else\ntypedef char* \1\n#endif/g' /usr/include/bits/alltypes.h
 COPY --from=alpine-tcl-build /usr/local /usr/local
 COPY --from=alpine-tcl-build /root/.tclshrc /root/
+WORKDIR /here
+VOLUME /here
+ENTRYPOINT ["tclsh"]
+# alpine-tcl >>>
+
+# alpine-tcl-stripped <<<
+FROM alpine:3.13.4 AS alpine-tcl-stripped
+RUN apk add --no-cache musl-dev readline && \
+	rm /usr/lib/libc.a
+# Need to fix glibc-ism for tcc4tcl to work
+RUN sed --in-place -e 's/^typedef __builtin_va_list \(.*\)/#if defined(__GNUC__) \&\& __GNUC__ >= 3\ntypedef __builtin_va_list \1\n#else\ntypedef char* \1\n#endif/g' /usr/include/bits/alltypes.h
+COPY --from=alpine-tcl-build-stripped /usr/local /usr/local
+COPY --from=alpine-tcl-build-stripped /root/.tclshrc /root/
+WORKDIR /here
+VOLUME /here
+ENTRYPOINT ["tclsh"]
 # alpine-tcl >>>
 
 # m2 <<<
 FROM alpine-tcl AS m2
+RUN mkdir -p /etc/codeforge/authenticator/keys/env && \
+	mkdir -p /etc/codeforge/authenticator/svc_keys && \
+	mkdir -p /etc/codeforge/authenticator/plugins && \
+	mkdir -p /var/lib/codeforge/authenticator
+COPY config/authenticator.conf /etc/codeforge
+COPY m2/m2_entrypoint /usr/local/bin/
+COPY m2/m2_node /usr/local/bin/
+COPY m2/authenticator /usr/local/bin/
+COPY --from=alpine-tcl-build /etc/codeforge/authenticator/plugins /etc/codeforge/authenticator/plugins
+EXPOSE 5300
+EXPOSE 5301
+EXPOSE 5350
+#VOLUME /etc/codeforge
+#VOLUME /var/lib/codeforge
+VOLUME /tmp/m2
+ENTRYPOINT ["m2_entrypoint"]
+# m2 >>>
+
+# m2-stripped <<<
+FROM alpine-tcl-stripped AS m2-stripped
 RUN mkdir -p /etc/codeforge/authenticator/keys/env && \
 	mkdir -p /etc/codeforge/authenticator/svc_keys && \
 	mkdir -p /etc/codeforge/authenticator/plugins && \
@@ -319,7 +360,7 @@ EXPOSE 5350
 #VOLUME /var/lib/codeforge
 VOLUME /tmp/m2
 ENTRYPOINT ["m2_entrypoint"]
-# m2 >>>
+# m2-stripped >>>
 
 # alpine-tcl-lambda <<<
 FROM alpine-tcl AS alpine-tcl-lambda
@@ -335,5 +376,20 @@ ENV LAMBDA_TASK_ROOT=/var/task
 ENTRYPOINT ["/usr/local/bin/entry.sh"]
 CMD ["app.handler"] 
 # alpine-tcl-lambda >>>
+
+# alpine-tcl-lambda-stripped <<<
+FROM alpine-tcl-stripped AS alpine-tcl-lambda-stripped
+WORKDIR /usr/local/bin
+RUN wget https://github.com/aws/aws-lambda-runtime-interface-emulator/releases/download/v1.0/aws-lambda-rie && \
+	chmod +x aws-lambda-rie
+COPY lambda/entry.sh /usr/local/bin/
+COPY lambda/bootstrap /usr/local/bin/
+RUN mkdir /opt/extensions
+WORKDIR /var/task
+VOLUME /var/task
+ENV LAMBDA_TASK_ROOT=/var/task
+ENTRYPOINT ["/usr/local/bin/entry.sh"]
+CMD ["app.handler"] 
+# alpine-tcl-lambda-stripped >>>
 
 # vim: foldmethod=marker foldmarker=<<<,>>>

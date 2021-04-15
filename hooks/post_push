@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 
-docker tag m2:$DOCKER_TAG cyanogilvie/m2:latest
+docker tag alpine-tcl:$DOCKER_TAG cyanogilvie/alpine-tcl:$DOCKER_TAG
+docker tag alpine-tcl:$DOCKER_TAG-stripped cyanogilvie/alpine-tcl:$DOCKER_TAG-stripped
+docker push cyanogilvie/alpine-tcl:$DOCKER_TAG
+docker push cyanogilvie/alpine-tcl:$DOCKER_TAG-stripped
 docker tag m2:$DOCKER_TAG cyanogilvie/m2:$DOCKER_TAG
-docker push cyanogilvie/m2:latest
+docker tag m2:$DOCKER_TAG-stripped cyanogilvie/m2:$DOCKER_TAG-stripped
 docker push cyanogilvie/m2:$DOCKER_TAG
+docker push cyanogilvie/m2:$DOCKER_TAG-stripped

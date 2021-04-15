@@ -1,0 +1,5 @@
+#!/usr/local/bin/tclsh
+
+package require common_sighandler
+
+source /usr/local/opt/m2/admin_console/m2_admin_console.tcl

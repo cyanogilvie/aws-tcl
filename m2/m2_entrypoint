@@ -15,6 +15,9 @@ case "$1" in
 			m2_keys extract_public_key /etc/codeforge/authenticator/keys/env/authenticator.pr > /etc/codeforge/authenticator/svc_keys/authenticator.pb
 		fi
 		;;
+	"")
+		exec /bin/sh
+		;;
 esac
 
 exec "$@"

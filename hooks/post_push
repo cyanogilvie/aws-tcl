@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+
+docker tag m2:$SOURCE_COMMIT cyanogilvie/m2:latest
+docker tag m2:$SOURCE_COMMIT cyanogilvie/m2:$SOURCE_COMMIT
+docker push cyanogilvie/m2:latest
+docker push cyanogilvie/m2:$SOURCE_COMMIT

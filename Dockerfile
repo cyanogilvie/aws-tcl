@@ -5,41 +5,9 @@ ARG CFLAGS="-O3 -march=haswell"
 # alpine-tcl-build <<<
 FROM alpine:3.13.4 AS alpine-tcl-build
 ARG CFLAGS
-# tcl_version: tip of core-8-branch
-ENV tcl_source="https://core.tcl-lang.org/tcl/tarball/99b8ad35a258cade/tcl.tar.gz"
-# tclconfig: tip of trunk
-ENV tclconfig_source="https://core.tcl-lang.org/tclconfig/tarball/8423a50147/tclconfig.tar.gz"
-# thread: tip of thread-2-8-branch
-ENV thread_source="https://core.tcl-lang.org/thread/tarball/2a83440579/thread.tar.gz"
-# tdbc - tip of connection-pool-git branch
-ENV tdbc_source="https://github.com/cyanogilvie/tdbc/archive/1f8b684.tar.gz"
-# pgwire - tip of master
-ENV pgwire_source="https://github.com/cyanogilvie/pgwire/archive/cc8b3d4.tar.gz"
-# tdom - tip of master
-ENV tdom_source="https://github.com/RubyLane/tdom/archive/d94dceb.tar.gz"
-# tcltls
-ENV tcltls_source="https://core.tcl-lang.org/tcltls/tarball/tls-1-7-22/tcltls.tar.gz"
-# parse_args - tip of master
-ENV parse_args_source="https://github.com/RubyLane/parse_args/archive/aeeaf39.tar.gz"
-# rl_json - tip of master
-ENV rl_json_source="https://github.com/RubyLane/rl_json/archive/c5a8033.tar.gz"
-# hash - tip of master
-ENV hash_source="https://github.com/cyanogilvie/hash/archive/79c2066.tar.gz"
-# unix_sockets - tip of master
-ENV unix_sockets_source="https://github.com/cyanogilvie/unix_sockets/archive/761daa5.tar.gz"
-# tcllib
-ENV tcllib_source="https://core.tcl-lang.org/tcllib/uv/tcllib-1.20.tar.gz"
-# gc_class - tip of master
-ENV gc_class_source="https://github.com/RubyLane/gc_class/archive/f295f65.tar.gz"
-# rl_http - tip of master
-ENV rl_http_source="https://github.com/RubyLane/rl_http/archive/e38f67b.tar.gz"
-# sqlite3
-ENV sqlite3_source="https://sqlite.org/2021/sqlite-autoconf-3350400.tar.gz"
-# tcc4tcl - tip of master
-ENV tcc4tcl_source="https://github.com/cyanogilvie/tcc4tcl/archive/b8171e0.tar.gz"
-
 RUN apk add --no-cache build-base autoconf automake bsd-compat-headers bash ca-certificates libssl1.1 libcrypto1.1
-# tcl
+# tcl: tip of core-8-branch
+ENV tcl_source="https://core.tcl-lang.org/tcl/tarball/99b8ad35a258cade/tcl.tar.gz"
 WORKDIR /src/tcl
 RUN wget $tcl_source -O - | tar xz --strip-components=1 && \
     cd /src/tcl/unix && \
@@ -51,10 +19,12 @@ RUN wget $tcl_source -O - | tar xz --strip-components=1 && \
     make clean && \
     mkdir /usr/local/lib/tcl8/site-tcl && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# tclconfig
+# tclconfig: tip of trunk
+ENV tclconfig_source="https://core.tcl-lang.org/tclconfig/tarball/8423a50147/tclconfig.tar.gz"
 WORKDIR /src
 RUN wget $tclconfig_source -O - | tar xz
-# thread
+# thread: tip of thread-2-8-branch
+ENV thread_source="https://core.tcl-lang.org/thread/tarball/2a83440579/thread.tar.gz"
 WORKDIR /src/thread
 RUN wget $thread_source -O - | tar xz --strip-components=1 && \
     ln -s ../tclconfig && \
@@ -63,7 +33,8 @@ RUN wget $thread_source -O - | tar xz --strip-components=1 && \
     make -j 8 all && \
     make install-binaries install-libraries clean && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# tdbc
+# tdbc - tip of connection-pool-git branch
+ENV tdbc_source="https://github.com/cyanogilvie/tdbc/archive/1f8b684.tar.gz"
 WORKDIR /src/tdbc
 RUN wget $tdbc_source -O - | tar xz --strip-components=1 && \
     ln -s ../tclconfig && \
@@ -72,6 +43,7 @@ RUN wget $tdbc_source -O - | tar xz --strip-components=1 && \
     make install-binaries install-libraries clean && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # pgwire
+ENV pgwire_source="https://github.com/cyanogilvie/pgwire/archive/v3.0.0b2.tar.gz"
 WORKDIR /src/pgwire
 RUN wget $pgwire_source -O - | tar xz --strip-components=1 && \
     cd src && \
@@ -79,7 +51,8 @@ RUN wget $pgwire_source -O - | tar xz --strip-components=1 && \
     cp -a tm/* /usr/local/lib/tcl8/site-tcl && \
     make clean && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# tdom
+# tdom - tip of master
+ENV tdom_source="https://github.com/RubyLane/tdom/archive/d94dceb.tar.gz"
 WORKDIR /src/tdom
 RUN wget $tdom_source -O - | tar xz --strip-components=1 && \
     autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
@@ -87,6 +60,7 @@ RUN wget $tdom_source -O - | tar xz --strip-components=1 && \
     make install-binaries install-libraries clean && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # tcltls
+ENV tcltls_source="https://core.tcl-lang.org/tcltls/tarball/tls-1-7-22/tcltls.tar.gz"
 WORKDIR /src/tcltls
 RUN apk add --no-cache --virtual build-dependencies curl openssl-dev curl-dev && \
     wget $tcltls_source -O - | tar xz --strip-components=1 && \
@@ -96,28 +70,32 @@ RUN apk add --no-cache --virtual build-dependencies curl openssl-dev curl-dev &&
     make install clean && \
     apk del build-dependencies && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# parse_args
+# parse_args - tip of master
+ENV parse_args_source="https://github.com/RubyLane/parse_args/archive/aeeaf39.tar.gz"
 WORKDIR /src/parse_args
 RUN wget $parse_args_source -O - | tar xz --strip-components=1 && \
     autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
     make -j 8 all && \
     make install-binaries install-libraries clean && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# rl_json
+# rl_json - tip of master
+ENV rl_json_source="https://github.com/RubyLane/rl_json/archive/c5a8033.tar.gz"
 WORKDIR /src/rl_json
 RUN wget $rl_json_source -O - | tar xz --strip-components=1 && \
     autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
     make -j 8 all && \
     make install-binaries install-libraries clean && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# hash
+# hash - tip of master
+ENV hash_source="https://github.com/cyanogilvie/hash/archive/79c2066.tar.gz"
 WORKDIR /src/hash
 RUN wget $hash_source -O - | tar xz --strip-components=1 && \
     autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
     make -j 8 all && \
     make install-binaries install-libraries clean && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# unix_sockets
+# unix_sockets - tip of master
+ENV unix_sockets_source="https://github.com/cyanogilvie/unix_sockets/archive/761daa5.tar.gz"
 WORKDIR /src/unix_sockets
 RUN wget $unix_sockets_source -O - | tar xz --strip-components=1 && \
     autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
@@ -125,29 +103,34 @@ RUN wget $unix_sockets_source -O - | tar xz --strip-components=1 && \
     make install-binaries install-libraries clean && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # tcllib
+ENV tcllib_source="https://core.tcl-lang.org/tcllib/uv/tcllib-1.20.tar.gz"
 WORKDIR /src/tcllib
 RUN wget $tcllib_source -O - | tar xz --strip-components=1 && \
     ./configure && \
     make install-libraries install-applications clean && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# gc_class
+# gc_class - tip of master
+ENV gc_class_source="https://github.com/RubyLane/gc_class/archive/f295f65.tar.gz"
 WORKDIR /src/gc_class
 RUN wget $gc_class_source -O - | tar xz --strip-components=1 && \
     cp gc_class*.tm /usr/local/lib/tcl8/site-tcl && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# rl_http
+# rl_http - tip of master
+ENV rl_http_source="https://github.com/RubyLane/rl_http/archive/e38f67b.tar.gz"
 WORKDIR /src/rl_http
 RUN wget $rl_http_source -O - | tar xz --strip-components=1 && \
     cp rl_http*.tm /usr/local/lib/tcl8/site-tcl && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # sqlite3
+ENV sqlite3_source="https://sqlite.org/2021/sqlite-autoconf-3350400.tar.gz"
 WORKDIR /src/sqlite3
 RUN wget $sqlite3_source -O - | tar xz --strip-components=1 && \
     cd tea && \
     autoconf && ./configure CFLAGS="${CFLAGS}" && \
     make all install-binaries install-libraries clean && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# tcc4tcl
+# tcc4tcl - tip of master
+ENV tcc4tcl_source="https://github.com/cyanogilvie/tcc4tcl/archive/b8171e0.tar.gz"
 WORKDIR /src/tcc4tcl
 RUN wget $tcc4tcl_source -O - | tar xz --strip-components=1 && \
     apk add --no-cache --virtual build-dependencies openssl && \
@@ -167,71 +150,57 @@ COPY api/aws/*.tm /usr/local/lib/tcl8/site-tcl/aws/
 # Codeforge packages and applications up to m2
 # tbuild - tip of master
 ENV tbuild_source="https://github.com/cyanogilvie/tbuild/archive/e526a9c.tar.gz"
-# cflib - tip of master
-ENV cflib_source="https://github.com/cyanogilvie/cflib/archive/da5865b.tar.gz"
-# sop - tip of master
-ENV sop_source="https://github.com/cyanogilvie/sop/archive/cb74e34.tar.gz"
-# netdgram - tip of master
-ENV netdgram_source="https://github.com/cyanogilvie/netdgram/archive/v0.9.11.tar.gz"
-# sha1 - CHANGE TO HASH?
-# evlog - tip of master
-ENV evlog_source="https://github.com/cyanogilvie/evlog/archive/c6c2529.tar.gz"
-# dsl - tip of master
-ENV dsl_source="https://github.com/cyanogilvie/dsl/archive/f24a59e.tar.gz"
-# logging - tip of master
-ENV logging_source="https://github.com/cyanogilvie/logging/archive/e709389.tar.gz"
-# sockopt - tip of master
-ENV sockopt_source="https://github.com/cyanogilvie/sockopt/archive/c574d92.tar.gz"
-# crypto - tip of master
-ENV crypto_source="https://github.com/cyanogilvie/crypto/archive/7a04540.tar.gz"
-# m2 - tip of master
-ENV m2_source="https://github.com/cyanogilvie/m2/archive/v0.43.12.tar.gz"
-
-# tbuild
 WORKDIR /src/tbuild
 RUN wget $tbuild_source -O - | tar xz --strip-components=1 && \
 	cp tbuild-lite.tcl /usr/local/bin/tbuild-lite && \
 	chmod +x /usr/local/bin/tbuild-lite && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # cflib - tip of master
+ENV cflib_source="https://github.com/cyanogilvie/cflib/archive/da5865b.tar.gz"
 WORKDIR /src/cflib
 RUN wget $cflib_source -O - | tar xz --strip-components=1 && \
 	tbuild-lite && cp tm/tcl/* /usr/local/lib/tcl8/site-tcl/ && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# sop
+# sop - tip of master
+ENV sop_source="https://github.com/cyanogilvie/sop/archive/cb74e34.tar.gz"
 WORKDIR /src/sop
 RUN wget $sop_source -O - | tar xz --strip-components=1 && \
 	tbuild-lite && cp tm/tcl/* /usr/local/lib/tcl8/site-tcl/ && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# netdgram
+# netdgram - tip of master
+ENV netdgram_source="https://github.com/cyanogilvie/netdgram/archive/v0.9.11.tar.gz"
 WORKDIR /src/netdgram
 RUN wget $netdgram_source -O - | tar xz --strip-components=1 && \
 	tbuild-lite && cp -r tm/tcl/* /usr/local/lib/tcl8/site-tcl/ && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-## sha1
-# evlog
+# evlog - tip of master
+ENV evlog_source="https://github.com/cyanogilvie/evlog/archive/c6c2529.tar.gz"
 WORKDIR /src/evlog
 RUN wget $evlog_source -O - | tar xz --strip-components=1 && \
 	tbuild-lite build_tm evlog && cp -r tm/tcl/* /usr/local/lib/tcl8/site-tcl/ && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# dsl
+# dsl - tip of master
+ENV dsl_source="https://github.com/cyanogilvie/dsl/archive/f24a59e.tar.gz"
 WORKDIR /src/dsl
 RUN wget $dsl_source -O - | tar xz --strip-components=1 && \
 	tbuild-lite && cp -r tm/tcl/* /usr/local/lib/tcl8/site-tcl/ && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# logging
+# logging - tip of master
+ENV logging_source="https://github.com/cyanogilvie/logging/archive/e709389.tar.gz"
 WORKDIR /src/logging
 RUN wget $logging_source -O - | tar xz --strip-components=1 && \
 	tbuild-lite && cp -r tm/tcl/* /usr/local/lib/tcl8/site-tcl/ && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# sockopt
+# sockopt - tip of master
+ENV sockopt_source="https://github.com/cyanogilvie/sockopt/archive/c574d92.tar.gz"
 WORKDIR /src/sockopt
 RUN wget $sockopt_source -O - | tar xz --strip-components=1 && \
     autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
     make -j 8 all && \
     make install-binaries install-libraries clean && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# crypto
+# crypto - tip of master
+ENV crypto_source="https://github.com/cyanogilvie/crypto/archive/7a04540.tar.gz"
 WORKDIR /src/crypto
 RUN wget $crypto_source -O - | tar xz --strip-components=1 && \
 	tbuild-lite build_tm crypto && cp -r tm/tcl/* /usr/local/lib/tcl8/site-tcl/ && \
@@ -239,14 +208,13 @@ RUN wget $crypto_source -O - | tar xz --strip-components=1 && \
 # common_sighandler
 COPY common_sighandler-*.tm /usr/local/lib/tcl8/site-tcl/
 # m2
+ENV m2_source="https://github.com/cyanogilvie/m2/archive/v0.43.13.tar.gz"
 WORKDIR /src/m2
 RUN wget $m2_source -O - | tar xz --strip-components=1 && \
 	tbuild-lite build_tm m2 && cp -r tm/tcl/* /usr/local/lib/tcl8/site-tcl/ && \
 	mkdir -p /usr/local/opt/m2 && \
 	cp -r m2_node /usr/local/opt/m2/ && \
 	cp -r tools /usr/local/opt/m2/ && \
-	(echo -e "#!/usr/local/bin/tclsh\nsource /usr/local/opt/m2/tools/keys.tcl") > /usr/local/bin/m2_keys && \
-	chmod +x /usr/local/bin/m2_keys && \
 	cp -r authenticator /usr/local/opt/m2/ && \
 	cp -r admin_console /usr/local/opt/m2/ && \
 	mkdir -p /etc/codeforge/authenticator && \
@@ -254,6 +222,7 @@ RUN wget $m2_source -O - | tar xz --strip-components=1 && \
 	find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 COPY m2/m2_node /usr/local/bin/
 COPY m2/authenticator /usr/local/bin/
+COPY m2/m2_keys /usr/local/bin/
 COPY m2/m2_admin_console /usr/local/bin/
 # tools
 
@@ -288,6 +257,61 @@ RUN wget $tclsignal_source -O - | tar xz --strip-components=1 && \
 	make install-binaries install-libraries clean && \
 	find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 
+# type: tip of master
+ENV type_source="https://github.com/cyanogilvie/type/archive/9e185c2.tar.gz"
+WORKDIR /src/type
+RUN wget $type_source -O - | tar xz --strip-components=1 && \
+	ln -s /src/tclconfig && \
+	autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
+	make install-binaries install-libraries clean && \
+	find . -type f -not -name '*.c' -and -not -name '*.h' -delete
+
+# inotify: tip of master
+ENV inotify_source="https://github.com/cyanogilvie/inotify/archive/298f608.tar.gz"
+WORKDIR /src/inotify
+RUN wget $inotify_source -O - | tar xz --strip-components=1 && \
+	ln -s /src/tclconfig && \
+	autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
+	make install-binaries install-libraries clean && \
+	find . -type f -not -name '*.c' -and -not -name '*.h' -delete
+
+# Pixel: tip of master
+ENV pixel_source="https://github.com/cyanogilvie/pixel/archive/2c70755.tar.gz"
+WORKDIR /src/pixel
+RUN apk add --no-cache libjpeg-turbo libexif libpng librsvg libwebp imlib2 && \
+	apk add --no-cache --virtual build-dependencies libjpeg-turbo-dev libexif-dev libpng-dev librsvg-dev libwebp-dev imlib2-dev && \
+	wget $pixel_source -O - | tar xz --strip-components=1 && \
+	cd pixel_core && \
+		ln -s /src/tclconfig && \
+		autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
+		make -j 8 install-binaries install-libraries && \
+		cp pixelConfig.sh /usr/local/lib && \
+	cd ../pixel_jpeg && \
+		ln -s /src/tclconfig && \
+		autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
+		make install-binaries install-libraries clean && \
+	cd ../pixel_png && \
+		ln -s /src/tclconfig && \
+		autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
+		make install-binaries install-libraries clean && \
+	cd ../pixel_svg_cairo && \
+		ln -s /src/tclconfig && \
+		autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
+		make install-binaries install-libraries clean && \
+	cd ../pixel_webp && \
+		ln -s /src/tclconfig && \
+		autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
+		make install-binaries install-libraries clean && \
+	cd ../pixel_imlib2 && \
+		ln -s /src/tclconfig && \
+		autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
+		make install-binaries install-libraries clean && \
+	cd ../pixel_core && \
+		make clean && \
+	cd .. && \
+	apk del --no-cache build-dependencies && \
+	find . -type f -not -name '*.c' -and -not -name '*.h' -delete
+
 # meta
 COPY tools/package_report /usr/local/bin/
 RUN chmod +x /usr/local/bin/package_report && /usr/local/bin/package_report
@@ -300,7 +324,7 @@ RUN find /usr -name "*.so" -exec strip {} \;
 
 # alpine-tcl <<<
 FROM alpine:3.13.4 AS alpine-tcl
-RUN apk add --no-cache musl-dev readline && \
+RUN apk add --no-cache musl-dev readline libjpeg-turbo libexif libpng libwebp && \
 	rm /usr/lib/libc.a
 # Need to fix glibc-ism for tcc4tcl to work
 RUN sed --in-place -e 's/^typedef __builtin_va_list \(.*\)/#if defined(__GNUC__) \&\& __GNUC__ >= 3\ntypedef __builtin_va_list \1\n#else\ntypedef char* \1\n#endif/g' /usr/include/bits/alltypes.h
@@ -313,7 +337,7 @@ ENTRYPOINT ["tclsh"]
 
 # alpine-tcl-stripped <<<
 FROM alpine:3.13.4 AS alpine-tcl-stripped
-RUN apk add --no-cache musl-dev readline && \
+RUN apk add --no-cache musl-dev readline libjpeg-turbo libexif libpng libwebp && \
 	rm /usr/lib/libc.a
 # Need to fix glibc-ism for tcc4tcl to work
 RUN sed --in-place -e 's/^typedef __builtin_va_list \(.*\)/#if defined(__GNUC__) \&\& __GNUC__ >= 3\ntypedef __builtin_va_list \1\n#else\ntypedef char* \1\n#endif/g' /usr/include/bits/alltypes.h

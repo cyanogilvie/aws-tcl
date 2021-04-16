@@ -97,7 +97,7 @@ Included Packages
 | Tcl | 8.7a4 | https://core.tcl-lang.org/tcl/tarball/99b8ad35a258cade/tcl.tar.gz |
 | Thread | 2.9a1 | https://core.tcl-lang.org/thread/tarball/2a83440579/thread.tar.gz |
 | tdbc | 1.1.1 | https://github.com/cyanogilvie/tdbc/archive/1f8b684.tar.gz |
-| pgwire | 3.0.0a1 | https://github.com/cyanogilvie/pgwire/archive/cc8b3d4.tar.gz |
+| pgwire | 3.0.0b2 | https://github.com/cyanogilvie/pgwire/archive/v3.0.0b2.tar.gz |
 | tdom | 0.8.3 | https://github.com/RubyLane/tdom/archive/d94dceb.tar.gz |
 | tls | 1.7.22 | https://core.tcl-lang.org/tcltls/tarball/tls-1-7-22/tcltls.tar.gz |
 | parse_args | 0.3.1 | https://github.com/RubyLane/parse_args/archive/aeeaf39.tar.gz |
@@ -117,13 +117,35 @@ Included Packages
 | logging | 0.3 | https://github.com/cyanogilvie/logging/archive/e709389.tar.gz |
 | sockopt | 0.2 | https://github.com/cyanogilvie/sockopt/archive/c574d92.tar.gz |
 | crypto | 0.6 | https://github.com/cyanogilvie/crypto/archive/7a04540.tar.gz |
-| m2 | 0.43.12 | https://github.com/cyanogilvie/m2/archive/v0.43.12.tar.gz |
+| m2 | 0.43.13 | https://github.com/cyanogilvie/m2/archive/v0.43.13.tar.gz |
 | aws | 1.2 | https://github.com/cyanogilvie/aws-tcl |
 | aws::s3 | 1.0 | https://github.com/cyanogilvie/aws-tcl |
 | urlencode | 1.0 | https://github.com/cyanogilvie/aws-tcl |
 | tclreadline | 2.3.8 | https://github.com/cyanogilvie/tclreadline/archive/b25acfe.tar.gz |
 | Expect | 5.45.4 | https://core.tcl-lang.org/expect/tarball/f8e8464f14/expect.tar.gz |
 | tclsignal | 1.4.4.1 | https://github.com/cyanogilvie/tclsignal/archive/v1.4.4.1.tar.gz |
+| type | 0.1 | https://github.com/cyanogilvie/type/archive/9e185c2.tar.gz |
+| inotify | 2.2 | https://github.com/cyanogilvie/inotify/archive/298f608.tar.gz |
+| Pixel | 3.5 | https://github.com/cyanogilvie/pixel/archive/2c70755.tar.gz |
+| Pixel_jpeg | 1.4 | https://github.com/cyanogilvie/pixel/archive/2c70755.tar.gz |
+| Pixel_png | 2.6 | https://github.com/cyanogilvie/pixel/archive/2c70755.tar.gz |
+| Pixel_svg_cairo | 0.3 | https://github.com/cyanogilvie/pixel/archive/2c70755.tar.gz |
+| Pixel_webp | 1.0 | https://github.com/cyanogilvie/pixel/archive/2c70755.tar.gz |
+| Pixel_imlib2 | 1.2.0 | https://github.com/cyanogilvie/pixel/archive/2c70755.tar.gz |
+
+For Pixel_svg_cairo to be usable it needs librsvg, which isn't added by default because it more than doubles the image size.  To use it, derive a new image like so:
+
+~~~dockerfile
+FROM cyanogilvie/alpine-tcl-stripped
+RUN apk add --no-cache librsvg
+~~~
+
+Similarly, Pixel_imlib2 requires imlib2:
+
+~~~dockerfile
+FROM cyanogilvie/alpine-tcl-stripped
+RUN apk add --no-cache imlib2
+~~~
 
 License
 -------

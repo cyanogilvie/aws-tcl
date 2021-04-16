@@ -8,3 +8,4 @@ docker tag m2:$DOCKER_TAG cyanogilvie/m2:$DOCKER_TAG
 docker tag m2:$DOCKER_TAG-stripped cyanogilvie/m2:$DOCKER_TAG-stripped
 docker push cyanogilvie/m2:$DOCKER_TAG
 docker push cyanogilvie/m2:$DOCKER_TAG-stripped
+docker tag $DOCKER_REPO:$DOCKER_TAG-stripped cyanogilvie/$DOCKER_REPO:$DOCKER_TAG-stripped

@@ -34,6 +34,14 @@ foreach p {
 	tclreadline
 	Expect
 	tclsignal
+	type
+	inotify
+	Pixel
+	{Pixel_jpeg pixel_source}
+	{Pixel_png pixel_source}
+	{Pixel_svg_cairo pixel_source}
+	{Pixel_webp pixel_source}
+	{Pixel_imlib2 pixel_source}
 } {
 	lassign $p package source ver
 	if {$source eq ""} {set source [string tolower $package]_source}

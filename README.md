@@ -120,7 +120,11 @@ Included Packages
 | m2 | 0.43.13 | https://github.com/cyanogilvie/m2/archive/v0.43.13.tar.gz |
 | aws | 1.2 | https://github.com/cyanogilvie/aws-tcl |
 | aws::s3 | 1.0 | https://github.com/cyanogilvie/aws-tcl |
+| aws::cognito_identity | 1.0 | https://github.com/cyanogilvie/aws-tcl |
+| aws::secretsmanager | 0.1 | https://github.com/cyanogilvie/aws-tcl |
+| aws::ecr | 1.0 | https://github.com/cyanogilvie/aws-tcl |
 | urlencode | 1.0 | https://github.com/cyanogilvie/aws-tcl |
+| hmac | 0.1 | https://github.com/cyanogilvie/aws-tcl |
 | tclreadline | 2.3.8 | https://github.com/cyanogilvie/tclreadline/archive/b25acfe.tar.gz |
 | Expect | 5.45.4 | https://core.tcl-lang.org/expect/tarball/f8e8464f14/expect.tar.gz |
 | tclsignal | 1.4.4.1 | https://github.com/cyanogilvie/tclsignal/archive/v1.4.4.1.tar.gz |

@@ -222,6 +222,8 @@ namespace eval aws {
 
 	#>>>
 	proc sigv4 args { #<<<
+		global env
+
 		parse_args::parse_args $args {
 			-aws_id				{}
 			-aws_key			{}
@@ -804,6 +806,78 @@ namespace eval aws {
 			throw [list AWS [$h code]] [$h body]
 		}
 		$h body
+	}
+
+	#>>>
+
+	# Many newer AWS services' APIs follow this pattern:
+	proc build_action_api args { #<<<
+		parse_args $args {
+			-scheme			{-default http}
+			-service		{-required}
+			-endpoint		{}
+			-target_service	{-# {If specified, override $service in x-amz-target header}}
+			-accessor		{-# {If specified, override s/-/_/g($service) as the ensemble cname}}
+			-actions		{-required}
+		}
+
+		if {![info exists target_service]} {
+			set target_service	$service
+		}
+
+		if {![info exists accessor]} {
+			set accessor	[string map {- _} $service]
+		}
+
+		if {![info exists endpoint]} {
+			set endpoint	$service
+		}
+
+		namespace eval ::aws::$accessor [string map [list \
+			%scheme%			[list $scheme] \
+			%service%			[list $endpoint] \
+			%sig_service%		[list $service] \
+			%target_service%	[list $target_service] \
+		] {
+			namespace export *
+			namespace ensemble create -prefixes no
+			namespace path {
+				::parse_args
+			}
+
+			proc log args {tailcall aws log {*}$args}
+			proc req args { #<<<
+				parse_args $args {
+					-region		{-default us-east-1}
+					-params		{-required}
+					-action		{-required}
+				}
+
+				aws req POST %service% / \
+					-sig_service	%sig_service% \
+					-scheme			%scheme% \
+					-region			$region \
+					-body			[encoding convertto utf-8 $params] \
+					-content_type	application/x-amz-json-1.1 \
+					-headers		[list x-amz-target %target_service%.$action]
+			}
+
+			#>>>
+		}]
+
+		foreach action $actions {
+			# FooBarBaz -> foo_bar_baz
+			proc ::aws::${accessor}::[string tolower [join [regexp -all -inline {[A-Z][a-z]+} $action] _]] args [string map [list \
+				%action% [list $action] \
+			] {
+				parse_args $args {
+					-region		{-default us-east-1}
+					-params		{-default {{}} -# {JSON doc containing the request parameters}}
+				}
+
+				req -region $region -action %action% -params $params
+			}]
+		}
 	}
 
 	#>>>

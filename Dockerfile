@@ -145,7 +145,7 @@ RUN wget $tcc4tcl_source -O - | tar xz --strip-components=1 && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # aws-tcl
 COPY api/*.tm /usr/local/lib/tcl8/site-tcl/
-COPY api/aws/*.tm /usr/local/lib/tcl8/site-tcl/aws/
+COPY api/aws1/*.tm /usr/local/lib/tcl8/site-tcl/aws1/
 
 # Codeforge packages and applications up to m2
 # tbuild - tip of master
@@ -332,6 +332,14 @@ WORKDIR /src/docker
 RUN wget $docker_source -O - | tar xz --strip-components=1 && \
 	make install-tm && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
+
+# aws api v2, generated from the botocore repo json files
+ENV botocore_source="https://github.com/boto/botocore/archive/refs/tags/1.20.57.tar.gz"
+WORKDIR /src/botocore
+COPY api/build.tcl /src/botocore
+RUN wget $botocore_source -O - | tar xz --strip-components=1 && \
+	tclsh build.tcl -definitions botocore/data -prefix /usr/local/lib && \
+	rm -rf /src/botocore/*
 
 # meta
 COPY tools/package_report /usr/local/bin/

@@ -1,5 +1,7 @@
 # AWS ECR API doc: https://docs.aws.amazon.com/AmazonECR/latest/APIReference
 
+package require aws 1.2
+
 aws build_action_api -scheme https -service ecr -endpoint api.ecr -target_service AmazonEC2ContainerRegistry_V20150921 -actions {
 	BatchCheckLayerAvailability
 	BatchDeleteImage

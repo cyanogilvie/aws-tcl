@@ -1,6 +1,6 @@
 # AWS Secrets Manager API reference: https://docs.aws.amazon.com/secretsmanager/latest/apireference
 
-package require aws
+package require aws 1.2
 
 aws build_action_api -scheme https -service secretsmanager -actions {
 	CancelRotateSecret

@@ -1,4 +1,4 @@
-package require aws
+package require aws 1.2
 package require parse_args
 package require urlencode
 

@@ -1,6 +1,6 @@
 # AWS Federated Identities API doc: https://docs.aws.amazon.com/cognitoidentity/latest/APIReference
 
-package require aws
+package require aws 1.2
 
 aws build_action_api -scheme https -service cognito-identity -target_service AWSCognitoIdentityService -actions {
 	CreateIdentityPool

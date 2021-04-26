@@ -3,7 +3,7 @@
 set res	""
 append res "| Package | Version | Source |" \n
 append res "| --- | --- | --- |" \n
-foreach p {
+set packages {
 	Tcl
 	Thread
 	tdbc
@@ -28,11 +28,6 @@ foreach p {
 	sockopt
 	crypto
 	m2
-	{aws https://github.com/cyanogilvie/aws-tcl}
-	{aws::s3 https://github.com/cyanogilvie/aws-tcl}
-	{aws::cognito_identity https://github.com/cyanogilvie/aws-tcl}
-	{aws::secretsmanager https://github.com/cyanogilvie/aws-tcl}
-	{aws::ecr https://github.com/cyanogilvie/aws-tcl}
 	{urlencode https://github.com/cyanogilvie/aws-tcl}
 	{hmac https://github.com/cyanogilvie/aws-tcl}
 	tclreadline
@@ -49,10 +44,25 @@ foreach p {
 	chantricks
 	openapi
 	docker
-} {
+	{aws https://github.com/cyanogilvie/aws-tcl 1.2}
+	{aws1::s3 https://github.com/cyanogilvie/aws-tcl}
+	{aws1::cognito_identity https://github.com/cyanogilvie/aws-tcl}
+	{aws1::secretsmanager https://github.com/cyanogilvie/aws-tcl}
+	{aws1::ecr https://github.com/cyanogilvie/aws-tcl}
+	{aws https://github.com/cyanogilvie/aws-tcl}
+} 
+
+foreach p $packages {
 	lassign $p package source ver
 	if {$source eq ""} {set source [string tolower $package]_source}
-	if {$ver eq ""}    {set ver [package require $package]}
+	if {$ver eq ""}    {
+		set interp	[interp create]
+		try {
+			set ver [$interp eval [list package require $package]]
+		} finally {
+			interp delete $interp
+		}
+	}
 	if {[info exists ::env($source)]} {
 		set source	$::env($source)
 	}

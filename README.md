@@ -58,6 +58,44 @@ while {[info exists continuation_token]} {
 }
 ~~~
 
+API v2
+------
+
+The AWS API package version 2 switches to using generated code to implement
+the various aws services, derived from the JSON description files that are
+used by botocore (and therefore the standard AWS CLI).  This means that the
+interface presented by v2 is very similar to the AWS CLI - except that 
+underscores are used in place of dashes, and options are preceded by a single
+dash rather than two.  So:
+
+~~~sh
+aws lambda list-functions --function-version ALL
+~~~
+
+becomes:
+
+~~~tcl
+package require aws::lambda 2
+aws lambda list_functions -function_version ALL
+~~~
+
+As indicated by the version suffix, version 2 is still in alpha, and isn't
+complete yet (the ec2 service uses a different protocol which still needs
+to be implemented).  It's also very likely still full of bugs from the guesses
+I had to make when reverse engineering the botocore JSON description.
+
+It would be trivial to just use the AWS CLI from Tcl like so:
+
+~~~tcl
+exec aws list-functions --function-version ALL
+~~~
+
+but including the AWS CLI increases the size of an image hugely - the official
+AWS CLI docker image is 300 MB, and a hacked one based on alpine linux is 150 MB,
+whereas the generated Tcl bindings are a little over half a MB.  In situations
+where a small image is a requirement (such as this one), including the AWS CLI is
+simply not an option.
+
 AWS-Tcl-Lambda
 --------------
 
@@ -118,11 +156,6 @@ Included Packages
 | sockopt | 0.2 | https://github.com/cyanogilvie/sockopt/archive/c574d92.tar.gz |
 | crypto | 0.6 | https://github.com/cyanogilvie/crypto/archive/7a04540.tar.gz |
 | m2 | 0.43.13 | https://github.com/cyanogilvie/m2/archive/v0.43.13.tar.gz |
-| aws | 2.0a1 | https://github.com/cyanogilvie/aws-tcl |
-| aws::s3 | 1.0 | https://github.com/cyanogilvie/aws-tcl |
-| aws::cognito_identity | 1.0 | https://github.com/cyanogilvie/aws-tcl |
-| aws::secretsmanager | 0.1 | https://github.com/cyanogilvie/aws-tcl |
-| aws::ecr | 1.0 | https://github.com/cyanogilvie/aws-tcl |
 | urlencode | 1.0 | https://github.com/cyanogilvie/aws-tcl |
 | hmac | 0.1 | https://github.com/cyanogilvie/aws-tcl |
 | tclreadline | 2.3.8 | https://github.com/cyanogilvie/tclreadline/archive/b25acfe.tar.gz |
@@ -139,6 +172,14 @@ Included Packages
 | chantricks | 1.0.3 | https://github.com/cyanogilvie/chantricks/archive/v1.0.3.tar.gz |
 | openapi | 0.4.6 | https://github.com/cyanogilvie/tcl-openapi/archive/v0.4.6.tar.gz |
 | docker | 0.9.0 | https://github.com/cyanogilvie/tcl-docker-client/archive/v0.9.0.tar.gz |
+| aws | 1.2 | https://github.com/cyanogilvie/aws-tcl |
+| aws1::s3 | 1.0 | https://github.com/cyanogilvie/aws-tcl |
+| aws1::cognito_identity | 1.0 | https://github.com/cyanogilvie/aws-tcl |
+| aws1::secretsmanager | 0.1 | https://github.com/cyanogilvie/aws-tcl |
+| aws1::ecr | 1.0 | https://github.com/cyanogilvie/aws-tcl |
+| aws | 2.0a1 | https://github.com/cyanogilvie/aws-tcl |
+
+aws 2.0a1 supports all the services of the aws cli except for ec2 currently.
 
 For Pixel_svg_cairo to be usable it needs librsvg, which isn't added by default because it more than doubles the image size.  To use it, derive a new image like so:
 

@@ -1,6 +1,12 @@
 if {$tcl_interactive} {
 	package require common_sighandler
+	package require rl_json
+	package require chantricks
 	package require tclreadline
+
+	namespace import ::rl_json::*
+	namespace import ::chantricks::*
+
 	tclreadline::Loop
 }
 

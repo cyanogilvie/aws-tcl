@@ -5,7 +5,7 @@ ARG CFLAGS="-O3 -march=haswell"
 # alpine-tcl-build <<<
 FROM alpine:3.13.4 AS alpine-tcl-build
 ARG CFLAGS
-RUN apk add --no-cache build-base autoconf automake bsd-compat-headers bash ca-certificates libssl1.1 libcrypto1.1
+RUN apk add --no-cache build-base autoconf automake bsd-compat-headers bash ca-certificates libssl1.1 libcrypto1.1 docker-cli
 # tcl: tip of core-8-branch
 ENV tcl_source="https://core.tcl-lang.org/tcl/tarball/99b8ad35a258cade/tcl.tar.gz"
 WORKDIR /src/tcl
@@ -70,8 +70,8 @@ RUN apk add --no-cache --virtual build-dependencies curl openssl-dev curl-dev &&
     make install clean && \
     apk del build-dependencies && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# parse_args - tip of master
-ENV parse_args_source="https://github.com/RubyLane/parse_args/archive/aeeaf39.tar.gz"
+# parse_args
+ENV parse_args_source="https://github.com/RubyLane/parse_args/archive/v0.3.2.tar.gz"
 WORKDIR /src/parse_args
 RUN wget $parse_args_source -O - | tar xz --strip-components=1 && \
     autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
@@ -115,8 +115,8 @@ WORKDIR /src/gc_class
 RUN wget $gc_class_source -O - | tar xz --strip-components=1 && \
     cp gc_class*.tm /usr/local/lib/tcl8/site-tcl && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# rl_http - tip of master
-ENV rl_http_source="https://github.com/RubyLane/rl_http/archive/e38f67b.tar.gz"
+# rl_http
+ENV rl_http_source="https://github.com/RubyLane/rl_http/archive/1.8.tar.gz"
 WORKDIR /src/rl_http
 RUN wget $rl_http_source -O - | tar xz --strip-components=1 && \
     cp rl_http*.tm /usr/local/lib/tcl8/site-tcl && \
@@ -257,8 +257,8 @@ RUN wget $tclsignal_source -O - | tar xz --strip-components=1 && \
 	make install-binaries install-libraries clean && \
 	find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 
-# type: tip of master
-ENV type_source="https://github.com/cyanogilvie/type/archive/9e185c2.tar.gz"
+# type
+ENV type_source="https://github.com/cyanogilvie/type/archive/v0.2.tar.gz"
 WORKDIR /src/type
 RUN wget $type_source -O - | tar xz --strip-components=1 && \
 	ln -s /src/tclconfig && \
@@ -312,10 +312,36 @@ RUN apk add --no-cache libjpeg-turbo libexif libpng librsvg libwebp imlib2 && \
 	apk del --no-cache build-dependencies && \
 	find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 
+# chantricks
+ENV chantricks_source="https://github.com/cyanogilvie/chantricks/archive/v1.0.3.tar.gz"
+WORKDIR /src/chantricks
+RUN wget $chantricks_source -O - | tar xz --strip-components=1 && \
+	make install-tm && \
+    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
+
+# openapi
+ENV openapi_source="https://github.com/cyanogilvie/tcl-openapi/archive/v0.4.6.tar.gz"
+WORKDIR /src/openapi
+RUN wget $openapi_source -O - | tar xz --strip-components=1 && \
+	cp *.tm /usr/local/lib/tcl8/site-tcl && \
+    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
+
+# docker
+ENV docker_source="https://github.com/cyanogilvie/tcl-docker-client/archive/v0.9.0.tar.gz"
+WORKDIR /src/docker
+RUN wget $docker_source -O - | tar xz --strip-components=1 && \
+	make install-tm && \
+    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
+
 # meta
 COPY tools/package_report /usr/local/bin/
 RUN chmod +x /usr/local/bin/package_report && /usr/local/bin/package_report
 # alpine-tcl-build >>>
+
+# alpine-tcl-gdb <<<
+FROM alpine-tcl-build as alpine-tcl-gdb
+RUN apk add --no-cache gdb
+# alpine-tcl-gdb >>>
 
 # alpine-tcl-build-stripped <<<
 FROM alpine-tcl-build as alpine-tcl-build-stripped

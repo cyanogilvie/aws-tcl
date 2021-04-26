@@ -100,13 +100,13 @@ Included Packages
 | pgwire | 3.0.0b2 | https://github.com/cyanogilvie/pgwire/archive/v3.0.0b2.tar.gz |
 | tdom | 0.8.3 | https://github.com/RubyLane/tdom/archive/d94dceb.tar.gz |
 | tls | 1.7.22 | https://core.tcl-lang.org/tcltls/tarball/tls-1-7-22/tcltls.tar.gz |
-| parse_args | 0.3.1 | https://github.com/RubyLane/parse_args/archive/aeeaf39.tar.gz |
+| parse_args | 0.3.2 | https://github.com/RubyLane/parse_args/archive/v0.3.2.tar.gz |
 | rl_json | 0.11.0 | https://github.com/RubyLane/rl_json/archive/c5a8033.tar.gz |
 | hash | 0.3 | https://github.com/cyanogilvie/hash/archive/79c2066.tar.gz |
 | unix_sockets | 0.2 | https://github.com/cyanogilvie/unix_sockets/archive/761daa5.tar.gz |
 | tcllib | 1.20 | https://core.tcl-lang.org/tcllib/uv/tcllib-1.20.tar.gz |
 | gc_class | 1.0 | https://github.com/RubyLane/gc_class/archive/f295f65.tar.gz |
-| rl_http | 1.6 | https://github.com/RubyLane/rl_http/archive/e38f67b.tar.gz |
+| rl_http | 1.8 | https://github.com/RubyLane/rl_http/archive/1.8.tar.gz |
 | sqlite3 | 3.35.4 | https://sqlite.org/2021/sqlite-autoconf-3350400.tar.gz |
 | tcc4tcl | 0.30.1 | https://github.com/cyanogilvie/tcc4tcl/archive/b8171e0.tar.gz |
 | cflib | 1.14.1 | https://github.com/cyanogilvie/cflib/archive/da5865b.tar.gz |
@@ -118,7 +118,7 @@ Included Packages
 | sockopt | 0.2 | https://github.com/cyanogilvie/sockopt/archive/c574d92.tar.gz |
 | crypto | 0.6 | https://github.com/cyanogilvie/crypto/archive/7a04540.tar.gz |
 | m2 | 0.43.13 | https://github.com/cyanogilvie/m2/archive/v0.43.13.tar.gz |
-| aws | 1.2 | https://github.com/cyanogilvie/aws-tcl |
+| aws | 2.0a1 | https://github.com/cyanogilvie/aws-tcl |
 | aws::s3 | 1.0 | https://github.com/cyanogilvie/aws-tcl |
 | aws::cognito_identity | 1.0 | https://github.com/cyanogilvie/aws-tcl |
 | aws::secretsmanager | 0.1 | https://github.com/cyanogilvie/aws-tcl |
@@ -128,7 +128,7 @@ Included Packages
 | tclreadline | 2.3.8 | https://github.com/cyanogilvie/tclreadline/archive/b25acfe.tar.gz |
 | Expect | 5.45.4 | https://core.tcl-lang.org/expect/tarball/f8e8464f14/expect.tar.gz |
 | tclsignal | 1.4.4.1 | https://github.com/cyanogilvie/tclsignal/archive/v1.4.4.1.tar.gz |
-| type | 0.1 | https://github.com/cyanogilvie/type/archive/9e185c2.tar.gz |
+| type | 0.2 | https://github.com/cyanogilvie/type/archive/v0.2.tar.gz |
 | inotify | 2.2 | https://github.com/cyanogilvie/inotify/archive/298f608.tar.gz |
 | Pixel | 3.5 | https://github.com/cyanogilvie/pixel/archive/2c70755.tar.gz |
 | Pixel_jpeg | 1.4 | https://github.com/cyanogilvie/pixel/archive/2c70755.tar.gz |
@@ -136,6 +136,9 @@ Included Packages
 | Pixel_svg_cairo | 0.3 | https://github.com/cyanogilvie/pixel/archive/2c70755.tar.gz |
 | Pixel_webp | 1.0 | https://github.com/cyanogilvie/pixel/archive/2c70755.tar.gz |
 | Pixel_imlib2 | 1.2.0 | https://github.com/cyanogilvie/pixel/archive/2c70755.tar.gz |
+| chantricks | 1.0.3 | https://github.com/cyanogilvie/chantricks/archive/v1.0.3.tar.gz |
+| openapi | 0.4.6 | https://github.com/cyanogilvie/tcl-openapi/archive/v0.4.6.tar.gz |
+| docker | 0.9.0 | https://github.com/cyanogilvie/tcl-docker-client/archive/v0.9.0.tar.gz |
 
 For Pixel_svg_cairo to be usable it needs librsvg, which isn't added by default because it more than doubles the image size.  To use it, derive a new image like so:
 

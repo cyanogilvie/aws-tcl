@@ -46,6 +46,9 @@ foreach p {
 	{Pixel_svg_cairo pixel_source}
 	{Pixel_webp pixel_source}
 	{Pixel_imlib2 pixel_source}
+	chantricks
+	openapi
+	docker
 } {
 	lassign $p package source ver
 	if {$source eq ""} {set source [string tolower $package]_source}

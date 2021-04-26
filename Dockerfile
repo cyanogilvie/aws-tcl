@@ -338,7 +338,7 @@ ENV botocore_source="https://github.com/boto/botocore/archive/refs/tags/1.20.57.
 WORKDIR /src/botocore
 COPY api/build.tcl /src/botocore
 RUN wget $botocore_source -O - | tar xz --strip-components=1 && \
-	tclsh build.tcl -definitions botocore/data -prefix /usr/local/lib && \
+	tclsh build.tcl -definitions botocore/data -prefix /usr/local/lib/tcl8/site-tcl && \
 	rm -rf /src/botocore/*
 
 # meta

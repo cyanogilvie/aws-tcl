@@ -116,7 +116,7 @@ RUN wget $gc_class_source -O - | tar xz --strip-components=1 && \
     cp gc_class*.tm /usr/local/lib/tcl8/site-tcl && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # rl_http
-ENV rl_http_source="https://github.com/RubyLane/rl_http/archive/1.8.tar.gz"
+ENV rl_http_source="https://github.com/RubyLane/rl_http/archive/1.9.tar.gz"
 WORKDIR /src/rl_http
 RUN wget $rl_http_source -O - | tar xz --strip-components=1 && \
     cp rl_http*.tm /usr/local/lib/tcl8/site-tcl && \
@@ -143,9 +143,6 @@ RUN wget $tcc4tcl_source -O - | tar xz --strip-components=1 && \
     make install && \
     apk del build-dependencies && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# aws-tcl
-COPY api/*.tm /usr/local/lib/tcl8/site-tcl/
-COPY api/aws1/*.tm /usr/local/lib/tcl8/site-tcl/aws1/
 
 # Codeforge packages and applications up to m2
 # tbuild - tip of master
@@ -320,7 +317,7 @@ RUN wget $chantricks_source -O - | tar xz --strip-components=1 && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 
 # openapi
-ENV openapi_source="https://github.com/cyanogilvie/tcl-openapi/archive/v0.4.6.tar.gz"
+ENV openapi_source="https://github.com/cyanogilvie/tcl-openapi/archive/v0.4.11.tar.gz"
 WORKDIR /src/openapi
 RUN wget $openapi_source -O - | tar xz --strip-components=1 && \
 	cp *.tm /usr/local/lib/tcl8/site-tcl && \
@@ -330,20 +327,25 @@ RUN wget $openapi_source -O - | tar xz --strip-components=1 && \
 ENV docker_source="https://github.com/cyanogilvie/tcl-docker-client/archive/v0.9.0.tar.gz"
 WORKDIR /src/docker
 RUN wget $docker_source -O - | tar xz --strip-components=1 && \
-	make install-tm && \
+	make TM_MODE=-ziplet install-tm && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 
-# aws api v2, generated from the botocore repo json files
+# aws api, generated from the botocore repo json files
 ENV botocore_source="https://github.com/boto/botocore/archive/refs/tags/1.20.57.tar.gz"
 WORKDIR /src/botocore
+RUN wget $botocore_source -O - | tar xz --strip-components=1
 COPY api/build.tcl /src/botocore
-RUN wget $botocore_source -O - | tar xz --strip-components=1 && \
-	tclsh build.tcl -definitions botocore/data -prefix /usr/local/lib/tcl8/site-tcl && \
+COPY api/*.tm /usr/local/lib/tcl8/site-tcl/
+COPY api/aws1/*.tm /usr/local/lib/tcl8/site-tcl/aws1/
+RUN tclsh build.tcl -definitions botocore/data -prefix /usr/local/lib/tcl8/site-tcl && \
 	rm -rf /src/botocore/*
 
+# misc local bits
+COPY tcl/tm /usr/local/lib/tcl8/site-tcl
+COPY tools/* /usr/local/bin/
+
 # meta
-COPY tools/package_report /usr/local/bin/
-RUN chmod +x /usr/local/bin/package_report && /usr/local/bin/package_report
+RUN /usr/local/bin/package_report
 # alpine-tcl-build >>>
 
 # alpine-tcl-gdb <<<

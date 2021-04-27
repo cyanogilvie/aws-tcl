@@ -7,6 +7,7 @@ package require uri
 package require parse_args
 package require tdom
 package require rl_json
+package require chantricks
 
 namespace eval aws {
 	namespace export *
@@ -14,20 +15,50 @@ namespace eval aws {
 	namespace path {
 		::parse_args
 		::rl_json
+		::chantricks
 	}
+
+	variable debug			false
+
+	variable default_region	[if {
+		[info exists ::env(HOME)] &&
+		[file readable [file join $::env(HOME) .aws/config]]
+	} {
+		package require inifile
+		set ini	[::ini::open [file join $::env(HOME) .aws/config]]
+		try {
+			::ini::value $ini default region
+		} finally {
+			::ini::close $ini
+			unset -nocomplain ini
+		}
+	} else {
+		return -level 0 us-east-1
+	}]
 
 	variable maxrate		50		;# Hz
 	variable ratelimit		50
 	variable last_slowdown	0
 
-	# Helpers <<<
-	proc readfile fn { #<<<
-		set h	[open $fn r]
-		try {read $h} finally {close $h}
+	variable cache {}
+	variable creds
+
+	proc _cache {cachekey script} { #<<<
+		variable cache
+		if {![dict exists $cache $cachekey]} {
+			dict set cache $cachekey [uplevel 1 $script]
+		}
+
+		dict get $cache $cachekey
 	}
 
 	#>>>
-	# Helpers >>>
+	proc _debug script { #<<<
+		variable debug
+		if {$debug} {uplevel 1 $script}
+	}
+
+	#>>>
 
 	# Ensure that $script is run no more often than $hz / sec
 	proc ratelimit {hz script} { #<<<
@@ -53,15 +84,26 @@ namespace eval aws {
 
 	#>>>
 	proc log {lvl msg {template {}}} { #<<<
-		if {$template ne ""} {
-			set doc	[uplevel 1 [list json template $template]]
-		} else {
-			set doc {{}}
-		}
-		json set doc lvl [json new string $lvl]
-		json set doc msg [json new string $msg]
+		switch -exact -- [identify] {
+			Lambda {
+				if {$template ne ""} {
+					set doc	[uplevel 1 [list json template $template]]
+				} else {
+					set doc {{}}
+				}
+				json set doc lvl [json new string $lvl]
+				json set doc msg [json new string $msg]
 
-		puts stderr $doc
+				puts stderr $doc
+			}
+
+			default {
+				if {$template ne ""} {
+					append msg " " [json pretty [uplevel 1 [list json template $template]]]
+				}
+				puts stderr $msg
+			}
+		}
 	}
 
 	#>>>
@@ -85,9 +127,6 @@ namespace eval aws {
 
 		parse_args::parse_args $args {
 			-variant			{-enum {v2 s3} -default v2}
-			-aws_id				{}
-			-aws_key			{}
-			-aws_token			{}
 			-method				{-required}
 			-service			{-required}
 			-path				{-required}
@@ -104,27 +143,10 @@ namespace eval aws {
 			-out_sts			{-alias}
 		}
 
-		if {![info exists aws_id]} {
-			if {[info exists env(AWS_ACCESS_KEY_ID)]} {
-				set aws_id		$env(AWS_ACCESS_KEY_ID)
-			} else {
-				set aws_id		[json get [role_creds] AccessKeyId]
-			}
-		}
-		if {![info exists aws_key]} {
-			if {[info exists env(AWS_SECRET_ACCESS_KEY)]} {
-				set aws_key		$env(AWS_SECRET_ACCESS_KEY)
-			} else {
-				set aws_key		[json get [role_creds] SecretAccessKey]
-			}
-		}
-		if {![info exists aws_token]} {
-			if {[info exists env(AWS_SESSION_TOKEN)]} {
-				set aws_token	$env(AWS_SESSION_TOKEN)
-			} else {
-				set aws_token	[json get [role_creds] Token]
-			}
-		}
+		set creds		[get_creds]
+		set aws_id		[dict get $creds access_key]
+		set aws_key		[dict get $creds secret]
+		set aws_token	[dict get $creds token]
 
 		#if {$sig_service eq ""} {set sig_service $service}
 		set method			[string toupper $method]
@@ -227,9 +249,6 @@ namespace eval aws {
 
 		parse_args::parse_args $args {
 			-variant			{-enum {v4 s3v4} -default v4}
-			-aws_id				{}
-			-aws_key			{}
-			-aws_token			{-default {}}
 			-method				{-required}
 			-endpoint			{-required}
 			-sig_service		{-default {}}
@@ -253,27 +272,10 @@ namespace eval aws {
 			-out_sreq			{-alias -# {internal - used for test suite}}
 		}
 
-		if {![info exists aws_id]} {
-			if {[info exists env(AWS_ACCESS_KEY_ID)]} {
-				set aws_id		$env(AWS_ACCESS_KEY_ID)
-			} else {
-				set aws_id		[json get [role_creds] AccessKeyId]
-			}
-		}
-		if {![info exists aws_key]} {
-			if {[info exists env(AWS_SECRET_ACCESS_KEY)]} {
-				set aws_key		$env(AWS_SECRET_ACCESS_KEY)
-			} else {
-				set aws_key		[json get [role_creds] SecretAccessKey]
-			}
-		}
-		if {$aws_token eq ""} {
-			if {[info exists env(AWS_SESSION_TOKEN)]} {
-				set aws_token	$env(AWS_SESSION_TOKEN)
-			} else {
-				set aws_token	[json get [role_creds] Token]
-			}
-		}
+		set creds		[get_creds]
+		set aws_id		[dict get $creds access_key]
+		set aws_key		[dict get $creds secret]
+		set aws_token	[dict get $creds token]
 
 		if {$sig_service eq ""} {
 			set sig_service	$service
@@ -436,7 +438,7 @@ namespace eval aws {
 
 		set canonical_request	"[string toupper $method]\n$canonical_uri\n$canonical_query_string\n$canonical_headers\n$signed_headers\n$hashed_payload"
 		#log debug "canonical request" {{"creq": "~S:canonical_request"}}
-		puts stderr "canonical request:\n$canonical_request"
+		#puts stderr "canonical request:\n$canonical_request"
 		set hashed_canonical_request	[hash $algorithm $canonical_request]
 		set out_creq	$canonical_request
 		# Task1: Compile canonical request >>>
@@ -445,14 +447,14 @@ namespace eval aws {
 		set string_to_sign	[encoding convertto utf-8 $algorithm]\n[amz-datetime $date]\n[encoding convertto utf-8 $fq_credential_scope]\n$hashed_canonical_request
 		set out_sts		$string_to_sign
 		#log notice "sts:\n$out_sts"
-		puts stderr "sts:\n$out_sts"
+		#puts stderr "sts:\n$out_sts"
 		# Task2: Create String to Sign >>>
 
 		# Task3: Calculate signature <<<
 		package require hmac
 		set signing_key	[sigv4_signing_key -aws_key $aws_key -date $date -region $region -service $sig_service]
 		set signature	[binary encode hex [hmac::HMAC_SHA256 $signing_key [encoding convertto utf-8 $string_to_sign]]]
-		puts stderr "sig:\n$signature"
+		#puts stderr "sig:\n$signature"
 		# Task3: Calculate signature >>>
 
 
@@ -602,6 +604,21 @@ namespace eval aws {
 			}
 		}
 
+		_debug {
+			log debug "AWS req" {
+				{
+					"scheme":			"~S:scheme",
+					"method":			"~S:method",
+					"endpoint":			"~S:endpoint",
+					"path":				"~S:path",
+					"sig_version":		"~S:version",
+					"signed_url":		"~S:signed_url",
+					"signed_headers":	"~S:signed_headers",
+					"string_to_sign":	"~S:string_to_sign"
+				}
+			}
+		}
+
 		if 0 {
 		set bodysize	[string length $body]
 		log notice "Making AWS request" {
@@ -615,7 +632,7 @@ namespace eval aws {
 			}
 		}
 		}
-		puts stderr "rl_http $method $signed_url -headers [list $signed_headers] -data [list $body]"
+		#puts stderr "rl_http $method $signed_url -headers [list $signed_headers] -data [list $body]"
 		package require chantricks
 		rl_http instvar h $method $signed_url \
 			-timeout   20 \
@@ -623,27 +640,27 @@ namespace eval aws {
 			-headers   $signed_headers \
 			-tapchan	[list ::chantricks::tapchan [list apply {
 				{name chan op args} {
-					set ts		[clock microseconds]
-					set s		[expr {$ts / 1000000}]
-					set tail	[string trimleft [format %.6f [expr {($ts % 1000000) / 1e6}]] 0]
-					set ts_str	[clock format $s -format "%Y-%m-%dT%H:%M:%S${tail}Z" -timezone :UTC]
-					switch -exact -- $op {
-						read - write {
-							lassign $args bytes
-							puts stderr "$ts_str $op $name [binary encode hex $bytes]"
-						}
-						initialize - finalize - drain - flush {
-							puts stderr "$ts_str $op $name"
-						}
-						default {
-							puts stderr "$ts_str $op $name (unexpected)"
+					::aws::_debug {
+						set ts		[clock microseconds]
+						set s		[expr {$ts / 1000000}]
+						set tail	[string trimleft [format %.6f [expr {($ts % 1000000) / 1e6}]] 0]
+						set ts_str	[clock format $s -format "%Y-%m-%dT%H:%M:%S${tail}Z" -timezone :UTC]
+						switch -exact -- $op {
+							read - write {
+								lassign $args bytes
+								puts stderr "$ts_str $op $name [binary encode hex $bytes]"
+							}
+							initialize - finalize - drain - flush {
+								puts stderr "$ts_str $op $name"
+							}
+							default {
+								puts stderr "$ts_str $op $name (unexpected)"
+							}
 						}
 					}
 				}
 			}] rl_http_$signed_url] \
 			-data      $body
-		if 0 {
-		}
 
 		#puts stderr "rl_http $method $signed_url, headers: ($signed_headers), data: ($body)"
 		#puts stderr "got [$h code] headers: ([$h headers])\n[$h body]"
@@ -724,45 +741,46 @@ namespace eval aws {
 
 	#>>>
 	proc identify {} { # Attempt to identify the AWS platform: EC2, Lambda, ECS, or none - not on AWS <<<
-		global env
+		_cache identify {
+			global env
 
-		if {
-			[file readable /sys/devices/virtual/dmi/id/sys_vendor] &&
-			[readfile /sys/devices/virtual/dmi/id/sys_vendor] eq "Amazon EC2"
-		} {
-			return EC2
-		}
+			if {
+				[file readable /sys/devices/virtual/dmi/id/sys_vendor] &&
+				[string trim [readfile /sys/devices/virtual/dmi/id/sys_vendor]] eq "Amazon EC2"
+			} {
+				return EC2
+			}
 
-		if {[info exists env(LAMBDA_TASK_ROOT)]} {
-			return Lambda
-		}
+			if {[info exists env(LAMBDA_TASK_ROOT)]} {
+				return Lambda
+			}
 
-		if {
-			[info exists env(AWS_EXECUTION_ENV)]
-		} {
-			switch -exact -- $env(AWS_EXECUTION_ENV) {
-				AWS_ECS_EC2 -
-				AWS_ECS_FARGATE {
-					return ECS
+			if {
+				[info exists env(AWS_EXECUTION_ENV)]
+			} {
+				switch -exact -- $env(AWS_EXECUTION_ENV) {
+					AWS_ECS_EC2 -
+					AWS_ECS_FARGATE {
+						return ECS
+					}
 				}
 			}
-		}
 
-		if {
-			[info exists env(ECS_CONTAINER_METADATA_URI_V4)] ||
-			[info exists env(ECS_CONTAINER_METADATA_URI)]
-		} {
-			return ECS
-		}
+			if {
+				[info exists env(ECS_CONTAINER_METADATA_URI_V4)] ||
+				[info exists env(ECS_CONTAINER_METADATA_URI)]
+			} {
+				return ECS
+			}
 
-		return none
+			return none
+		}
 	}
 
 	#>>>
-	variable cache {}
 
 	proc _metadata_req url { #<<<
-		rl_http instvar h GET $url -stats_cx AWS
+		rl_http instvar h GET $url -stats_cx AWS -timeout 1
 		if {[$h code] != 200} {
 			throw [list AWS [$h code]] [$h body]
 		}
@@ -796,17 +814,96 @@ namespace eval aws {
 
 	#>>>
 	proc instance_identity {} { #<<<
-		variable cache
-		if {![dict exists $cache instance_identity]} {
-			dict set cache instance_identity [_metadata dynamic/instance-identity/document]
+		_cache instance_identity {
+			_metadata dynamic/instance-identity/document
 		}
-		dict get $cache instance_identity
 	}
 
 	#>>>
-	proc role_creds {} { #<<<
+	proc get_creds {} { #<<<
+		global env
+		variable creds
+
+		if {
+			[info exists creds] &&
+			[dict exists $creds expires] &&
+			[dict get $creds expires] - [clock seconds] < 60
+		} {
+			unset creds
+		}
+
+		if {![info exists creds]} { # Attempt to find some credentials laying around
+			# Environment variables <<<
+			if {
+				[info exists env(AWS_ACCESS_KEY_ID)] &&
+				[info exists env(AWS_SECRET_ACCESS_KEY)]
+			} {
+				dict set creds access_key		$env(AWS_ACCESS_KEY_ID)
+				dict set creds secret			$env(AWS_SECRET_ACCESS_KEY)
+				if {[info exists env(AWS_SESSION_TOKEN)]} {
+					dict set creds token		$env(AWS_SESSION_TOKEN)
+				}
+				dict set creds source			env
+				_debug {log debug "Found credentials: env"}
+				return $creds
+			}
+
+			# Environment variables >>>
+			# User creds: ~/.aws/credentials <<<
+			set credfile	[file join $::env(HOME) .aws/credentials]
+			if {[file readable $credfile]} {
+				package require inifile
+				set ini	[::ini::open $credfile]
+				try {
+					dict set creds access_key	[::ini::value $ini default aws_access_key_id]
+					dict set creds secret		[::ini::value $ini default aws_secret_access_key]
+					dict set creds token		""
+					dict set creds source		user
+					_debug {log debug "Found credentials: user"}
+				} on ok {} {
+					return $creds
+				} finally {
+					::ini::close $ini
+				}
+			}
+
+			# User creds: ~/.aws/credentials >>>
+			# Instance role creds <<<
+			try {
+				instance_role_creds
+			} on ok role_creds {
+				dict set creds access_key		[json get $role_creds AccessKeyId]
+				dict set creds secret			[json get $role_creds SecretAccessKey]
+				dict set creds token			[json get $role_creds Token]
+				dict set creds expires			[json get $role_creds expires_sec]
+				dict set creds source			instance_role
+				_debug {log debug "Found credentials: instance_role"}
+				return $creds
+			} on error {} {}
+			# Instance role creds >>>
+
+			throw {AWS NO_CREDENTIALS} "No credentials were supplied could be found"
+		}
+
+		set creds
+	}
+
+	#>>>
+	proc set_creds args { #<<<
+		variable creds
+
+		parse_args $args {
+			-access_key		{-required}
+			-secret			{-required}
+			-token			{-default {}}
+		} creds
+	}
+
+	#>>>
+	proc instance_role_creds {} { #<<<
 		global env
 		variable cached_role_creds
+
 		if {
 			![info exists cached_role_creds] ||
 			[json get $cached_role_creds expires_sec] - [clock seconds] < 60
@@ -957,8 +1054,6 @@ namespace eval aws {
 				"{dnsSuffix}"	$dnsSuffix \
 			] [dict get $defaults hostname]]
 
-			puts stderr "defaults: $defaults"
-			puts stderr "region overrides ($mregion): $region_overrides"
 			if {[dict exists $defaults sslCommonName]} {
 				set sslCommonName	[string map [list \
 					"{service}"		$endpointPrefix \
@@ -997,7 +1092,7 @@ namespace eval aws {
 			-p			{-default / -name path}
 			-q			{-default {} -name query_map}
 			-R			{-default {} -name response}
-			-r			{-default us-east-1 -name region}
+			-r			{-default {} -name region}
 			-sm			{-default {} -name status_map}
 			-s			{-required -name signingName}
 			-t			{-default {} -name template}
@@ -1006,6 +1101,34 @@ namespace eval aws {
 			-x			{-default {} -name xml_input}
 		}
 
+		if {$region eq ""} {
+			set region	$::aws::default_region
+		}
+
+		_debug {
+			if {$template ne ""} {set template_js $template}
+			log debug "AWS _service_req" {
+				{
+					"payload":			"~S:payload",
+					"content_type":		"~S:content_type",
+					"expected_status":	"~N:expected_status",
+					"headers":			"~S:headers",
+					"header_map":		"~S:header_map",
+					"path":				"~S:path",
+					"query_map":		"~S:query_map",
+					"response":			"~S:response",
+					"region":			"~S:region",
+					"status_map":		"~S:status_map",
+					"signingName":		"~S:signingName",
+					"template":			"~J:template_js",
+					"uri_map":			"~S:uri_map",
+					"resultWrapper":	"~S:resultWrapper",
+					"xml_input":		"~S:xml_input"
+				}
+			}
+		}
+
+
 		uplevel 1 {unset args}
 		#set upvars	[lmap v [uplevel 1 {info vars}] {if {$v in {ei args}} continue else {set v}}]
 		set upvars	[uplevel 1 {info vars}]
@@ -1013,13 +1136,14 @@ namespace eval aws {
 		set service_ns	[uplevel 1 {
 			variable ei
 			variable protocol
+			variable apiVersion
 			namespace current
 		}]
 
 		upvar 1 ei ei  protocol protocol  {*}[concat {*}[lmap uv $upvars {list $uv _a_$uv}]]
 
 		set endpoint_info	[{*}$ei $region]
-		puts stderr "endpoint_info:\n\t[join [lmap {k v} $endpoint_info {format {%20s: %s} $k $v}] \n\t]"
+		#puts stderr "endpoint_info:\n\t[join [lmap {k v} $endpoint_info {format {%20s: %s} $k $v}] \n\t]"
 		set uri_map_out	{}
 		foreach {pat arg} $uri_map {
 			lappend uri_map_out	"{$pat}" [if {[info exists _a_$arg]} {
@@ -1046,7 +1170,12 @@ namespace eval aws {
 				lappend query $name [set _a_$arg]
 			}
 		}
-		puts stderr "queue_map ($query_map), query: ($query)"
+		#puts stderr "query_map ($query_map), query: ($query)"
+
+		if {$protocol eq "query" && [info exists ${service_ns}::apiVersion]} {
+			# Inject the Version param
+			lappend query Version [set ${service_ns}::apiVersion]
+		}
 
 		if {$content_type eq "application/x-www-form-urlencoded; charset=utf-8"} {
 			set body	[join [lmap {k v} $query {
@@ -1091,7 +1220,7 @@ namespace eval aws {
 		}
 
 		try {
-			puts stderr "Requesting $method $hostname, path: ($path)($uri_map_out) -> ([string map $uri_map_out $path]), query: ($query), headers: ($headers), body:\n$body"
+			#puts stderr "Requesting $method $hostname, path: ($path)($uri_map_out) -> ([string map $uri_map_out $path]), query: ($query), headers: ($headers), body:\n$body"
 			aws req $method $hostname [string map $uri_map_out $path] \
 				-params				$query \
 				-sig_service		$signingName \
@@ -1138,25 +1267,38 @@ namespace eval aws {
 					set _a_$var [lindex [dict get $response_headers $header] 0]
 				}
 			}
-			if {$protocol in {query rest-xml} && $body ne ""} {
-				# TODO: check content-type xml?
-				package require tdom
-				# Strip the xmlns
-				set doc [dom parse $body]
-				puts stderr "converting XML response with (>$resultWrapper< [dict get [set ${service_ns}::responses] $response]):\n[$doc asXML]"
-				try {
-					set root	[$doc documentElement]
-					$root removeAttribute xmlns
-					set body	[$root asXML]
-				} finally {
-					$doc delete
-				}
+			try {
+				if {$protocol in {query rest-xml} && $body ne ""} {
+					# TODO: check content-type xml?
+					package require tdom
+					# Strip the xmlns
+					set doc [dom parse $body]
+					#puts stderr "converting XML response with (>$resultWrapper< [dict get [set ${service_ns}::responses] $response]):\n[$doc asXML]"
+					try {
+						set root	[$doc documentElement]
+						$root removeAttribute xmlns
+						set body	[$root asXML]
+					} finally {
+						$doc delete
+					}
 
-				if {![dict exists [set ${service_ns}::responses] $response]} {
-					error "No response handler defined for ($response):\n\t[join [lmap {k v} [set ${service_ns}::responses] {format {%20s: %s} $k $v}] \n\t]"
+					if {![dict exists [set ${service_ns}::responses] $response]} {
+						error "No response handler defined for ($response):\n\t[join [lmap {k v} [set ${service_ns}::responses] {format {%20s: %s} $k $v}] \n\t]"
+					}
+					_resp_xml $resultWrapper {*}[dict get [set ${service_ns}::responses] $response] $body
+				} else {
+					set body
 				}
-				_resp_xml $resultWrapper {*}[dict get [set ${service_ns}::responses] $response] $body
-			} else {
+			} on ok body {
+				if {
+					[info exists ::tcl_interactive] &&
+					$::tcl_interactive
+				} {
+					# Pretty print the json response if we're run interactively
+					catch {
+						set body	[json pretty $body]
+					}
+				}
 				set body
 			}
 		}
@@ -1192,7 +1334,7 @@ namespace eval aws {
 
 	#>>>
 	proc _xml_add_input_nodes {node steps data} { #<<<
-		puts "_xml_add_input_nodes steps: ($steps), data: [json pretty $data]"
+		#puts "_xml_add_input_nodes steps: ($steps), data: [json pretty $data]"
 		foreach step $steps {
 			lassign $step elem children
 
@@ -1354,7 +1496,7 @@ namespace eval aws {
 		set bytes	[try {read $h} finally {close $h}]
 		set eof		[string first \u1A $bytes]
 		set reconstructed [string map [list \
-			%p		" args \{parse_args \$args \{-region \{-default us-east-1\} -requestid -alias " \
+			%p		" args \{parse_args \$args \{-region \{-default {}\} -requestid -alias " \
 			%r		";_service_req -r \$region " \
 			{*}$custom_maps \
 		] [encoding convertfrom utf-8 [zlib gunzip [string range $bytes $eof+1 end]]]]
@@ -1366,4 +1508,3 @@ namespace eval aws {
 }
 
 # vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4
-

@@ -778,6 +778,12 @@ proc build_aws_services args { #<<<
 		if {[dict size $responses] > 0} {
 			append service_code "variable responses {\n[join [lmap {k v} $responses {format "%s\t%s" [list $k] [list $v]}] \n]\n}" \n
 		}
+		if {
+			[json get $service_def metadata protocol] eq "query" &&
+			[json exists $service_def metadata apiVersion]
+		} {
+			append service_code "variable apiVersion [list [json get $service_def metadata apiVersion]]" \n
+		}
 
 		set service_code "namespace eval [list ::aws::[json get $service_def metadata service_name]] {$service_code}"
 		#variable ::aws::[json get $service_def metadata service_name]::def $service_def
@@ -812,18 +818,6 @@ build_aws_services {*}$argv
 
 if 1 return
 
-set credfile	[file join $::env(HOME) .aws/credentials]
-if {[file readable $credfile]} {
-	package require inifile
-	set ini	[::ini::open $credfile]
-	try {
-		set ::env(AWS_ACCESS_KEY_ID)		[::ini::value $ini default aws_access_key_id]
-		set ::env(AWS_SECRET_ACCESS_KEY)	[::ini::value $ini default aws_secret_access_key]
-		set ::env(AWS_SESSION_TOKEN)		""
-	} finally {
-		::ini::close $ini
-	}
-}
 
 set test_services	{}
 #lappend test_services lambda

@@ -31,26 +31,27 @@ namespace eval ::tclreadline::complete {
 				set exportpats	[namespace eval $ns {namespace export}]
 				if {[llength $subcommands] == 0} {
 					# If both -subcommands and -map are empty, populate map with the exported commands
-					set nscmds		[lmap cmd [info commands ${ns}::*] {
+					set nscmds		[lmap e [info commands ${ns}::*] {
+						set e	[namespace tail $e]
 						set matched	0
 						foreach pat $exportpats {
-							if {[string match $pat [namespace tail $cmd]]} {
+							if {[string match $pat $e]} {
 								set matched	1
 								break
 							}
 						}
 						if {!$matched} continue
-						set cmd
+						set e
 					}]
 					foreach subcmd $nscmds {
-						dict set map $subcmd $subcmd
+						dict set map $subcmd ${ns}::$subcmd
 					}
 				}
 				#puts stderr "ensemble completer got:\n\t[join [lmap v {cmd text start end line pos mod cfg} {format {%5s: (%s)} $v [set $v]}] \n\t]"
 				#puts stderr "map:\n\t[join [lmap {k v} $map {format "%20s -> %-30s %d" [list $k] [list $v] [namespace ensemble exists $v]}] \n\t]"
-				for {set i 0} {$i < [Llength $prefline]} {incr i} {
-					#puts stderr "word $i: ([Lindex $prefline $i])"
-				}
+				#for {set i 0} {$i < [Llength $prefline]} {incr i} {
+				#	puts stderr "word $i: ([Lindex $prefline $i])"
+				#}
 
 				#puts stderr "ptr: ($ptr), pos: ($pos)"
 				if {$ptr < $pos} {
@@ -87,7 +88,7 @@ namespace eval ::tclreadline::complete {
 				set parseargs_input	{}
 				while {$ptr <= $pos && [llength $args_remaining]} {
 					set args_remaining	[lassign $args_remaining argname]
-					if {$argname eq "args"} {
+					if {[lindex $argname 0] eq "args"} {
 						while {$ptr < $pos} {
 							lappend parseargs_input	[Lindex $prefline $ptr]
 							incr ptr
@@ -98,9 +99,13 @@ namespace eval ::tclreadline::complete {
 					#puts stderr "Assigned arg [list [lindex $argname] 0] := [list [Lindex $prefline $ptr]]"
 					incr ptr
 				}
-				if {$argname ne "args"} {
+				if {[lindex $argname 0] ne "args"} {
 					#puts stderr "Not in args"
-					return ""
+					if {[llength $argname] == 1} {
+						return [DisplayHints <$argname>]
+					} else {
+						return [DisplayHints ?$argname?]
+					}
 				}
 				#puts stderr "Would complete ($text) for parse_args spec, with ($parseargs_input) input"
 				# TODO: parse $body with parsetcl and find parse_args argspec, then feed the $parseargs_input into an assigner that consumes it to match the parse_args argspec, and then present choices for the context word that is being completed (either an option, or a value for an option)

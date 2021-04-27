@@ -532,7 +532,7 @@ proc build_aws_services args { #<<<
 			error "Couldn't read definition of $service_dir/$latest"
 		}
 		set service_def		[readfile $service_fn]
-		set service_name	[lindex [file split $service_dir] 0]
+		set service_name	[string map {- _} [lindex [file split $service_dir] 0]]
 
 		if {[llength $services] > 0 && $service_name ni $services} continue
 

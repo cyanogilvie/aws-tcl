@@ -51,14 +51,6 @@ RUN wget $pgwire_source -O - | tar xz --strip-components=1 && \
     cp -a tm/* /usr/local/lib/tcl8/site-tcl && \
     make clean && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# tdom - tip of master
-ENV tdom_source="https://github.com/RubyLane/tdom/archive/d94dceb.tar.gz"
-WORKDIR /src/tdom
-RUN wget $tdom_source -O - | tar xz --strip-components=1 && \
-    autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
-    make -j 8 all && \
-    make install-binaries install-libraries clean && \
-    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # tcltls
 ENV tcltls_source="https://core.tcl-lang.org/tcltls/tarball/tls-1-7-22/tcltls.tar.gz"
 WORKDIR /src/tcltls
@@ -329,6 +321,36 @@ WORKDIR /src/docker
 RUN wget $docker_source -O - | tar xz --strip-components=1 && \
 	make TM_MODE=-ziplet install-tm && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
+
+# gumbo (not a tcl package, needed for tdom)
+ENV gumbo_source="https://github.com/google/gumbo-parser/archive/v0.10.1.tar.gz"
+WORKDIR /src/gumbo
+RUN wget $gumbo_source -O - | tar xz --strip-components=1 && \
+	apk add --no-cache libtool && \
+	./autogen.sh && \
+	./configure CFLAGS="${CFLAGS}" --enable-static=no && \
+	make -j 8 all && \
+	make install && \
+	make clean && \
+    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
+
+# tdom - fork with RL changes and extra stubs exports and misc
+ENV tdom_source="https://github.com/RubyLane/tdom/archive/cyan-0.9.3.1.tar.gz"
+WORKDIR /src/tdom
+RUN wget $tdom_source -O - | tar xz --strip-components=1 && \
+    autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols --enable-html5 && \
+    make -j 8 all && \
+    make install-binaries install-libraries clean && \
+    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
+
+# parsetcl - tip of master
+ENV parsetcl_source="https://github.com/cyanogilvie/parsetcl/archive/030a1439b76747ec7a016c5bd0ae78c93fc9bb7b.tar.gz"
+WORKDIR /src/parsetcl
+RUN wget $parsetcl_source -O - | tar xz --strip-components=1 && \
+	ln -s /src/tclconfig && \
+	autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
+	make install-binaries install-libraries clean && \
+	find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 
 # aws api, generated from the botocore repo json files
 ENV botocore_source="https://github.com/boto/botocore/archive/refs/tags/1.20.57.tar.gz"

@@ -531,14 +531,16 @@ proc build_aws_services args { #<<<
 		if {![file exists $service_fn]} {
 			error "Couldn't read definition of $service_dir/$latest"
 		}
-		set service_def		[readfile $service_fn]
-		set service_name	[string map {- _} [lindex [file split $service_dir] 0]]
+		set service_def			[readfile $service_fn]
+		set service_name_orig	[lindex [file split $service_dir] 0]
+		set service_name		[string map {- _} $service_name_orig]
 
 		if {[llength $services] > 0 && $service_name ni $services} continue
 
 		#puts "dir $service_dir endpointprefix: [json get $service_def metadata endpointPrefix], exists: [json exists $partition services [json get $service_def metadata endpointPrefix]], protocol: [json get $service_def metadata protocol]"
 		set metadata	[json extract $service_def metadata]
-		json set service_def metadata service_name	[json string $service_name]
+		json set service_def metadata service_name		[json string $service_name]
+		json set service_def metadata service_name_orig	[json string $service_name_orig]
 		dict lappend by_protocol [json get $service_def metadata protocol] $service_def
 	}
 
@@ -691,7 +693,7 @@ proc build_aws_services args { #<<<
 				if {[json exists $def metadata signingName]} {
 					set s	[json get $def metadata signingName]
 				} else {
-					set s	[json get $def metadata service_name]	;# TODO: this is a guess
+					set s	[json get $def metadata service_name_orig]
 				}
 
 				if {$protocol eq "json" && [json exists $def metadata targetPrefix]} {

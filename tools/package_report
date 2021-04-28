@@ -50,6 +50,7 @@ set packages {
 	{aws1::secretsmanager https://github.com/cyanogilvie/aws-tcl}
 	{aws1::ecr https://github.com/cyanogilvie/aws-tcl}
 	{aws https://github.com/cyanogilvie/aws-tcl}
+	parsetcl
 } 
 
 foreach p $packages {

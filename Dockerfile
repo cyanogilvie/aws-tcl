@@ -215,9 +215,9 @@ COPY m2/m2_keys /usr/local/bin/
 COPY m2/m2_admin_console /usr/local/bin/
 # tools
 
-# tclreadline - tip of master
+# tclreadline
 WORKDIR /src/tclreadline
-ENV tclreadline_source="https://github.com/cyanogilvie/tclreadline/archive/b25acfe.tar.gz"
+ENV tclreadline_source="https://github.com/cyanogilvie/tclreadline/archive/v2.3.8.1.tar.gz"
 RUN apk add --no-cache readline && \
 	apk add --no-cache --virtual build-dependencies readline-dev && \
 	wget $tclreadline_source -O - | tar xz --strip-components=1 && \
@@ -343,6 +343,14 @@ RUN wget $tdom_source -O - | tar xz --strip-components=1 && \
     make install-binaries install-libraries clean && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 
+# tty
+ENV tty_source="https://github.com/cyanogilvie/tcl-tty/archive/v0.4.tar.gz"
+WORKDIR /src/tty
+RUN apk add --no-cache ncurses && \
+	wget $tty_source -O - | tar xz --strip-components=1 && \
+	make install-tm && \
+    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
+
 # parsetcl - tip of master
 ENV parsetcl_source="https://github.com/cyanogilvie/parsetcl/archive/030a1439b76747ec7a016c5bd0ae78c93fc9bb7b.tar.gz"
 WORKDIR /src/parsetcl
@@ -382,7 +390,7 @@ RUN find /usr -name "*.so" -exec strip {} \;
 
 # alpine-tcl <<<
 FROM alpine:3.13.4 AS alpine-tcl
-RUN apk add --no-cache musl-dev readline libjpeg-turbo libexif libpng libwebp && \
+RUN apk add --no-cache musl-dev readline libjpeg-turbo libexif libpng libwebp ncurses && \
 	rm /usr/lib/libc.a
 # Need to fix glibc-ism for tcc4tcl to work
 RUN sed --in-place -e 's/^typedef __builtin_va_list \(.*\)/#if defined(__GNUC__) \&\& __GNUC__ >= 3\ntypedef __builtin_va_list \1\n#else\ntypedef char* \1\n#endif/g' /usr/include/bits/alltypes.h
@@ -395,7 +403,7 @@ ENTRYPOINT ["tclsh"]
 
 # alpine-tcl-stripped <<<
 FROM alpine:3.13.4 AS alpine-tcl-stripped
-RUN apk add --no-cache musl-dev readline libjpeg-turbo libexif libpng libwebp && \
+RUN apk add --no-cache musl-dev readline libjpeg-turbo libexif libpng libwebp ncurses && \
 	rm /usr/lib/libc.a
 # Need to fix glibc-ism for tcc4tcl to work
 RUN sed --in-place -e 's/^typedef __builtin_va_list \(.*\)/#if defined(__GNUC__) \&\& __GNUC__ >= 3\ntypedef __builtin_va_list \1\n#else\ntypedef char* \1\n#endif/g' /usr/include/bits/alltypes.h

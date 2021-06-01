@@ -158,7 +158,7 @@ Included Packages
 | m2 | 0.43.13 | https://github.com/cyanogilvie/m2/archive/v0.43.13.tar.gz |
 | urlencode | 1.0 | https://github.com/cyanogilvie/aws-tcl |
 | hmac | 0.1 | https://github.com/cyanogilvie/aws-tcl |
-| tclreadline | 2.3.8 | https://github.com/cyanogilvie/tclreadline/archive/b25acfe.tar.gz |
+| tclreadline | 2.3.8.1 | https://github.com/cyanogilvie/tclreadline/archive/v2.3.8.1.tar.gz |
 | Expect | 5.45.4 | https://core.tcl-lang.org/expect/tarball/f8e8464f14/expect.tar.gz |
 | tclsignal | 1.4.4.1 | https://github.com/cyanogilvie/tclsignal/archive/v1.4.4.1.tar.gz |
 | type | 0.2 | https://github.com/cyanogilvie/type/archive/v0.2.tar.gz |
@@ -179,6 +179,7 @@ Included Packages
 | aws1::ecr | 1.0 | https://github.com/cyanogilvie/aws-tcl |
 | aws | 2.0a2 | https://github.com/cyanogilvie/aws-tcl |
 | parsetcl | 0.1 | https://github.com/cyanogilvie/parsetcl/archive/030a1439b76747ec7a016c5bd0ae78c93fc9bb7b.tar.gz |
+| tty | 0.4 | https://github.com/cyanogilvie/tcl-tty/archive/v0.4.tar.gz |
 
 aws 2.0a1 supports all the services of the aws cli except for ec2 currently.
 

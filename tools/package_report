@@ -51,6 +51,7 @@ set packages {
 	{aws1::ecr https://github.com/cyanogilvie/aws-tcl}
 	{aws https://github.com/cyanogilvie/aws-tcl}
 	parsetcl
+	tty
 } 
 
 foreach p $packages {

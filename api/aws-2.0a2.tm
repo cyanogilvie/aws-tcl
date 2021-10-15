@@ -281,7 +281,7 @@ namespace eval aws {
 			set creds		[get_creds]
 			set aws_id		[dict get $creds access_key]
 			set aws_key		[dict get $creds secret]
-			set aws_token	[dict get $creds token]
+			set aws_token	[if {[dict exists $creds token]} {dict get $creds token}]
 
 			if {$sig_service eq ""} {
 				set sig_service	$service
@@ -875,7 +875,7 @@ namespace eval aws {
 					ECS_CONTAINER_METADATA_URI
 				} {
 					if {[info exists env($v)]} {
-						set base	http://$env($v)
+						set base	$env($v)
 						break
 					}
 				}
@@ -891,32 +891,32 @@ namespace eval aws {
 		}
 
 		#>>>
-	proc ecs_task {} { # Retrieve the ECS task metadata (if running on ECS / Fargate) <<<
-		global env
+		proc ecs_task {} { # Retrieve the ECS task metadata (if running on ECS / Fargate) <<<
+			global env
 
-		foreach v {
-			ECS_CONTAINER_METADATA_URI_V4
-			ECS_CONTAINER_METADATA_URI
-		} {
-			if {[info exists env($v)]} {
-				set base	http://$env($v)
-				break
+			foreach v {
+				ECS_CONTAINER_METADATA_URI_V4
+				ECS_CONTAINER_METADATA_URI
+			} {
+				if {[info exists env($v)]} {
+					set base	http://$env($v)
+					break
+				}
 			}
+
+			if {![info exists base]} {
+				# Try v2
+				set base	http://169.254.170.2/v2
+			}
+
+			rl_http instvar h GET $base/[string trimleft $path /] -stats_cx AWS
+			if {[$h code] != 200} {
+				throw [list AWS [$h code]] [$h body]
+			}
+			$h body
 		}
 
-		if {![info exists base]} {
-			# Try v2
-			set base	http://169.254.170.2/v2
-		}
-
-		rl_http instvar h GET $base/[string trimleft $path /] -stats_cx AWS
-		if {[$h code] != 200} {
-			throw [list AWS [$h code]] [$h body]
-		}
-		$h body
-	}
-
-	#>>>
+		#>>>
 	}
 
 	namespace path {
@@ -929,17 +929,6 @@ namespace eval aws {
 	proc identify {} { # Attempt to identify the AWS platform: EC2, Lambda, ECS, or none - not on AWS <<<
 		_cache identify {
 			global env
-
-			if {
-				[file readable /sys/devices/virtual/dmi/id/sys_vendor] &&
-				[string trim [readfile /sys/devices/virtual/dmi/id/sys_vendor]] eq "Amazon EC2"
-			} {
-				return EC2
-			}
-
-			if {[info exists env(LAMBDA_TASK_ROOT)]} {
-				return Lambda
-			}
 
 			if {
 				[info exists env(AWS_EXECUTION_ENV)]
@@ -957,6 +946,17 @@ namespace eval aws {
 				[info exists env(ECS_CONTAINER_METADATA_URI)]
 			} {
 				return ECS
+			}
+
+			if {[info exists env(LAMBDA_TASK_ROOT)]} {
+				return Lambda
+			}
+
+			if {
+				[file readable /sys/devices/virtual/dmi/id/sys_vendor] &&
+				[string trim [readfile /sys/devices/virtual/dmi/id/sys_vendor]] eq "Amazon EC2"
+			} {
+				return EC2
 			}
 
 			return none
@@ -1157,7 +1157,7 @@ namespace eval aws {
 			namespace current
 		}]
 
-		upvar 1 ei ei  protocol protocol  {*}[concat {*}[lmap uv $upvars {list $uv _a_$uv}]]
+		upvar 1 ei ei  protocol protocol  response_headers response_headers  {*}[concat {*}[lmap uv $upvars {list $uv _a_$uv}]]
 
 		set endpoint_info	[{*}$ei $region]
 		#puts stderr "endpoint_info:\n\t[join [lmap {k v} $endpoint_info {format {%20s: %s} $k $v}] \n\t]"
@@ -1513,7 +1513,7 @@ namespace eval aws {
 		set bytes	[try {read $h} finally {close $h}]
 		set eof		[string first \u1A $bytes]
 		set reconstructed [string map [list \
-			%p		" args \{parse_args \$args \{-region \{-default {}\} -requestid -alias " \
+			%p		" args \{parse_args \$args \{-region \{-default {}\} -requestid -alias -response_headers -alias " \
 			%r		";_service_req -r \$region " \
 			{*}$custom_maps \
 		] [encoding convertfrom utf-8 [zlib gunzip [string range $bytes $eof+1 end]]]]

@@ -138,7 +138,7 @@ RUN wget $tcc4tcl_source -O - | tar xz --strip-components=1 && \
 
 # Codeforge packages and applications up to m2
 # tbuild - tip of master
-ENV tbuild_source="https://github.com/cyanogilvie/tbuild/archive/e526a9c.tar.gz"
+ENV tbuild_source="https://github.com/cyanogilvie/tbuild/archive/v0.43.14.tar.gz"
 WORKDIR /src/tbuild
 RUN wget $tbuild_source -O - | tar xz --strip-components=1 && \
 	cp tbuild-lite.tcl /usr/local/bin/tbuild-lite && \

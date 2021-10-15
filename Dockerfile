@@ -138,7 +138,7 @@ RUN wget $tcc4tcl_source -O - | tar xz --strip-components=1 && \
 
 # Codeforge packages and applications up to m2
 # tbuild - tip of master
-ENV tbuild_source="https://github.com/cyanogilvie/tbuild/archive/v0.43.14.tar.gz"
+ENV tbuild_source="https://github.com/cyanogilvie/tbuild/archive/e526a9c.tar.gz"
 WORKDIR /src/tbuild
 RUN wget $tbuild_source -O - | tar xz --strip-components=1 && \
 	cp tbuild-lite.tcl /usr/local/bin/tbuild-lite && \
@@ -197,7 +197,7 @@ RUN wget $crypto_source -O - | tar xz --strip-components=1 && \
 # common_sighandler
 COPY common_sighandler-*.tm /usr/local/lib/tcl8/site-tcl/
 # m2
-ENV m2_source="https://github.com/cyanogilvie/m2/archive/v0.43.13.tar.gz"
+ENV m2_source="https://github.com/cyanogilvie/m2/archive/v0.43.14.tar.gz"
 WORKDIR /src/m2
 RUN wget $m2_source -O - | tar xz --strip-components=1 && \
 	tbuild-lite build_tm m2 && cp -r tm/tcl/* /usr/local/lib/tcl8/site-tcl/ && \

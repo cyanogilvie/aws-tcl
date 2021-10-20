@@ -151,7 +151,7 @@ RUN wget $cflib_source -O - | tar xz --strip-components=1 && \
 	tbuild-lite && cp tm/tcl/* /usr/local/lib/tcl8/site-tcl/ && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # sop - tip of master
-ENV sop_source="https://github.com/cyanogilvie/sop/archive/cb74e34.tar.gz"
+ENV sop_source="https://github.com/cyanogilvie/sop/archive/1.7.1.tar.gz"
 WORKDIR /src/sop
 RUN wget $sop_source -O - | tar xz --strip-components=1 && \
 	tbuild-lite && cp tm/tcl/* /usr/local/lib/tcl8/site-tcl/ && \

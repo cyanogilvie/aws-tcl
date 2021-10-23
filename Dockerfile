@@ -151,13 +151,13 @@ RUN wget $cflib_source -O - | tar xz --strip-components=1 && \
 	tbuild-lite && cp tm/tcl/* /usr/local/lib/tcl8/site-tcl/ && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # sop - tip of master
-ENV sop_source="https://github.com/cyanogilvie/sop/archive/1.7.1.tar.gz"
+ENV sop_source="https://github.com/cyanogilvie/sop/archive/1.7.2.tar.gz"
 WORKDIR /src/sop
 RUN wget $sop_source -O - | tar xz --strip-components=1 && \
 	tbuild-lite && cp tm/tcl/* /usr/local/lib/tcl8/site-tcl/ && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # netdgram - tip of master
-ENV netdgram_source="https://github.com/cyanogilvie/netdgram/archive/v0.9.11.tar.gz"
+ENV netdgram_source="https://github.com/cyanogilvie/netdgram/archive/v0.9.12.tar.gz"
 WORKDIR /src/netdgram
 RUN wget $netdgram_source -O - | tar xz --strip-components=1 && \
 	tbuild-lite && cp -r tm/tcl/* /usr/local/lib/tcl8/site-tcl/ && \
@@ -197,7 +197,7 @@ RUN wget $crypto_source -O - | tar xz --strip-components=1 && \
 # common_sighandler
 COPY common_sighandler-*.tm /usr/local/lib/tcl8/site-tcl/
 # m2
-ENV m2_source="https://github.com/cyanogilvie/m2/archive/v0.43.14.tar.gz"
+ENV m2_source="https://github.com/cyanogilvie/m2/archive/v0.43.15.tar.gz"
 WORKDIR /src/m2
 RUN wget $m2_source -O - | tar xz --strip-components=1 && \
 	tbuild-lite build_tm m2 && cp -r tm/tcl/* /usr/local/lib/tcl8/site-tcl/ && \
@@ -213,6 +213,12 @@ COPY m2/m2_node /usr/local/bin/
 COPY m2/authenticator /usr/local/bin/
 COPY m2/m2_keys /usr/local/bin/
 COPY m2/m2_admin_console /usr/local/bin/
+# datasource - tip of master
+ENV crypto_source="https://github.com/cyanogilvie/datasource/archive/v0.2.3.tar.gz"
+WORKDIR /src/crypto
+RUN wget $crypto_source -O - | tar xz --strip-components=1 && \
+	tbuild-lite && cp -r tm/tcl/* /usr/local/lib/tcl8/site-tcl/ && \
+    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # tools
 
 # tclreadline
@@ -369,6 +375,13 @@ COPY api/*.tm /usr/local/lib/tcl8/site-tcl/
 COPY api/aws1/*.tm /usr/local/lib/tcl8/site-tcl/aws1/
 RUN tclsh build.tcl -definitions botocore/data -prefix /usr/local/lib/tcl8/site-tcl && \
 	rm -rf /src/botocore/*
+
+# flock
+ENV flock_source="https://github.com/cyanogilvie/flock/archive/v0.2.tar.gz"
+WORKDIR /src/flock
+RUN wget $flock_source -O - | tar xz --strip-components=1 && \
+	make install && \
+    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 
 # misc local bits
 COPY tcl/tm /usr/local/lib/tcl8/site-tcl

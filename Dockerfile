@@ -144,8 +144,8 @@ RUN wget $tbuild_source -O - | tar xz --strip-components=1 && \
 	cp tbuild-lite.tcl /usr/local/bin/tbuild-lite && \
 	chmod +x /usr/local/bin/tbuild-lite && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# cflib - tip of master
-ENV cflib_source="https://github.com/cyanogilvie/cflib/archive/da5865b.tar.gz"
+# cflib
+ENV cflib_source="https://github.com/cyanogilvie/cflib/archive/1.15.1.tar.gz"
 WORKDIR /src/cflib
 RUN wget $cflib_source -O - | tar xz --strip-components=1 && \
 	tbuild-lite && cp tm/tcl/* /usr/local/lib/tcl8/site-tcl/ && \

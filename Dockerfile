@@ -214,7 +214,7 @@ COPY m2/authenticator /usr/local/bin/
 COPY m2/m2_keys /usr/local/bin/
 COPY m2/m2_admin_console /usr/local/bin/
 # datasource - tip of master
-ENV crypto_source="https://github.com/cyanogilvie/datasource/archive/v0.2.3.tar.gz"
+ENV crypto_source="https://github.com/cyanogilvie/datasource/archive/v0.2.4.tar.gz"
 WORKDIR /src/crypto
 RUN wget $crypto_source -O - | tar xz --strip-components=1 && \
 	tbuild-lite && cp -r tm/tcl/* /usr/local/lib/tcl8/site-tcl/ && \
@@ -377,7 +377,7 @@ RUN tclsh build.tcl -definitions botocore/data -prefix /usr/local/lib/tcl8/site-
 	rm -rf /src/botocore/*
 
 # flock
-ENV flock_source="https://github.com/cyanogilvie/flock/archive/v0.2.tar.gz"
+ENV flock_source="https://github.com/cyanogilvie/flock/archive/v0.6.tar.gz"
 WORKDIR /src/flock
 RUN wget $flock_source -O - | tar xz --strip-components=1 && \
 	make install && \

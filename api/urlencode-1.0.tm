@@ -114,7 +114,7 @@ namespace eval ::urlencode {
 
 		string cat ? [join [lmap {k v} $params {
 			if {$v eq ""} {
-				rfc_urlencode -- $k $v
+				rfc_urlencode -- $k
 			} else {
 				format %s=%s [rfc_urlencode -- $k] [rfc_urlencode -- $v]
 			}

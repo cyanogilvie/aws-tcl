@@ -383,6 +383,16 @@ RUN wget $flock_source -O - | tar xz --strip-components=1 && \
 	make install && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 
+ENV ck_source="https://github.com/cyanogilvie/ck/archive/v8.6.tar.gz"
+WORKDIR /src/ck
+RUN apk add --no-cache ncurses-libs && \
+	apk add --no-cache --virtual build-dependencies ncurses-dev && \
+	wget $ck_source -O - | tar xz --strip-components=1 && \
+	ln -s /src/tclconfig && \
+	autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
+	make install-binaries install-libraries clean && \
+	find . -type f -not -name '*.c' -and -not -name '*.h' -delete
+
 # misc local bits
 COPY tcl/tm /usr/local/lib/tcl8/site-tcl
 COPY tools/* /usr/local/bin/
@@ -403,7 +413,7 @@ RUN find /usr -name "*.so" -exec strip {} \;
 
 # alpine-tcl <<<
 FROM alpine:3.13.4 AS alpine-tcl
-RUN apk add --no-cache musl-dev readline libjpeg-turbo libexif libpng libwebp ncurses && \
+RUN apk add --no-cache musl-dev readline libjpeg-turbo libexif libpng libwebp ncurses ncurses-libs && \
 	rm /usr/lib/libc.a
 # Need to fix glibc-ism for tcc4tcl to work
 RUN sed --in-place -e 's/^typedef __builtin_va_list \(.*\)/#if defined(__GNUC__) \&\& __GNUC__ >= 3\ntypedef __builtin_va_list \1\n#else\ntypedef char* \1\n#endif/g' /usr/include/bits/alltypes.h
@@ -416,7 +426,7 @@ ENTRYPOINT ["tclsh"]
 
 # alpine-tcl-stripped <<<
 FROM alpine:3.13.4 AS alpine-tcl-stripped
-RUN apk add --no-cache musl-dev readline libjpeg-turbo libexif libpng libwebp ncurses && \
+RUN apk add --no-cache musl-dev readline libjpeg-turbo libexif libpng libwebp ncurses ncurses-libs && \
 	rm /usr/lib/libc.a
 # Need to fix glibc-ism for tcc4tcl to work
 RUN sed --in-place -e 's/^typedef __builtin_va_list \(.*\)/#if defined(__GNUC__) \&\& __GNUC__ >= 3\ntypedef __builtin_va_list \1\n#else\ntypedef char* \1\n#endif/g' /usr/include/bits/alltypes.h

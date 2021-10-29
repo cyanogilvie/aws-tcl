@@ -180,6 +180,7 @@ Included Packages
 | aws | 2.0a2 | https://github.com/cyanogilvie/aws-tcl |
 | parsetcl | 0.1 | https://github.com/cyanogilvie/parsetcl/archive/030a1439b76747ec7a016c5bd0ae78c93fc9bb7b.tar.gz |
 | tty | 0.4 | https://github.com/cyanogilvie/tcl-tty/archive/v0.4.tar.gz |
+| ck | 8.6 | https://github.com/cyanogilvie/ck/archive/v8.6.tar.gz |
 
 aws 2.0a1 supports all the services of the aws cli except for ec2 currently.
 

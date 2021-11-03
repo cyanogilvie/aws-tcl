@@ -147,7 +147,7 @@ Included Packages
 | rl_http | 1.9 | https://github.com/RubyLane/rl_http/archive/1.9.tar.gz |
 | sqlite3 | 3.35.4 | https://sqlite.org/2021/sqlite-autoconf-3350400.tar.gz |
 | tcc4tcl | 0.30.1 | https://github.com/cyanogilvie/tcc4tcl/archive/b8171e0.tar.gz |
-| cflib | 1.15.1 | https://github.com/cyanogilvie/cflib/archive/1.15.1.tar.gz |
+| cflib | 1.15.2 | https://github.com/cyanogilvie/cflib/archive/1.15.2.tar.gz |
 | sop | 1.7.2 | https://github.com/cyanogilvie/sop/archive/1.7.2.tar.gz |
 | netdgram | 0.9.12 | https://github.com/cyanogilvie/netdgram/archive/v0.9.12.tar.gz |
 | evlog | 0.3.1 | https://github.com/cyanogilvie/evlog/archive/c6c2529.tar.gz |
@@ -181,6 +181,7 @@ Included Packages
 | parsetcl | 0.1 | https://github.com/cyanogilvie/parsetcl/archive/030a1439b76747ec7a016c5bd0ae78c93fc9bb7b.tar.gz |
 | tty | 0.4 | https://github.com/cyanogilvie/tcl-tty/archive/v0.4.tar.gz |
 | resolve | 0.3 | https://github.com/cyanogilvie/resolve/archive/v0.3.tar.gz |
+| ck | 8.6 | https://github.com/cyanogilvie/ck/archive/v8.6.tar.gz |
 
 aws 2.0a1 supports all the services of the aws cli except for ec2 currently.
 

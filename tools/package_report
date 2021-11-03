@@ -53,10 +53,12 @@ set packages {
 	parsetcl
 	tty
 	ck
+	resolve
 } 
 
 foreach p $packages {
 	lassign $p package source ver
+	if {$package in {ck}} continue
 	if {$source eq ""} {set source [string tolower $package]_source}
 	if {$ver eq ""}    {
 		set interp	[interp create]

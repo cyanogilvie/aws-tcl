@@ -20,7 +20,7 @@ RUN wget $tcl_source -O - | tar xz --strip-components=1 && \
     mkdir /usr/local/lib/tcl8/site-tcl && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # tclconfig: tip of trunk
-ENV tclconfig_source="https://core.tcl-lang.org/tclconfig/tarball/8423a50147/tclconfig.tar.gz"
+ENV tclconfig_source="https://core.tcl-lang.org/tclconfig/tarball/1f17dfd726292dc4/tclconfig.tar.gz"
 WORKDIR /src
 RUN wget $tclconfig_source -O - | tar xz
 # thread: tip of thread-2-8-branch
@@ -214,9 +214,9 @@ COPY m2/authenticator /usr/local/bin/
 COPY m2/m2_keys /usr/local/bin/
 COPY m2/m2_admin_console /usr/local/bin/
 # datasource - tip of master
-ENV crypto_source="https://github.com/cyanogilvie/datasource/archive/v0.2.4.tar.gz"
-WORKDIR /src/crypto
-RUN wget $crypto_source -O - | tar xz --strip-components=1 && \
+ENV datasource_source="https://github.com/cyanogilvie/datasource/archive/v0.2.4.tar.gz"
+WORKDIR /src/datasource
+RUN wget $datasource_source -O - | tar xz --strip-components=1 && \
 	tbuild-lite && cp -r tm/tcl/* /usr/local/lib/tcl8/site-tcl/ && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # tools
@@ -382,7 +382,7 @@ WORKDIR /src/flock
 RUN wget $flock_source -O - | tar xz --strip-components=1 && \
 	make install && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-
+# ck
 ENV ck_source="https://github.com/cyanogilvie/ck/archive/v8.6.tar.gz"
 WORKDIR /src/ck
 RUN apk add --no-cache ncurses-libs && \
@@ -392,6 +392,14 @@ RUN apk add --no-cache ncurses-libs && \
 	autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
 	make install-binaries install-libraries clean && \
 	find . -type f -not -name '*.c' -and -not -name '*.h' -delete
+# resolve
+ENV resolve_source="https://github.com/cyanogilvie/resolve/archive/v0.3.tar.gz"
+WORKDIR /src/resolve
+RUN wget $resolve_source -O - | tar xz --strip-components=1 && \
+    ln -s ../tclconfig && \
+    autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
+    make install-binaries install-libraries clean && \
+    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 
 # misc local bits
 COPY tcl/tm /usr/local/lib/tcl8/site-tcl

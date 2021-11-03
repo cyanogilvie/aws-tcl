@@ -135,7 +135,7 @@ Included Packages
 | Tcl | 8.7a4 | https://core.tcl-lang.org/tcl/tarball/99b8ad35a258cade/tcl.tar.gz |
 | Thread | 2.9a1 | https://core.tcl-lang.org/thread/tarball/2a83440579/thread.tar.gz |
 | tdbc | 1.1.1 | https://github.com/cyanogilvie/tdbc/archive/1f8b684.tar.gz |
-| pgwire | 3.0.0b2 | https://github.com/cyanogilvie/pgwire/archive/v3.0.0b2.tar.gz |
+| pgwire | 3.0.0b10 | https://github.com/cyanogilvie/pgwire/archive/v3.0.0b10.tar.gz |
 | tdom | 0.9.3 | https://github.com/RubyLane/tdom/archive/cyan-0.9.3.1.tar.gz |
 | tls | 1.7.22 | https://core.tcl-lang.org/tcltls/tarball/tls-1-7-22/tcltls.tar.gz |
 | parse_args | 0.3.2 | https://github.com/RubyLane/parse_args/archive/v0.3.2.tar.gz |
@@ -147,15 +147,15 @@ Included Packages
 | rl_http | 1.9 | https://github.com/RubyLane/rl_http/archive/1.9.tar.gz |
 | sqlite3 | 3.35.4 | https://sqlite.org/2021/sqlite-autoconf-3350400.tar.gz |
 | tcc4tcl | 0.30.1 | https://github.com/cyanogilvie/tcc4tcl/archive/b8171e0.tar.gz |
-| cflib | 1.14.1 | https://github.com/cyanogilvie/cflib/archive/da5865b.tar.gz |
-| sop | 1.7.0 | https://github.com/cyanogilvie/sop/archive/cb74e34.tar.gz |
-| netdgram | 0.9.11 | https://github.com/cyanogilvie/netdgram/archive/v0.9.11.tar.gz |
+| cflib | 1.15.1 | https://github.com/cyanogilvie/cflib/archive/1.15.1.tar.gz |
+| sop | 1.7.2 | https://github.com/cyanogilvie/sop/archive/1.7.2.tar.gz |
+| netdgram | 0.9.12 | https://github.com/cyanogilvie/netdgram/archive/v0.9.12.tar.gz |
 | evlog | 0.3.1 | https://github.com/cyanogilvie/evlog/archive/c6c2529.tar.gz |
 | dsl | 0.4 | https://github.com/cyanogilvie/dsl/archive/f24a59e.tar.gz |
 | logging | 0.3 | https://github.com/cyanogilvie/logging/archive/e709389.tar.gz |
 | sockopt | 0.2 | https://github.com/cyanogilvie/sockopt/archive/c574d92.tar.gz |
 | crypto | 0.6 | https://github.com/cyanogilvie/crypto/archive/7a04540.tar.gz |
-| m2 | 0.43.13 | https://github.com/cyanogilvie/m2/archive/v0.43.13.tar.gz |
+| m2 | 0.43.15 | https://github.com/cyanogilvie/m2/archive/v0.43.15.tar.gz |
 | urlencode | 1.0 | https://github.com/cyanogilvie/aws-tcl |
 | hmac | 0.1 | https://github.com/cyanogilvie/aws-tcl |
 | tclreadline | 2.3.8.1 | https://github.com/cyanogilvie/tclreadline/archive/v2.3.8.1.tar.gz |
@@ -180,7 +180,7 @@ Included Packages
 | aws | 2.0a2 | https://github.com/cyanogilvie/aws-tcl |
 | parsetcl | 0.1 | https://github.com/cyanogilvie/parsetcl/archive/030a1439b76747ec7a016c5bd0ae78c93fc9bb7b.tar.gz |
 | tty | 0.4 | https://github.com/cyanogilvie/tcl-tty/archive/v0.4.tar.gz |
-| ck | 8.6 | https://github.com/cyanogilvie/ck/archive/v8.6.tar.gz |
+| resolve | 0.3 | https://github.com/cyanogilvie/resolve/archive/v0.3.tar.gz |
 
 aws 2.0a1 supports all the services of the aws cli except for ec2 currently.
 

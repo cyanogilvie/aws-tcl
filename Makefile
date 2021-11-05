@@ -1,4 +1,4 @@
-VER=v0.9.25
+VER=v0.9.26
 
 all: alpine-tcl m2
 

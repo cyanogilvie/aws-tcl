@@ -393,7 +393,7 @@ RUN apk add --no-cache ncurses-libs && \
 	make install-binaries install-libraries clean && \
 	find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # resolve
-ENV resolve_source="https://github.com/cyanogilvie/resolve/archive/v0.3.tar.gz"
+ENV resolve_source="https://github.com/cyanogilvie/resolve/archive/v0.4.tar.gz"
 WORKDIR /src/resolve
 RUN wget $resolve_source -O - | tar xz --strip-components=1 && \
     ln -s ../tclconfig && \

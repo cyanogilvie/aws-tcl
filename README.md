@@ -138,7 +138,7 @@ Included Packages
 | pgwire | 3.0.0b10 | https://github.com/cyanogilvie/pgwire/archive/v3.0.0b10.tar.gz |
 | tdom | 0.9.3 | https://github.com/RubyLane/tdom/archive/cyan-0.9.3.1.tar.gz |
 | tls | 1.7.22 | https://core.tcl-lang.org/tcltls/tarball/tls-1-7-22/tcltls.tar.gz |
-| parse_args | 0.3.2 | https://github.com/RubyLane/parse_args/archive/v0.3.2.tar.gz |
+| parse_args | 0.3.3 | https://github.com/RubyLane/parse_args/archive/v0.3.3.tar.gz |
 | rl_json | 0.11.0 | https://github.com/RubyLane/rl_json/archive/c5a8033.tar.gz |
 | hash | 0.3 | https://github.com/cyanogilvie/hash/archive/79c2066.tar.gz |
 | unix_sockets | 0.2 | https://github.com/cyanogilvie/unix_sockets/archive/761daa5.tar.gz |

@@ -63,11 +63,11 @@ RUN apk add --no-cache --virtual build-dependencies curl openssl-dev curl-dev &&
     apk del build-dependencies && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # parse_args
-ENV parse_args_source="https://github.com/RubyLane/parse_args/archive/v0.3.2.tar.gz"
+ENV parse_args_source="https://github.com/RubyLane/parse_args/archive/v0.3.3.tar.gz"
 WORKDIR /src/parse_args
 RUN wget $parse_args_source -O - | tar xz --strip-components=1 && \
+    ln -s ../tclconfig && \
     autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
-    make -j 8 all && \
     make install-binaries install-libraries clean && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # rl_json - tip of master

@@ -1,9 +1,10 @@
 # Since Nov 2020 Lambda has supported AVX2 (and haswell) in all regions except China
 ARG CFLAGS="-O3 -march=haswell"
 #ARG CFLAGS="-O3 -mavx2"
+ARG ALPINE_VER="3.15.0"
 
 # alpine-tcl-build <<<
-FROM alpine:3.14.2 AS alpine-tcl-build
+FROM alpine:$ALPINE_VER AS alpine-tcl-build
 ARG CFLAGS
 RUN apk add --no-cache build-base autoconf automake bsd-compat-headers bash ca-certificates libssl1.1 libcrypto1.1 docker-cli
 # tcl: tip of core-8-branch
@@ -420,7 +421,7 @@ RUN find /usr -name "*.so" -exec strip {} \;
 # alpine-tcl-build-stripped >>>
 
 # alpine-tcl <<<
-FROM alpine:3.13.4 AS alpine-tcl
+FROM alpine:$ALPINE_VER AS alpine-tcl
 RUN apk add --no-cache musl-dev readline libjpeg-turbo libexif libpng libwebp ncurses ncurses-libs && \
 	rm /usr/lib/libc.a
 # Need to fix glibc-ism for tcc4tcl to work
@@ -433,7 +434,7 @@ ENTRYPOINT ["tclsh"]
 # alpine-tcl >>>
 
 # alpine-tcl-stripped <<<
-FROM alpine:3.13.4 AS alpine-tcl-stripped
+FROM alpine:$ALPINE_VER AS alpine-tcl-stripped
 RUN apk add --no-cache musl-dev readline libjpeg-turbo libexif libpng libwebp ncurses ncurses-libs && \
 	rm /usr/lib/libc.a
 # Need to fix glibc-ism for tcc4tcl to work

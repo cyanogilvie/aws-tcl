@@ -13,6 +13,7 @@ m2: Dockerfile
 
 upload: alpine-tcl m2
 	docker push cyanogilvie/alpine-tcl:$(VER)-stripped
+	docker push cyanogilvie/alpine-tcl:$(VER)
 	docker push cyanogilvie/m2:$(VER)-stripped
 
 package_report: alpine-tcl

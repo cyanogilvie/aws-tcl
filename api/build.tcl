@@ -800,10 +800,10 @@ proc build_aws_services args { #<<<
 		set aws_ver	[package require aws 2]
 		switch -exact -- $output_mode {
 			ziplet {
-				writebin [file join $prefix aws/[json get $service_def metadata service_name]-$aws_ver.tm] $ziplet
+				writebin [file join $prefix aws/[string map {- _} [json get $service_def metadata service_name]]-$aws_ver.tm] $ziplet
 			}
 			plain {
-				writefile [file join $prefix aws/[json get $service_def metadata service_name]-$aws_ver.tm] $service_code
+				writefile [file join $prefix aws/[string map {- _} [json get $service_def metadata service_name]-$aws_ver.tm]] $service_code
 			}
 			default {
 				error "Unknown output mode \"$output_mode\""

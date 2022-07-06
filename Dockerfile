@@ -1,7 +1,7 @@
 # Since Nov 2020 Lambda has supported AVX2 (and haswell) in all regions except China
 ARG CFLAGS="-O3 -march=haswell"
 #ARG CFLAGS="-O3 -mavx2"
-ARG ALPINE_VER="3.15.0"
+ARG ALPINE_VER="3.16.0"
 
 # alpine-tcl-build <<<
 FROM alpine:$ALPINE_VER AS alpine-tcl-build
@@ -72,7 +72,7 @@ RUN wget $parse_args_source -O - | tar xz --strip-components=1 && \
     make install-binaries install-libraries clean && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # rl_json - tip of master
-ENV rl_json_source="https://github.com/RubyLane/rl_json/archive/c5a8033.tar.gz"
+ENV rl_json_source="https://github.com/RubyLane/rl_json/archive/0.11.1.tar.gz"
 WORKDIR /src/rl_json
 RUN wget $rl_json_source -O - | tar xz --strip-components=1 && \
     autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
@@ -109,7 +109,7 @@ RUN wget $gc_class_source -O - | tar xz --strip-components=1 && \
     cp gc_class*.tm /usr/local/lib/tcl8/site-tcl && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # rl_http
-ENV rl_http_source="https://github.com/RubyLane/rl_http/archive/1.9.tar.gz"
+ENV rl_http_source="https://github.com/RubyLane/rl_http/archive/1.11.tar.gz"
 WORKDIR /src/rl_http
 RUN wget $rl_http_source -O - | tar xz --strip-components=1 && \
     cp rl_http*.tm /usr/local/lib/tcl8/site-tcl && \
@@ -394,12 +394,31 @@ RUN apk add --no-cache ncurses-libs && \
 	make install-binaries install-libraries clean && \
 	find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # resolve
-ENV resolve_source="https://github.com/cyanogilvie/resolve/archive/v0.4.tar.gz"
+ENV resolve_source="https://github.com/cyanogilvie/resolve/archive/v0.7.tar.gz"
 WORKDIR /src/resolve
 RUN wget $resolve_source -O - | tar xz --strip-components=1 && \
     ln -s ../tclconfig && \
     autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
     make install-binaries install-libraries clean && \
+    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
+# dedup
+ENV dedup_source="https://github.com/cyanogilvie/dedup/archive/v0.9.1.tar.gz"
+WORKDIR /src/dedup
+RUN wget $dedup_source -O - | tar xz --strip-components=1 && \
+    ln -s ../tclconfig && \
+    autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
+    make install-binaries install-libraries clean && \
+    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
+# reuri
+ENV reuri_source="https://github.com/cyanogilvie/reuri"
+WORKDIR /src/reuri
+RUN apk add --no-cache --virtual build-dependencies git && \
+	git clone -q -b v0.2.2 --depth 1 $reuri_source . && \
+	git submodule update --init --recommend-shallow --depth=1 tools/re2c && \
+	git submodule update --init --recommend-shallow --depth=1 tools/packcc && \
+    ln -s ../tclconfig && \
+    autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols --with-dedup=/usr/local/lib/dedup0.9.1 && \
+    make pgo install-binaries install-libraries clean && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 
 # misc local bits

@@ -58,7 +58,7 @@ set packages {
 
 foreach p $packages {
 	lassign $p package source ver
-	if {$package in {ck}} continue
+	if {$package in {ck Pixel_imlib2}} continue
 	if {$source eq ""} {set source [string tolower $package]_source}
 	if {$ver eq ""}    {
 		set interp	[interp create]

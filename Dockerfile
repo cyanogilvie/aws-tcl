@@ -170,7 +170,7 @@ RUN wget $evlog_source -O - | tar xz --strip-components=1 && \
 	tbuild-lite build_tm evlog && cp -r tm/tcl/* /usr/local/lib/tcl8/site-tcl/ && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # dsl - tip of master
-ENV dsl_source="https://github.com/cyanogilvie/dsl/archive/f24a59e.tar.gz"
+ENV dsl_source="https://github.com/cyanogilvie/dsl/archive/v0.5.tar.gz"
 WORKDIR /src/dsl
 RUN wget $dsl_source -O - | tar xz --strip-components=1 && \
 	tbuild-lite && cp -r tm/tcl/* /usr/local/lib/tcl8/site-tcl/ && \

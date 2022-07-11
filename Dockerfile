@@ -420,6 +420,16 @@ RUN apk add --no-cache --virtual build-dependencies git && \
     autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols --with-dedup=/usr/local/lib/dedup0.9.1 && \
     make pgo install-binaries install-libraries clean && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
+# brotli
+ENV brotli_source="https://github.com/cyanogilvie/tcl-brotli"
+WORKDIR /src/brotli
+RUN apk add --no-cache brotli-libs && \
+	apk add --no-cache --virtual build-dependencies git brotli-dev && \
+	git clone -q -b v0.2 --depth 1 $brotli_source . && \
+    ln -s ../tclconfig && \
+    autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
+    make install-binaries install-libraries clean && \
+    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 
 # misc local bits
 COPY tcl/tm /usr/local/lib/tcl8/site-tcl

@@ -1,4 +1,6 @@
-VER=v0.9.33
+VER=v0.9.34
+
+CONTAINER_ENV = -v "`pwd`/here:/here" --network host --ulimit core=-1
 
 all: alpine-tcl m2
 
@@ -19,4 +21,9 @@ upload: alpine-tcl m2
 package_report: alpine-tcl
 	docker run --rm -v "`pwd`/tools:/tools" alpine-tcl-build /tools/package_report
 
-.PHONY: alpine-tcl m2 package_report upload
+gdb:
+	echo "/tmp/cores" | sudo tee /proc/sys/kernel/core_pattern
+	docker build --target alpine-tcl-gdb -t alpine-tcl-gdb .
+	docker run --rm -it --init --name rl-nsadmin --cap-add=SYS_PTRACE --security-opt seccomp=unconfined $(CONTAINER_ENV) alpine-tcl-gdb
+
+.PHONY: alpine-tcl m2 package_report upload gdb

@@ -392,6 +392,7 @@ RUN apk add --no-cache ncurses-libs && \
 	ln -s /src/tclconfig && \
 	autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
 	make install-binaries install-libraries clean && \
+	cp -a library /usr/local/lib/ck8.6/ && \
 	find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # resolve
 ENV resolve_source="https://github.com/cyanogilvie/resolve/archive/v0.7.tar.gz"
@@ -442,6 +443,7 @@ RUN /usr/local/bin/package_report
 # alpine-tcl-gdb <<<
 FROM alpine-tcl-build as alpine-tcl-gdb
 RUN apk add --no-cache gdb
+WORKDIR /here
 # alpine-tcl-gdb >>>
 
 # alpine-tcl-build-stripped <<<

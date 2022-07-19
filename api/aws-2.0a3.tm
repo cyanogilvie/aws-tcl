@@ -23,8 +23,13 @@ namespace eval aws {
 	} {
 		package require inifile
 		set ini	[::ini::open [file join $::env(HOME) .aws/config]]
+		if {[info exists ::env(AWS_PROFILE)]} {
+			set section	"profile $::env(AWS_PROFILE)"
+		} else {
+			set section	default
+		}
 		try {
-			::ini::value $ini default region
+			::ini::value $ini $section region
 		} finally {
 			::ini::close $ini
 			unset -nocomplain ini
@@ -808,9 +813,14 @@ namespace eval aws {
 			if {[file readable $credfile]} {
 				package require inifile
 				set ini	[::ini::open $credfile]
+				if {[info exists ::env(AWS_PROFILE)]} {
+					set section	$::env(AWS_PROFILE)
+				} else {
+					set section	default
+				}
 				try {
-					dict set creds access_key	[::ini::value $ini default aws_access_key_id]
-					dict set creds secret		[::ini::value $ini default aws_secret_access_key]
+					dict set creds access_key	[::ini::value $ini $section aws_access_key_id]
+					dict set creds secret		[::ini::value $ini $section aws_secret_access_key]
 					dict set creds token		""
 					dict set creds source		user
 					_debug {log debug "Found credentials: user"}

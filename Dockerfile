@@ -109,7 +109,7 @@ RUN wget $gc_class_source -O - | tar xz --strip-components=1 && \
     cp gc_class*.tm /usr/local/lib/tcl8/site-tcl && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # rl_http
-ENV rl_http_source="https://github.com/RubyLane/rl_http/archive/1.11.tar.gz"
+ENV rl_http_source="https://github.com/RubyLane/rl_http/archive/1.13.tar.gz"
 WORKDIR /src/rl_http
 RUN wget $rl_http_source -O - | tar xz --strip-components=1 && \
     cp rl_http*.tm /usr/local/lib/tcl8/site-tcl && \

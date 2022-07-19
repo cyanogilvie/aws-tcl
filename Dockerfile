@@ -414,7 +414,7 @@ RUN wget $dedup_source -O - | tar xz --strip-components=1 && \
 ENV reuri_source="https://github.com/cyanogilvie/reuri"
 WORKDIR /src/reuri
 RUN apk add --no-cache --virtual build-dependencies git && \
-	git clone -q -b v0.2.2 --depth 1 $reuri_source . && \
+	git clone -q -b v0.2.5 --depth 1 $reuri_source . && \
 	git submodule update --init --recommend-shallow --depth=1 tools/re2c && \
 	git submodule update --init --recommend-shallow --depth=1 tools/packcc && \
     ln -s ../tclconfig && \

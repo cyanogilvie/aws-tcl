@@ -22,7 +22,7 @@ namespace eval aws {
 		[file readable [file join $::env(HOME) .aws/config]]
 	} {
 		package require inifile
-		set ini	[::ini::open [file join $::env(HOME) .aws/config]]
+		set ini	[::ini::open [file join $::env(HOME) .aws/config] r]
 		if {[info exists ::env(AWS_PROFILE)]} {
 			set section	"profile $::env(AWS_PROFILE)"
 		} else {
@@ -812,7 +812,7 @@ namespace eval aws {
 			set credfile	[file join $::env(HOME) .aws/credentials]
 			if {[file readable $credfile]} {
 				package require inifile
-				set ini	[::ini::open $credfile]
+				set ini	[::ini::open $credfile r]
 				if {[info exists ::env(AWS_PROFILE)]} {
 					set section	$::env(AWS_PROFILE)
 				} else {

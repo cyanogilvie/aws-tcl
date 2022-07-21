@@ -772,120 +772,120 @@ namespace eval aws {
 
 		#>>>
 
-	proc instance_identity {} { #<<<
-		_cache instance_identity {
-			_metadata dynamic/instance-identity/document
-		}
-	}
-
-	#>>>
-	proc get_creds {} { #<<<
-		global env
-		variable creds
-
-		if {
-			[info exists creds] &&
-			[dict exists $creds expires] &&
-			[dict get $creds expires] - [clock seconds] < 60
-		} {
-			unset creds
+		proc instance_identity {} { #<<<
+			_cache instance_identity {
+				_metadata dynamic/instance-identity/document
+			}
 		}
 
-		if {![info exists creds]} { # Attempt to find some credentials laying around
-			# Environment variables <<<
+		#>>>
+		proc get_creds {} { #<<<
+			global env
+			variable creds
+
 			if {
-				[info exists env(AWS_ACCESS_KEY_ID)] &&
-				[info exists env(AWS_SECRET_ACCESS_KEY)]
+				[info exists creds] &&
+				[dict exists $creds expires] &&
+				[dict get $creds expires] - [clock seconds] < 60
 			} {
-				dict set creds access_key		$env(AWS_ACCESS_KEY_ID)
-				dict set creds secret			$env(AWS_SECRET_ACCESS_KEY)
-				if {[info exists env(AWS_SESSION_TOKEN)]} {
-					dict set creds token		$env(AWS_SESSION_TOKEN)
-				}
-				dict set creds source			env
-				_debug {log debug "Found credentials: env"}
-				return $creds
+				unset creds
 			}
 
-			# Environment variables >>>
-			# User creds: ~/.aws/credentials <<<
-			set credfile	[file join $::env(HOME) .aws/credentials]
-			if {[file readable $credfile]} {
-				package require inifile
-				set ini	[::ini::open $credfile r]
-				if {[info exists ::env(AWS_PROFILE)]} {
-					set section	$::env(AWS_PROFILE)
-				} else {
-					set section	default
-				}
-				try {
-					dict set creds access_key	[::ini::value $ini $section aws_access_key_id]
-					dict set creds secret		[::ini::value $ini $section aws_secret_access_key]
-					dict set creds token		""
-					dict set creds source		user
-					_debug {log debug "Found credentials: user"}
-				} on ok {} {
+			if {![info exists creds]} { # Attempt to find some credentials laying around
+				# Environment variables <<<
+				if {
+					[info exists env(AWS_ACCESS_KEY_ID)] &&
+					[info exists env(AWS_SECRET_ACCESS_KEY)]
+				} {
+					dict set creds access_key		$env(AWS_ACCESS_KEY_ID)
+					dict set creds secret			$env(AWS_SECRET_ACCESS_KEY)
+					if {[info exists env(AWS_SESSION_TOKEN)]} {
+						dict set creds token		$env(AWS_SESSION_TOKEN)
+					}
+					dict set creds source			env
+					_debug {log debug "Found credentials: env"}
 					return $creds
-				} finally {
-					::ini::close $ini
 				}
+
+				# Environment variables >>>
+				# User creds: ~/.aws/credentials <<<
+				set credfile	[file join $::env(HOME) .aws/credentials]
+				if {[file readable $credfile]} {
+					package require inifile
+					set ini	[::ini::open $credfile r]
+					if {[info exists ::env(AWS_PROFILE)]} {
+						set section	$::env(AWS_PROFILE)
+					} else {
+						set section	default
+					}
+					try {
+						dict set creds access_key	[::ini::value $ini $section aws_access_key_id]
+						dict set creds secret		[::ini::value $ini $section aws_secret_access_key]
+						dict set creds token		""
+						dict set creds source		user
+						_debug {log debug "Found credentials: user"}
+					} on ok {} {
+						return $creds
+					} finally {
+						::ini::close $ini
+					}
+				}
+
+				# User creds: ~/.aws/credentials >>>
+				# Instance role creds <<<
+				try {
+					instance_role_creds
+				} on ok role_creds {
+					dict set creds access_key		[json get $role_creds AccessKeyId]
+					dict set creds secret			[json get $role_creds SecretAccessKey]
+					dict set creds token			[json get $role_creds Token]
+					dict set creds expires			[json get $role_creds expires_sec]
+					dict set creds source			instance_role
+					_debug {log debug "Found credentials: instance_role"}
+					return $creds
+				} on error {} {}
+				# Instance role creds >>>
+
+				throw {AWS NO_CREDENTIALS} "No credentials were supplied or could be found"
 			}
 
-			# User creds: ~/.aws/credentials >>>
-			# Instance role creds <<<
-			try {
-				instance_role_creds
-			} on ok role_creds {
-				dict set creds access_key		[json get $role_creds AccessKeyId]
-				dict set creds secret			[json get $role_creds SecretAccessKey]
-				dict set creds token			[json get $role_creds Token]
-				dict set creds expires			[json get $role_creds expires_sec]
-				dict set creds source			instance_role
-				_debug {log debug "Found credentials: instance_role"}
-				return $creds
-			} on error {} {}
-			# Instance role creds >>>
-
-			throw {AWS NO_CREDENTIALS} "No credentials were supplied or could be found"
+			set creds
 		}
 
-		set creds
-	}
+		#>>>
+		proc set_creds args { #<<<
+			variable creds
 
-	#>>>
-	proc set_creds args { #<<<
-		variable creds
+			parse_args $args {
+				-access_key		{-required}
+				-secret			{-required}
+				-token			{-default {}}
+			} creds
+		}
 
-		parse_args $args {
-			-access_key		{-required}
-			-secret			{-required}
-			-token			{-default {}}
-		} creds
-	}
+		#>>>
+		proc instance_role_creds {} { #<<<
+			global env
+			variable cached_role_creds
 
-	#>>>
-	proc instance_role_creds {} { #<<<
-		global env
-		variable cached_role_creds
+			if {
+				![info exists cached_role_creds] ||
+				[json get $cached_role_creds expires_sec] - [clock seconds] < 60
+			} {
+				#set cached_role_creds	[_metadata meta-data/identity-credentials/ec2/security-credentials/ec2-instance]
+				if {[info exists env(AWS_CONTAINER_CREDENTIALS_RELATIVE_URI)]} {
+					set cached_role_creds	[_metadata_req http://169.254.170.2$env(AWS_CONTAINER_CREDENTIALS_RELATIVE_URI)]
+				} else {
+					set role				[_metadata meta-data/iam/security-credentials]
+					set cached_role_creds	[_metadata meta-data/iam/security-credentials/$role]
+				}
 
-		if {
-			![info exists cached_role_creds] ||
-			[json get $cached_role_creds expires_sec] - [clock seconds] < 60
-		} {
-			#set cached_role_creds	[_metadata meta-data/identity-credentials/ec2/security-credentials/ec2-instance]
-			if {[info exists env(AWS_CONTAINER_CREDENTIALS_RELATIVE_URI)]} {
-				set cached_role_creds	[_metadata_req http://169.254.170.2$env(AWS_CONTAINER_CREDENTIALS_RELATIVE_URI)]
-			} else {
-				set role				[_metadata meta-data/iam/security-credentials]
-				set cached_role_creds	[_metadata meta-data/iam/security-credentials/$role]
+				json set cached_role_creds expires_sec	[clock scan [json get $cached_role_creds Expiration] -timezone :UTC -format {%Y-%m-%dT%H:%M:%SZ}]
 			}
-
-			json set cached_role_creds expires_sec	[clock scan [json get $cached_role_creds Expiration] -timezone :UTC -format {%Y-%m-%dT%H:%M:%SZ}]
+			set cached_role_creds
 		}
-		set cached_role_creds
-	}
 
-	#>>>
+		#>>>
 
 		proc _metadata_req url { #<<<
 			rl_http instvar h GET $url -stats_cx AWS -timeout 1
@@ -917,7 +917,11 @@ namespace eval aws {
 			} else {
 				set base	http://169.254.169.254/latest
 			}
-			_metadata_req $base/[string trimleft $path /]
+			if {$path eq "/"} {
+				_metadata_req $base
+			} else {
+				_metadata_req $base/[string trimleft $path /]
+			}
 		}
 
 		#>>>
@@ -1001,7 +1005,28 @@ namespace eval aws {
 	proc image_id {}			{json get [instance_identity] imageId}
 	proc instance_type {}		{json get [instance_identity] instanceType}
 	proc public_ipv4 {}			{_metadata meta-data/public-ipv4}
-	proc local_ipv4 {}			{_metadata meta-data/local-ipv4}
+	proc local_ipv4 {} { #<<<
+		switch -exact -- [identify] {
+			ECS {
+				json foreach network [json extract [_metadata] Networks] {
+					if {[json get $network NetworkMode] eq "awsvpc"} {
+						return [json get $network IPv4Addresses 0]
+					}
+				}
+			}
+			none {
+				if {![regexp { src ([0-9.]+)} [exec ip route get 10.1.1.1] - myip]} {
+					error "Cannot determine local IP"
+				}
+				set myip
+			}
+			default {
+				_metadata meta-data/local-ipv4
+			}
+		}
+	}
+
+	#>>>
 
 	if 0 {
 	# Many newer AWS services' APIs follow this pattern:

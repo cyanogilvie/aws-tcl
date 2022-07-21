@@ -433,9 +433,10 @@ RUN apk add --no-cache brotli-libs && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 
 # aio
-ENV aio_source="https://github.com/cyanogilvie/aio/archive/v1.0.1.tar.gz"
+ENV aio_source="https://github.com/cyanogilvie/aio/archive/v1.2.tar.gz"
 WORKDIR /src/aio
 RUN wget $aio_source -O - | tar xz --strip-components=1 && \
+	make test && \
 	make install-tm && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 

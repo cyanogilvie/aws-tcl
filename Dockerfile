@@ -351,7 +351,7 @@ RUN wget $tdom_source -O - | tar xz --strip-components=1 && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 
 # tty
-ENV tty_source="https://github.com/cyanogilvie/tcl-tty/archive/v0.4.tar.gz"
+ENV tty_source="https://github.com/cyanogilvie/tcl-tty/archive/v0.5.tar.gz"
 WORKDIR /src/tty
 RUN apk add --no-cache ncurses && \
 	wget $tty_source -O - | tar xz --strip-components=1 && \

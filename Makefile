@@ -1,4 +1,4 @@
-VER=v0.9.44
+VER=v0.9.45
 
 CONTAINER_ENV = -v "`pwd`/here:/here" --network host --ulimit core=-1
 

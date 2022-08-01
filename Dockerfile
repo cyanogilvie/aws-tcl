@@ -440,6 +440,22 @@ RUN wget $aio_source -O - | tar xz --strip-components=1 && \
 	make install-tm && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 
+# prng
+ENV prng_source="https://github.com/cyanogilvie/prng/archive/v0.7.tar.gz"
+WORKDIR /src/prng
+RUN wget $prng_source -O - | tar xz --strip-components=1 && \
+	make test && \
+	make install-tm && \
+    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
+
+# names
+ENV names_source="https://github.com/cyanogilvie/names/archive/v0.1.tar.gz"
+WORKDIR /src/names
+RUN wget $names_source -O - | tar xz --strip-components=1 && \
+	make test && \
+	make install-tm && \
+    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
+
 # misc local bits
 COPY tcl/tm /usr/local/lib/tcl8/site-tcl
 COPY tools/* /usr/local/bin/

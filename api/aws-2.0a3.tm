@@ -943,7 +943,7 @@ namespace eval aws {
 				set base	http://169.254.170.2/v2
 			}
 
-			rl_http instvar h GET $base/[string trimleft $path /] -stats_cx AWS
+			rl_http instvar h GET $base -stats_cx AWS
 			if {[$h code] != 200} {
 				throw [list AWS [$h code]] [$h body]
 			}
@@ -1008,7 +1008,7 @@ namespace eval aws {
 	proc local_ipv4 {} { #<<<
 		switch -exact -- [identify] {
 			ECS {
-				json foreach network [json extract [_metadata] Networks] {
+				json foreach network [json extract [_metadata /] Networks] {
 					if {[json get $network NetworkMode] eq "awsvpc"} {
 						return [json get $network IPv4Addresses 0]
 					}

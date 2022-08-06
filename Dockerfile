@@ -72,7 +72,7 @@ RUN wget $parse_args_source -O - | tar xz --strip-components=1 && \
     make install-binaries install-libraries clean && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # rl_json - tip of master
-ENV rl_json_source="https://github.com/RubyLane/rl_json/archive/0.11.1.tar.gz"
+ENV rl_json_source="https://github.com/RubyLane/rl_json/archive/0.11.2.tar.gz"
 WORKDIR /src/rl_json
 RUN wget $rl_json_source -O - | tar xz --strip-components=1 && \
     autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \

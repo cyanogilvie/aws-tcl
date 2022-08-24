@@ -44,7 +44,7 @@ RUN wget $tdbc_source -O - | tar xz --strip-components=1 && \
     make install-binaries install-libraries clean && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # pgwire
-ENV pgwire_source="https://github.com/cyanogilvie/pgwire/archive/v3.0.0b14.tar.gz"
+ENV pgwire_source="https://github.com/cyanogilvie/pgwire/archive/v3.0.0b15.tar.gz"
 WORKDIR /src/pgwire
 RUN wget $pgwire_source -O - | tar xz --strip-components=1 && \
     cd src && \

@@ -44,7 +44,7 @@ RUN wget $tdbc_source -O - | tar xz --strip-components=1 && \
     make install-binaries install-libraries clean && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # pgwire
-ENV pgwire_source="https://github.com/cyanogilvie/pgwire/archive/v3.0.0b12.tar.gz"
+ENV pgwire_source="https://github.com/cyanogilvie/pgwire/archive/v3.0.0b14.tar.gz"
 WORKDIR /src/pgwire
 RUN wget $pgwire_source -O - | tar xz --strip-components=1 && \
     cd src && \
@@ -454,6 +454,13 @@ ENV names_source="https://github.com/cyanogilvie/names/archive/v0.1.tar.gz"
 WORKDIR /src/names
 RUN wget $names_source -O - | tar xz --strip-components=1 && \
 	make test && \
+	make install-tm && \
+    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
+
+# rltest
+ENV rltest_source="https://github.com/RubyLane/rltest/archive/v1.5.tar.gz"
+WORKDIR /src/rltest
+RUN wget $rltest_source -O - | tar xz --strip-components=1 && \
 	make install-tm && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 

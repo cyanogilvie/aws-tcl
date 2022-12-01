@@ -1,12 +1,21 @@
+ARG ALPINE_VER="3.16.3"
+
+FROM alpine:$ALPINE_VER as base-amd64
 # Since Nov 2020 Lambda has supported AVX2 (and haswell) in all regions except China
 ARG CFLAGS="-O3 -march=haswell"
-#ARG CFLAGS="-O3 -mavx2"
-ARG ALPINE_VER="3.16.0"
+
+FROM alpine:$ALPINE_VER as base-arm64
+# Target graviton2
+ARG CFLAGS="-O3 -moutline-atomics -march=armv8.2-a"
+
+FROM alpine:$ALPINE_VER as base-armv7
+ARG CFLAGS="-O3"
 
 # alpine-tcl-build <<<
-FROM alpine:$ALPINE_VER AS alpine-tcl-build
+ARG TARGETARCH
+FROM base-$TARGETARCH AS alpine-tcl-build
 ARG CFLAGS
-RUN apk add --no-cache build-base autoconf automake bsd-compat-headers bash ca-certificates libssl1.1 libcrypto1.1 docker-cli
+RUN apk add --no-cache build-base autoconf automake bsd-compat-headers bash ca-certificates libssl1.1 libcrypto1.1 docker-cli git
 # tcl: tip of core-8-branch
 ENV tcl_source="https://core.tcl-lang.org/tcl/tarball/99b8ad35a258cade/tcl.tar.gz"
 WORKDIR /src/tcl
@@ -64,18 +73,18 @@ RUN apk add --no-cache --virtual build-dependencies curl openssl-dev curl-dev &&
     apk del build-dependencies && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # parse_args
-ENV parse_args_source="https://github.com/RubyLane/parse_args/archive/v0.3.3.tar.gz"
-WORKDIR /src/parse_args
-RUN wget $parse_args_source -O - | tar xz --strip-components=1 && \
-    ln -s ../tclconfig && \
+ENV parse_args_source="https://github.com/RubyLane/parse_args/archive/v0.3.4.tar.gz"
+WORKDIR /src
+RUN git clone --recurse-submodules --shallow-submodules --branch v0.3.4.1 --single-branch --depth 1 https://github.com/RubyLane/parse_args && \
+	cd parse_args && \
     autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
     make install-binaries install-libraries clean && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # rl_json - tip of master
-ENV rl_json_source="https://github.com/RubyLane/rl_json/archive/0.11.3.tar.gz"
-WORKDIR /src/rl_json
-RUN wget $rl_json_source -O - | tar xz --strip-components=1 && \
-    ln -s ../tclconfig && \
+ENV rl_json_source="https://github.com/RubyLane/rl_json/archive/0.11.5.tar.gz"
+WORKDIR /src
+RUN git clone --recurse-submodules --shallow-submodules --branch 0.11.5.1 --single-branch --depth 1 https://github.com/RubyLane/rl_json && \
+	cd rl_json && \
     autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
     make -j 8 all && \
     make install-binaries install-libraries clean && \
@@ -110,10 +119,10 @@ RUN wget $gc_class_source -O - | tar xz --strip-components=1 && \
     cp gc_class*.tm /usr/local/lib/tcl8/site-tcl && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # rl_http
-ENV rl_http_source="https://github.com/RubyLane/rl_http/archive/1.13.tar.gz"
+ENV rl_http_source="https://github.com/RubyLane/rl_http/archive/1.14.tar.gz"
 WORKDIR /src/rl_http
 RUN wget $rl_http_source -O - | tar xz --strip-components=1 && \
-    cp rl_http*.tm /usr/local/lib/tcl8/site-tcl && \
+	make install && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # sqlite3
 ENV sqlite3_source="https://sqlite.org/2021/sqlite-autoconf-3350400.tar.gz"
@@ -123,20 +132,20 @@ RUN wget $sqlite3_source -O - | tar xz --strip-components=1 && \
     autoconf && ./configure CFLAGS="${CFLAGS}" && \
     make all install-binaries install-libraries clean && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# tcc4tcl - tip of master
-ENV tcc4tcl_source="https://github.com/cyanogilvie/tcc4tcl/archive/b8171e0.tar.gz"
-WORKDIR /src/tcc4tcl
-RUN wget $tcc4tcl_source -O - | tar xz --strip-components=1 && \
-    apk add --no-cache --virtual build-dependencies openssl && \
-    build/pre.sh && \
-    sed --in-place -e 's/^typedef __builtin_va_list \(.*\)/#if defined(__GNUC__) \&\& __GNUC__ >= 3\ntypedef __builtin_va_list \1\n#else\ntypedef char* \1\n#endif/g' /usr/include/bits/alltypes.h && \
-    sed --in-place -e 's/@@VERS@@/0.30.1/g' configure.ac Makefile.in tcc4tcl.tcl && \
-    autoconf && \
-    ./configure --prefix=/usr/local && \
-    make -j 8 all && \
-    make install && \
-    apk del build-dependencies && \
-    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
+## tcc4tcl - tip of master
+#ENV tcc4tcl_source="https://github.com/cyanogilvie/tcc4tcl/archive/b8171e0.tar.gz"
+#WORKDIR /src/tcc4tcl
+#RUN wget $tcc4tcl_source -O - | tar xz --strip-components=1 && \
+#    apk add --no-cache --virtual build-dependencies openssl && \
+#    build/pre.sh && \
+#    sed --in-place -e 's/^typedef __builtin_va_list \(.*\)/#if defined(__GNUC__) \&\& __GNUC__ >= 3\ntypedef __builtin_va_list \1\n#else\ntypedef char* \1\n#endif/g' /usr/include/bits/alltypes.h && \
+#    sed --in-place -e 's/@@VERS@@/0.30.1/g' configure.ac Makefile.in tcc4tcl.tcl && \
+#    autoconf && \
+#    ./configure --prefix=/usr/local && \
+#    make -j 8 all && \
+#    make install && \
+#    apk del build-dependencies && \
+#    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 
 # Codeforge packages and applications up to m2
 # tbuild - tip of master
@@ -235,15 +244,15 @@ RUN apk add --no-cache readline && \
 	apk del --no-cache build-dependencies
 COPY tcl/tclshrc /root/.tclshrc
 
-# expect: tip of trunk
-ENV expect_source="https://core.tcl-lang.org/expect/tarball/f8e8464f14/expect.tar.gz"
-WORKDIR /src/tcl
-RUN wget $expect_source -O - | tar xz --strip-components=1 && \
-    ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
-    make -j 8 all && \
-    make install-binaries install-libraries && \
-    make clean && \
-    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
+## expect: tip of trunk
+#ENV expect_source="https://core.tcl-lang.org/expect/tarball/f8e8464f14/expect.tar.gz"
+#WORKDIR /src/tcl
+#RUN wget $expect_source -O - | tar xz --strip-components=1 && \
+#    ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
+#    make -j 8 all && \
+#    make install-binaries install-libraries && \
+#    make clean && \
+#    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 
 # tclsignal
 ENV tclsignal_source="https://github.com/cyanogilvie/tclsignal/archive/v1.4.4.1.tar.gz"
@@ -273,11 +282,11 @@ RUN wget $inotify_source -O - | tar xz --strip-components=1 && \
 	find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 
 # Pixel: tip of master
-ENV pixel_source="https://github.com/cyanogilvie/pixel/archive/2c70755.tar.gz"
+ENV pixel_source="https://github.com/cyanogilvie/pixel"
 WORKDIR /src/pixel
 RUN apk add --no-cache libjpeg-turbo libexif libpng librsvg libwebp imlib2 && \
-	apk add --no-cache --virtual build-dependencies libjpeg-turbo-dev libexif-dev libpng-dev librsvg-dev libwebp-dev imlib2-dev && \
-	wget $pixel_source -O - | tar xz --strip-components=1 && \
+	apk add --no-cache --virtual build-dependencies libjpeg-turbo-dev libexif-dev libpng-dev librsvg-dev libwebp-dev imlib2-dev
+RUN git clone -q -b svg_cairo_0.4 --recurse-submodules --shallow-submodules --single-branch --depth 1 $pixel_source . && \
 	cd pixel_core && \
 		ln -s /src/tclconfig && \
 		autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
@@ -369,7 +378,7 @@ RUN wget $parsetcl_source -O - | tar xz --strip-components=1 && \
 	find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 
 # aws api, generated from the botocore repo json files
-ENV botocore_source="https://github.com/boto/botocore/archive/refs/tags/1.20.57.tar.gz"
+ENV botocore_source="https://github.com/boto/botocore/archive/refs/tags/1.27.96.tar.gz"
 WORKDIR /src/botocore
 RUN wget $botocore_source -O - | tar xz --strip-components=1
 COPY api/build.tcl /src/botocore
@@ -404,22 +413,18 @@ RUN wget $resolve_source -O - | tar xz --strip-components=1 && \
     make install-binaries install-libraries clean && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # dedup
-ENV dedup_source="https://github.com/cyanogilvie/dedup/archive/v0.9.1.tar.gz"
-WORKDIR /src/dedup
-RUN wget $dedup_source -O - | tar xz --strip-components=1 && \
-    ln -s ../tclconfig && \
+ENV dedup_source="https://github.com/cyanogilvie/dedup/archive/v0.9.4.1.tar.gz"
+WORKDIR /src
+RUN git clone --recurse-submodules --shallow-submodules --branch v0.9.4.1 --single-branch --depth 1 https://github.com/cyanogilvie/dedup && \
+	cd dedup && \
     autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
     make install-binaries install-libraries clean && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # reuri
 ENV reuri_source="https://github.com/cyanogilvie/reuri"
 WORKDIR /src/reuri
-RUN apk add --no-cache --virtual build-dependencies git && \
-	git clone -q -b v0.2.6 --depth 1 $reuri_source . && \
-	git submodule update --init --recommend-shallow --depth=1 tools/re2c && \
-	git submodule update --init --recommend-shallow --depth=1 tools/packcc && \
-    ln -s ../tclconfig && \
-    autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols --with-dedup=/usr/local/lib/dedup0.9.1 && \
+RUN git clone -q -b v0.2.8.1 --recurse-submodules --shallow-submodules --single-branch --depth 1 $reuri_source . && \
+    autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols --with-dedup=/usr/local/lib/dedup0.9.4 && \
     make pgo install-binaries install-libraries clean && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # brotli
@@ -464,12 +469,33 @@ RUN wget $rltest_source -O - | tar xz --strip-components=1 && \
 	make install-tm && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 
+# jitc
+ENV jitc_source="https://github.com/cyanogilvie/jitc"
+WORKDIR /src/jitc
+RUN apk add --no-cache --virtual build-dependencies git python3 && \
+	apk add --no-cache libstdc++ libgcc && \
+	git clone -q -b v0.1.9 --recurse-submodules --shallow-submodules --single-branch --depth 1 $jitc_source . && \
+	autoconf && \
+	./configure CFLAGS="${CFLAGS}" --enable-symbols && \
+    make install-binaries install-libraries clean && \
+    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
+
+# pgwire
+ENV pgwire_source="https://github.com/cyanogilvie/pgwire/archive/v3.0.0b16.tar.gz"
+WORKDIR /src/pgwire
+RUN wget $pgwire_source -O - | tar xz --strip-components=1 && \
+    cd src && \
+    make all && \
+    cp -a tm/* /usr/local/lib/tcl8/site-tcl && \
+    make clean && \
+    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
+
 # misc local bits
 COPY tcl/tm /usr/local/lib/tcl8/site-tcl
 COPY tools/* /usr/local/bin/
 
 # meta
-RUN /usr/local/bin/package_report
+#RUN /usr/local/bin/package_report
 # alpine-tcl-build >>>
 
 # alpine-tcl-gdb <<<
@@ -485,10 +511,8 @@ RUN find /usr -name "*.so" -exec strip {} \;
 
 # alpine-tcl <<<
 FROM alpine:$ALPINE_VER AS alpine-tcl
-RUN apk add --no-cache musl-dev readline libjpeg-turbo libexif libpng libwebp ncurses ncurses-libs && \
+RUN apk add --no-cache musl-dev readline libjpeg-turbo libexif libpng libwebp ncurses ncurses-libs libstdc++ libgcc && \
 	rm /usr/lib/libc.a
-# Need to fix glibc-ism for tcc4tcl to work
-RUN sed --in-place -e 's/^typedef __builtin_va_list \(.*\)/#if defined(__GNUC__) \&\& __GNUC__ >= 3\ntypedef __builtin_va_list \1\n#else\ntypedef char* \1\n#endif/g' /usr/include/bits/alltypes.h
 COPY --from=alpine-tcl-build /usr/local /usr/local
 COPY --from=alpine-tcl-build /root/.tclshrc /root/
 WORKDIR /here
@@ -498,10 +522,8 @@ ENTRYPOINT ["tclsh"]
 
 # alpine-tcl-stripped <<<
 FROM alpine:$ALPINE_VER AS alpine-tcl-stripped
-RUN apk add --no-cache musl-dev readline libjpeg-turbo libexif libpng libwebp ncurses ncurses-libs && \
+RUN apk add --no-cache musl-dev readline libjpeg-turbo libexif libpng libwebp ncurses ncurses-libs libstdc++ libgcc && \
 	rm /usr/lib/libc.a
-# Need to fix glibc-ism for tcc4tcl to work
-RUN sed --in-place -e 's/^typedef __builtin_va_list \(.*\)/#if defined(__GNUC__) \&\& __GNUC__ >= 3\ntypedef __builtin_va_list \1\n#else\ntypedef char* \1\n#endif/g' /usr/include/bits/alltypes.h
 COPY --from=alpine-tcl-build-stripped /usr/local /usr/local
 COPY --from=alpine-tcl-build-stripped /root/.tclshrc /root/
 WORKDIR /here

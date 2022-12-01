@@ -4,9 +4,11 @@
 # - Implement paginators
 # - Clean up this horrible mess
 
-if {[file exists /here/api]} {
-	tcl::tm::path add /here/api
-}
+#if {[file exists /here/api]} {
+#	tcl::tm::path add /here/api
+#}
+set here	[file dirname [file normalize [info script]]]
+tcl::tm::path add $here
 set aws_ver	[package require aws 2]
 
 package require rl_json
@@ -523,7 +525,7 @@ proc build_aws_services args { #<<<
 
 	set by_protocol	{}
 	foreach service_dir [glob -type d -tails -directory $definitions *] {
-		set latest	[lindex [glob -type d -tails -directory [file join $definitions $service_dir] *] 0]
+		set latest	[lindex [lsort -decreasing -dictionary [glob -type d -tails -directory [file join $definitions $service_dir] *]] 0]
 		if {$latest eq ""} {
 			error "Couldn't resolve latest version of $service_dir"
 		}

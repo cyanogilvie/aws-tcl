@@ -1,5 +1,5 @@
 VER=v0.9.54
-PLATFORM=linux/amd64
+PLATFORM=linux/arm64,linux/amd64
 
 CONTAINER_ENV = -v "`pwd`/here:/here" --network host --ulimit core=-1
 

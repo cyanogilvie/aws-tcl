@@ -1,5 +1,6 @@
-VER=v0.9.54
+VER=v0.9.56
 PLATFORM=linux/arm64,linux/amd64
+DEST=--push
 
 CONTAINER_ENV = -v "`pwd`/here:/here" --network host --ulimit core=-1
 
@@ -8,7 +9,10 @@ all: alpine-tcl m2
 alpine-tcl: Dockerfile
 	#docker buildx build --target alpine-tcl-build --platform linux/amd64 -t alpine-tcl-build .
 	#docker buildx build --target alpine-tcl --platform linux/amd64 -t cyanogilvie/alpine-tcl:$(VER) .
-	docker buildx build --push --target alpine-tcl-stripped --platform $(PLATFORM) -t cyanogilvie/alpine-tcl:$(VER)-stripped .
+	docker buildx build $(DEST) --target alpine-tcl-stripped --platform $(PLATFORM) -t cyanogilvie/alpine-tcl:$(VER)-stripped .
+
+alpine-tcl-gdb: Makefile
+	docker buildx build $(DEST) --target alpine-tcl-gdb --platform $(PLATFORM) -t cyanogilvie/alpine-tcl:$(VER)-gdb .
 
 m2: Dockerfile
 	docker buildx build --target m2 --platform linux/amd64 -t cyanogilvie/m2:$(VER) .

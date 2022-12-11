@@ -16,6 +16,7 @@ ARG TARGETARCH
 FROM base-$TARGETARCH AS alpine-tcl-build
 ARG CFLAGS
 RUN apk add --no-cache build-base autoconf automake bsd-compat-headers bash ca-certificates libssl1.1 libcrypto1.1 docker-cli git
+RUN git config --global advice.detachedHead false
 # tcl: tip of core-8-branch
 ENV tcl_source="https://core.tcl-lang.org/tcl/tarball/99b8ad35a258cade/tcl.tar.gz"
 WORKDIR /src/tcl
@@ -51,15 +52,6 @@ RUN wget $tdbc_source -O - | tar xz --strip-components=1 && \
     autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
     make -j 8 all && \
     make install-binaries install-libraries clean && \
-    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# pgwire
-ENV pgwire_source="https://github.com/cyanogilvie/pgwire/archive/v3.0.0b15.tar.gz"
-WORKDIR /src/pgwire
-RUN wget $pgwire_source -O - | tar xz --strip-components=1 && \
-    cd src && \
-    make all && \
-    cp -a tm/* /usr/local/lib/tcl8/site-tcl && \
-    make clean && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # tcltls
 ENV tcltls_source="https://core.tcl-lang.org/tcltls/tarball/tls-1-7-22/tcltls.tar.gz"
@@ -119,7 +111,7 @@ RUN wget $gc_class_source -O - | tar xz --strip-components=1 && \
     cp gc_class*.tm /usr/local/lib/tcl8/site-tcl && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # rl_http
-ENV rl_http_source="https://github.com/RubyLane/rl_http/archive/1.14.tar.gz"
+ENV rl_http_source="https://github.com/RubyLane/rl_http/archive/1.14.1.tar.gz"
 WORKDIR /src/rl_http
 RUN wget $rl_http_source -O - | tar xz --strip-components=1 && \
 	make install && \
@@ -423,17 +415,17 @@ RUN git clone --recurse-submodules --shallow-submodules --branch v0.9.4.1 --sing
 # reuri
 ENV reuri_source="https://github.com/cyanogilvie/reuri"
 WORKDIR /src/reuri
-RUN git clone -q -b v0.2.8.1 --recurse-submodules --shallow-submodules --single-branch --depth 1 $reuri_source . && \
+RUN git clone -b v0.2.9.1 --recurse-submodules --shallow-submodules --single-branch --depth 1 $reuri_source . && \
     autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols --with-dedup=/usr/local/lib/dedup0.9.4 && \
-    make pgo install-binaries install-libraries clean && \
+    #make pgo install-binaries install-libraries clean && \
+    make install-binaries install-libraries clean && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # brotli
 ENV brotli_source="https://github.com/cyanogilvie/tcl-brotli"
 WORKDIR /src/brotli
 RUN apk add --no-cache brotli-libs && \
 	apk add --no-cache --virtual build-dependencies git brotli-dev && \
-	git clone -q -b v0.2 --depth 1 $brotli_source . && \
-    ln -s ../tclconfig && \
+	git clone -q -b v0.3.1 --recurse-submodules --shallow-submodules --single-branch --depth 1 $brotli_source . && \
     autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
     make install-binaries install-libraries clean && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
@@ -474,16 +466,16 @@ ENV jitc_source="https://github.com/cyanogilvie/jitc"
 WORKDIR /src/jitc
 RUN apk add --no-cache --virtual build-dependencies git python3 && \
 	apk add --no-cache libstdc++ libgcc && \
-	git clone -q -b v0.1.9 --recurse-submodules --shallow-submodules --single-branch --depth 1 $jitc_source . && \
+	git clone -b v0.2.1 --recurse-submodules --shallow-submodules --single-branch --depth 1 $jitc_source . && \
 	autoconf && \
 	./configure CFLAGS="${CFLAGS}" --enable-symbols && \
     make install-binaries install-libraries clean && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 
 # pgwire
-ENV pgwire_source="https://github.com/cyanogilvie/pgwire/archive/v3.0.0b16.tar.gz"
+ENV pgwire_source="https://github.com/cyanogilvie/pgwire"
 WORKDIR /src/pgwire
-RUN wget $pgwire_source -O - | tar xz --strip-components=1 && \
+RUN git clone -b v3.0.0b19 --recurse-submodules --shallow-submodules --single-branch --depth 1 $pgwire_source . && \
     cd src && \
     make all && \
     cp -a tm/* /usr/local/lib/tcl8/site-tcl && \
@@ -500,7 +492,7 @@ COPY tools/* /usr/local/bin/
 
 # alpine-tcl-gdb <<<
 FROM alpine-tcl-build as alpine-tcl-gdb
-RUN apk add --no-cache gdb
+RUN apk add --no-cache gdb vim
 WORKDIR /here
 # alpine-tcl-gdb >>>
 

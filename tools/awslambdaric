@@ -137,7 +137,7 @@ while 1 {
 		# Handle errors
 		# If an error occurs, call the invocation error API. (https://docs.aws.amazon.com/lambda/latest/dg/runtimes-api.html#runtimes-api-invokeerror)
 		# TODO: return proper sanitized errors
-		puts stderr "Unhandled error processing invocation: [dict get $options -errorinfo]"
+		puts stderr "Unhandled error processing invocation {[dict get $options -errorcode]}: [dict get $options -errorinfo]"
 		rl_http instvar h POST $api_url/runtime/invocation/$req_id/error -data [json template {
 			{
 				"errorMessage": "~S:errmsg",

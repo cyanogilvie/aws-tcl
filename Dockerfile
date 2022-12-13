@@ -82,9 +82,9 @@ RUN git clone --recurse-submodules --shallow-submodules --branch 0.11.5.1 --sing
     make install-binaries install-libraries clean && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # hash - tip of master
-ENV hash_source="https://github.com/cyanogilvie/hash/archive/79c2066.tar.gz"
+ENV hash_source="https://github.com/cyanogilvie/hash"
 WORKDIR /src/hash
-RUN wget $hash_source -O - | tar xz --strip-components=1 && \
+RUN git clone -b v0.3.2 --recurse-submodules --shallow-submodules --single-branch --depth 1 $hash_source . && \
     autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
     make -j 8 all && \
     make install-binaries install-libraries clean && \
@@ -111,7 +111,7 @@ RUN wget $gc_class_source -O - | tar xz --strip-components=1 && \
     cp gc_class*.tm /usr/local/lib/tcl8/site-tcl && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # rl_http
-ENV rl_http_source="https://github.com/RubyLane/rl_http/archive/1.14.1.tar.gz"
+ENV rl_http_source="https://github.com/RubyLane/rl_http/archive/1.14.4.tar.gz"
 WORKDIR /src/rl_http
 RUN wget $rl_http_source -O - | tar xz --strip-components=1 && \
 	make install && \
@@ -475,7 +475,7 @@ RUN apk add --no-cache --virtual build-dependencies git python3 && \
 # pgwire
 ENV pgwire_source="https://github.com/cyanogilvie/pgwire"
 WORKDIR /src/pgwire
-RUN git clone -b v3.0.0b19 --recurse-submodules --shallow-submodules --single-branch --depth 1 $pgwire_source . && \
+RUN git clone -b v3.0.0b20 --recurse-submodules --shallow-submodules --single-branch --depth 1 $pgwire_source . && \
     cd src && \
     make all && \
     cp -a tm/* /usr/local/lib/tcl8/site-tcl && \

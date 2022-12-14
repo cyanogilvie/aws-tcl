@@ -563,34 +563,4 @@ VOLUME /tmp/m2
 ENTRYPOINT ["m2_entrypoint"]
 # m2-stripped >>>
 
-# alpine-tcl-lambda <<<
-FROM alpine-tcl AS alpine-tcl-lambda
-WORKDIR /usr/local/bin
-RUN wget https://github.com/aws/aws-lambda-runtime-interface-emulator/releases/download/v1.0/aws-lambda-rie && \
-	chmod +x aws-lambda-rie
-COPY lambda/entry.sh /usr/local/bin/
-COPY lambda/bootstrap /usr/local/bin/
-RUN mkdir /opt/extensions
-WORKDIR /var/task
-VOLUME /var/task
-ENV LAMBDA_TASK_ROOT=/var/task
-ENTRYPOINT ["/usr/local/bin/entry.sh"]
-CMD ["app.handler"] 
-# alpine-tcl-lambda >>>
-
-# alpine-tcl-lambda-stripped <<<
-FROM alpine-tcl-stripped AS alpine-tcl-lambda-stripped
-WORKDIR /usr/local/bin
-RUN wget https://github.com/aws/aws-lambda-runtime-interface-emulator/releases/download/v1.0/aws-lambda-rie && \
-	chmod +x aws-lambda-rie
-COPY lambda/entry.sh /usr/local/bin/
-COPY lambda/bootstrap /usr/local/bin/
-RUN mkdir /opt/extensions
-WORKDIR /var/task
-VOLUME /var/task
-ENV LAMBDA_TASK_ROOT=/var/task
-ENTRYPOINT ["/usr/local/bin/entry.sh"]
-CMD ["app.handler"] 
-# alpine-tcl-lambda-stripped >>>
-
 # vim: foldmethod=marker foldmarker=<<<,>>>

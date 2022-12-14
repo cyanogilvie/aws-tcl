@@ -1,0 +1,37 @@
+if {[lsearch [namespace children] ::tcltest] == -1} {
+    package require tcltest
+    namespace import ::tcltest::*
+}
+
+package require rl_http
+package require rl_json
+interp alias {} json {} ::rl_json::json
+
+test simple-1.1 {Basic function invocation} -body { #<<<
+	rl_http instvar h POST http://lambda:8080/2015-03-31/functions/function/invocations -data {{"example":"event"}}
+	list [$h code] [$h body]
+} -cleanup {
+	unset -nocomplain h
+} -result [list 200 [json template {
+	{
+		"hello": "world"
+	}
+}]]
+#>>>
+test simple-2.1 {Hooks: post_handle, shutdown} -body { #<<<
+	rl_http instvar h POST http://lambda:8080/2015-03-31/functions/function/invocations -data {{"test":"simple-2.1"}}
+	list [$h code] [$h body]
+} -cleanup {
+	unset -nocomplain h
+} -result [list 200 [json template {
+	{
+		"hello": "world"
+	}
+}]]
+#>>>
+
+# cleanup
+::tcltest::cleanupTests
+return
+
+# vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4

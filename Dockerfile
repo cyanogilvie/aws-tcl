@@ -400,7 +400,7 @@ RUN apk add --no-cache --update ncurses-libs && \
 # resolve
 ENV resolve_source="https://github.com/cyanogilvie/resolve"
 WORKDIR /src/resolve
-RUN git clone --recurse-submodules --shallow-submodules --branch v0.9 --single-branch --depth 1 $resolve_source . && \
+RUN git clone --recurse-submodules --shallow-submodules --branch v0.10 --single-branch --depth 1 $resolve_source . && \
     autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
     make install-binaries install-libraries clean && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete

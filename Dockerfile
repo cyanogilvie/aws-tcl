@@ -15,7 +15,7 @@ ARG CFLAGS="-O3"
 ARG TARGETARCH
 FROM base-$TARGETARCH AS alpine-tcl-build
 ARG CFLAGS
-RUN apk add --no-cache build-base autoconf automake bsd-compat-headers bash ca-certificates libssl1.1 libcrypto1.1 docker-cli git
+RUN apk add --no-cache --update build-base autoconf automake bsd-compat-headers bash ca-certificates libssl1.1 libcrypto1.1 docker-cli git
 RUN git config --global advice.detachedHead false
 # tcl: tip of core-8-branch
 ENV tcl_source="https://core.tcl-lang.org/tcl/tarball/99b8ad35a258cade/tcl.tar.gz"
@@ -56,7 +56,7 @@ RUN wget $tdbc_source -O - | tar xz --strip-components=1 && \
 # tcltls
 ENV tcltls_source="https://core.tcl-lang.org/tcltls/tarball/tls-1-7-22/tcltls.tar.gz"
 WORKDIR /src/tcltls
-RUN apk add --no-cache --virtual build-dependencies curl openssl-dev curl-dev && \
+RUN apk add --no-cache --update --virtual build-dependencies curl openssl-dev curl-dev && \
     wget $tcltls_source -O - | tar xz --strip-components=1 && \
     ./autogen.sh && \
     ./configure CFLAGS="${CFLAGS}" --prefix=/usr/local --libdir=/usr/local/lib --disable-sslv2 --disable-sslv3 --disable-tlsv1.0 --disable-tlsv1.1 --enable-ssl-fastpath --enable-symbols && \
@@ -128,7 +128,7 @@ RUN wget $sqlite3_source -O - | tar xz --strip-components=1 && \
 #ENV tcc4tcl_source="https://github.com/cyanogilvie/tcc4tcl/archive/b8171e0.tar.gz"
 #WORKDIR /src/tcc4tcl
 #RUN wget $tcc4tcl_source -O - | tar xz --strip-components=1 && \
-#    apk add --no-cache --virtual build-dependencies openssl && \
+#    apk add --no-cache --update --virtual build-dependencies openssl && \
 #    build/pre.sh && \
 #    sed --in-place -e 's/^typedef __builtin_va_list \(.*\)/#if defined(__GNUC__) \&\& __GNUC__ >= 3\ntypedef __builtin_va_list \1\n#else\ntypedef char* \1\n#endif/g' /usr/include/bits/alltypes.h && \
 #    sed --in-place -e 's/@@VERS@@/0.30.1/g' configure.ac Makefile.in tcc4tcl.tcl && \
@@ -227,8 +227,8 @@ RUN wget $datasource_source -O - | tar xz --strip-components=1 && \
 # tclreadline
 WORKDIR /src/tclreadline
 ENV tclreadline_source="https://github.com/cyanogilvie/tclreadline/archive/v2.3.8.1.tar.gz"
-RUN apk add --no-cache readline && \
-	apk add --no-cache --virtual build-dependencies readline-dev && \
+RUN apk add --no-cache --update readline && \
+	apk add --no-cache --update --virtual build-dependencies readline-dev && \
 	wget $tclreadline_source -O - | tar xz --strip-components=1 && \
     autoconf && ./configure CFLAGS="${CFLAGS}" --without-tk && \
     make install-libLTLIBRARIES install-tclrlSCRIPTS && \
@@ -276,8 +276,8 @@ RUN wget $inotify_source -O - | tar xz --strip-components=1 && \
 # Pixel: tip of master
 ENV pixel_source="https://github.com/cyanogilvie/pixel"
 WORKDIR /src/pixel
-RUN apk add --no-cache libjpeg-turbo libexif libpng librsvg libwebp imlib2 && \
-	apk add --no-cache --virtual build-dependencies libjpeg-turbo-dev libexif-dev libpng-dev librsvg-dev libwebp-dev imlib2-dev
+RUN apk add --no-cache --update libjpeg-turbo libexif libpng librsvg libwebp imlib2 && \
+	apk add --no-cache --update --virtual build-dependencies libjpeg-turbo-dev libexif-dev libpng-dev librsvg-dev libwebp-dev imlib2-dev
 RUN git clone -q -b svg_cairo_0.4 --recurse-submodules --shallow-submodules --single-branch --depth 1 $pixel_source . && \
 	cd pixel_core && \
 		ln -s /src/tclconfig && \
@@ -335,7 +335,7 @@ RUN wget $docker_source -O - | tar xz --strip-components=1 && \
 ENV gumbo_source="https://github.com/google/gumbo-parser/archive/v0.10.1.tar.gz"
 WORKDIR /src/gumbo
 RUN wget $gumbo_source -O - | tar xz --strip-components=1 && \
-	apk add --no-cache libtool && \
+	apk add --no-cache --update libtool && \
 	./autogen.sh && \
 	./configure CFLAGS="${CFLAGS}" --enable-static=no && \
 	make -j 8 all && \
@@ -355,7 +355,7 @@ RUN wget $tdom_source -O - | tar xz --strip-components=1 && \
 # tty
 ENV tty_source="https://github.com/cyanogilvie/tcl-tty/archive/v0.5.tar.gz"
 WORKDIR /src/tty
-RUN apk add --no-cache ncurses && \
+RUN apk add --no-cache --update ncurses && \
 	wget $tty_source -O - | tar xz --strip-components=1 && \
 	make install-tm && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
@@ -388,26 +388,26 @@ RUN wget $flock_source -O - | tar xz --strip-components=1 && \
 # ck
 ENV ck_source="https://github.com/cyanogilvie/ck/archive/v8.6.tar.gz"
 WORKDIR /src/ck
-RUN apk add --no-cache ncurses-libs && \
-	apk add --no-cache --virtual build-dependencies ncurses-dev && \
+RUN apk add --no-cache --update ncurses-libs && \
+	apk add --no-cache --update --virtual build-dependencies ncurses-dev && \
 	wget $ck_source -O - | tar xz --strip-components=1 && \
 	ln -s /src/tclconfig && \
 	autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
 	make install-binaries install-libraries clean && \
 	cp -a library /usr/local/lib/ck8.6/ && \
+	apk del --no-cache build-dependencies && \
 	find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # resolve
 ENV resolve_source="https://github.com/cyanogilvie/resolve"
 WORKDIR /src/resolve
-RUN git clone --recurse-submodules --shallow-submodules --branch v0.9 --single-branch --depth 1 https://github.com/cyanogilvie/resolve && \
+RUN git clone --recurse-submodules --shallow-submodules --branch v0.9 --single-branch --depth 1 $resolve_source . && \
     autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
     make install-binaries install-libraries clean && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # dedup
 ENV dedup_source="https://github.com/cyanogilvie/dedup"
-WORKDIR /src
-RUN git clone --recurse-submodules --shallow-submodules --branch v0.9.4.2 --single-branch --depth 1 https://github.com/cyanogilvie/dedup && \
-	cd dedup && \
+WORKDIR /src/dedup
+RUN git clone --recurse-submodules --shallow-submodules --branch v0.9.4.2 --single-branch --depth 1 $dedup_source . && \
     autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
     make install-binaries install-libraries clean && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
@@ -422,11 +422,12 @@ RUN git clone -b v0.2.9.1 --recurse-submodules --shallow-submodules --single-bra
 # brotli
 ENV brotli_source="https://github.com/cyanogilvie/tcl-brotli"
 WORKDIR /src/brotli
-RUN apk add --no-cache brotli-libs && \
-	apk add --no-cache --virtual build-dependencies git brotli-dev && \
+RUN apk add --no-cache --update brotli-libs && \
+	apk add --no-cache --update --virtual build-dependencies git brotli-dev && \
 	git clone -q -b v0.3.1 --recurse-submodules --shallow-submodules --single-branch --depth 1 $brotli_source . && \
     autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
     make install-binaries install-libraries clean && \
+	apk del --no-cache build-dependencies && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 
 # aio
@@ -463,12 +464,13 @@ RUN wget $rltest_source -O - | tar xz --strip-components=1 && \
 # jitc
 ENV jitc_source="https://github.com/cyanogilvie/jitc"
 WORKDIR /src/jitc
-RUN apk add --no-cache --virtual build-dependencies git python3 && \
-	apk add --no-cache libstdc++ libgcc && \
+RUN apk add --no-cache --update --virtual build-dependencies git python3 && \
+	apk add --no-cache --update libstdc++ libgcc && \
 	git clone -b v0.2.1 --recurse-submodules --shallow-submodules --single-branch --depth 1 $jitc_source . && \
 	autoconf && \
 	./configure CFLAGS="${CFLAGS}" --enable-symbols && \
     make install-binaries install-libraries clean && \
+	apk del --no-cache build-dependencies && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 
 # pgwire
@@ -491,7 +493,7 @@ COPY tools/* /usr/local/bin/
 
 # alpine-tcl-gdb <<<
 FROM alpine-tcl-build as alpine-tcl-gdb
-RUN apk add --no-cache gdb vim
+RUN apk add --no-cache --update gdb vim
 WORKDIR /here
 # alpine-tcl-gdb >>>
 
@@ -502,7 +504,7 @@ RUN find /usr -name "*.so" -exec strip {} \;
 
 # alpine-tcl <<<
 FROM alpine:$ALPINE_VER AS alpine-tcl
-RUN apk add --no-cache musl-dev readline libjpeg-turbo libexif libpng libwebp ncurses ncurses-libs libstdc++ libgcc && \
+RUN apk add --no-cache --update musl-dev readline libjpeg-turbo libexif libpng libwebp ncurses ncurses-libs libstdc++ libgcc && \
 	rm /usr/lib/libc.a
 COPY --from=alpine-tcl-build /usr/local /usr/local
 COPY --from=alpine-tcl-build /root/.tclshrc /root/
@@ -513,7 +515,7 @@ ENTRYPOINT ["tclsh"]
 
 # alpine-tcl-stripped <<<
 FROM alpine:$ALPINE_VER AS alpine-tcl-stripped
-RUN apk add --no-cache musl-dev readline libjpeg-turbo libexif libpng libwebp ncurses ncurses-libs libstdc++ libgcc && \
+RUN apk add --no-cache --update musl-dev readline libjpeg-turbo libexif libpng libwebp ncurses ncurses-libs libstdc++ libgcc && \
 	rm /usr/lib/libc.a
 COPY --from=alpine-tcl-build-stripped /usr/local /usr/local
 COPY --from=alpine-tcl-build-stripped /root/.tclshrc /root/

@@ -397,17 +397,16 @@ RUN apk add --no-cache ncurses-libs && \
 	cp -a library /usr/local/lib/ck8.6/ && \
 	find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # resolve
-ENV resolve_source="https://github.com/cyanogilvie/resolve/archive/v0.7.tar.gz"
+ENV resolve_source="https://github.com/cyanogilvie/resolve"
 WORKDIR /src/resolve
-RUN wget $resolve_source -O - | tar xz --strip-components=1 && \
-    ln -s ../tclconfig && \
+RUN git clone --recurse-submodules --shallow-submodules --branch v0.9 --single-branch --depth 1 https://github.com/cyanogilvie/resolve && \
     autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
     make install-binaries install-libraries clean && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # dedup
-ENV dedup_source="https://github.com/cyanogilvie/dedup/archive/v0.9.4.1.tar.gz"
+ENV dedup_source="https://github.com/cyanogilvie/dedup"
 WORKDIR /src
-RUN git clone --recurse-submodules --shallow-submodules --branch v0.9.4.1 --single-branch --depth 1 https://github.com/cyanogilvie/dedup && \
+RUN git clone --recurse-submodules --shallow-submodules --branch v0.9.4.2 --single-branch --depth 1 https://github.com/cyanogilvie/dedup && \
 	cd dedup && \
     autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
     make install-binaries install-libraries clean && \

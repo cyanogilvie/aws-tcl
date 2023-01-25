@@ -476,7 +476,7 @@ RUN apk add --no-cache --update --virtual build-dependencies git python3 && \
 # pgwire
 ENV pgwire_source="https://github.com/cyanogilvie/pgwire"
 WORKDIR /src/pgwire
-RUN git clone -b v3.0.0b20 --recurse-submodules --shallow-submodules --single-branch --depth 1 $pgwire_source . && \
+RUN git clone -b v3.0.0b21 --recurse-submodules --shallow-submodules --single-branch --depth 1 $pgwire_source . && \
     cd src && \
     make all && \
     cp -a tm/* /usr/local/lib/tcl8/site-tcl && \

@@ -103,7 +103,30 @@ proc reload_handler {} { #<<<
 		interp delete handler
 	}
 	create_handler_interp
-	handler eval [list source $handler_script.tcl]
+	if {[regexp {^s3://([^/]+)/(.*)$} $handler_script - bucket key]} {
+		set before	[clock microseconds]
+		interp create s3fetch		;# Need a clean interp to load the old aws1::s3 package
+		try {
+			s3fetch eval {package require aws1::s3}
+			set h	[open |[list tar xz] rb+]
+			try {
+				puts -nonewline $h [s3fetch eval [list s3 get -bucket $bucket -- ${key}.tar.gz]]
+				chan close $h write
+			} finally {
+				try {close $h} on error {errmsg options} {
+					puts "Error extracting s3://$bucket/${key}.tar.gz: $errmsg"
+					return -options $options $errmsg
+				}
+			}
+
+			handler eval [list source main.tcl]
+		} finally {
+			interp delete s3fetch
+		}
+		puts "reload_handler from s3: [format %.3f [expr {([clock microseconds]-$before)/1e3}]] ms"
+	} else {
+		handler eval [list source $handler_script.tcl]
+	}
 	return
 }
 

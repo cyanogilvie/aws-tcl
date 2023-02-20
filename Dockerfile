@@ -273,27 +273,35 @@ RUN wget $inotify_source -O - | tar xz --strip-components=1 && \
 	make install-binaries install-libraries clean && \
 	find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 
+# pHash: tip of master
+ENV phash_source="https://github.com/aetilius/pHash/archive/dea9ffc.tar.gz"
+WORKDIR /src/phash
+RUN apk add --no-cache --update cmake boost-dev libjpeg-turbo-dev libpng-dev tiff-dev
+RUN wget $phash_source -O - | tar xz --strip-components=1
+RUN apk manifest cmake
+RUN cmake -DPHASH_DYNAMIC=ON -DPHASH_STATIC=OFF . && \
+	make install && \
+	cp -a third-party/CImg/* /usr/local/include && \
+	find . -type f -not -name '*.c' -and -not -name '*.cpp' -and  -name '*.h' -delete
+
 # Pixel: tip of master
 ENV pixel_source="https://github.com/cyanogilvie/pixel"
 WORKDIR /src/pixel
 RUN apk add --no-cache --update libjpeg-turbo libexif libpng librsvg libwebp imlib2 && \
 	apk add --no-cache --update --virtual build-dependencies libjpeg-turbo-dev libexif-dev libpng-dev librsvg-dev libwebp-dev imlib2-dev
-RUN git clone -q -b svg_cairo_0.4 --recurse-submodules --shallow-submodules --single-branch --depth 1 $pixel_source . && \
-	cd pixel_core && \
+RUN git clone -q -b v3.5.3 --recurse-submodules --shallow-submodules --single-branch --depth 1 $pixel_source .
+RUN cd pixel_core && \
 		ln -s /src/tclconfig && \
 		autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
 		make -j 8 install-binaries install-libraries && \
 		cp pixelConfig.sh /usr/local/lib && \
 	cd ../pixel_jpeg && \
-		ln -s /src/tclconfig && \
 		autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
 		make install-binaries install-libraries clean && \
 	cd ../pixel_png && \
-		ln -s /src/tclconfig && \
 		autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
 		make install-binaries install-libraries clean && \
 	cd ../pixel_svg_cairo && \
-		ln -s /src/tclconfig && \
 		autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
 		make install-binaries install-libraries clean && \
 	cd ../pixel_webp && \
@@ -301,7 +309,9 @@ RUN git clone -q -b svg_cairo_0.4 --recurse-submodules --shallow-submodules --si
 		autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
 		make install-binaries install-libraries clean && \
 	cd ../pixel_imlib2 && \
-		ln -s /src/tclconfig && \
+		autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
+		make install-binaries install-libraries clean && \
+	cd ../pixel_phash && \
 		autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
 		make install-binaries install-libraries clean && \
 	cd ../pixel_core && \
@@ -504,7 +514,7 @@ RUN find /usr -name "*.so" -exec strip {} \;
 
 # alpine-tcl <<<
 FROM alpine:$ALPINE_VER AS alpine-tcl
-RUN apk add --no-cache --update musl-dev readline libjpeg-turbo libexif libpng libwebp ncurses ncurses-libs libstdc++ libgcc && \
+RUN apk add --no-cache --update musl-dev readline libjpeg-turbo libexif libpng libwebp tiff ncurses ncurses-libs libstdc++ libgcc && \
 	rm /usr/lib/libc.a
 COPY --from=alpine-tcl-build /usr/local /usr/local
 COPY --from=alpine-tcl-build /root/.tclshrc /root/
@@ -515,7 +525,7 @@ ENTRYPOINT ["tclsh"]
 
 # alpine-tcl-stripped <<<
 FROM alpine:$ALPINE_VER AS alpine-tcl-stripped
-RUN apk add --no-cache --update musl-dev readline libjpeg-turbo libexif libpng libwebp ncurses ncurses-libs libstdc++ libgcc && \
+RUN apk add --no-cache --update musl-dev readline libjpeg-turbo libexif libpng libwebp tiff ncurses ncurses-libs libstdc++ libgcc && \
 	rm /usr/lib/libc.a
 COPY --from=alpine-tcl-build-stripped /usr/local /usr/local
 COPY --from=alpine-tcl-build-stripped /root/.tclshrc /root/

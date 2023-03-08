@@ -1,5 +1,7 @@
 #!/usr/local/bin/tclsh8.7
 
+set handler_path	[file normalize [pwd]]
+
 package require rl_http
 package require rl_json
 package require parse_args
@@ -97,7 +99,7 @@ proc run_hooks args { #<<<
 
 #>>>
 proc reload_handler {} { #<<<
-	global handler_script
+	global handler_script handler_path
 	if {[interp exists handler]} {
 		run_hooks unload
 		interp delete handler
@@ -125,7 +127,7 @@ proc reload_handler {} { #<<<
 		}
 		puts "reload_handler from s3: [format %.3f [expr {([clock microseconds]-$before)/1e3}]] ms"
 	} else {
-		handler eval [list source $handler_script.tcl]
+		handler eval [list source [file join $handler_path $handler_script.tcl]]
 	}
 	return
 }

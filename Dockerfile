@@ -148,7 +148,7 @@ RUN wget $tbuild_source -O - | tar xz --strip-components=1 && \
 	chmod +x /usr/local/bin/tbuild-lite && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # cflib
-ENV cflib_source="https://github.com/cyanogilvie/cflib/archive/1.16.tar.gz"
+ENV cflib_source="https://github.com/cyanogilvie/cflib/archive/1.16.1.tar.gz"
 WORKDIR /src/cflib
 RUN wget $cflib_source -O - | tar xz --strip-components=1 && \
 	tbuild-lite && cp tm/tcl/* /usr/local/lib/tcl8/site-tcl/ && \

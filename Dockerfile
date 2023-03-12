@@ -353,7 +353,7 @@ RUN wget $gumbo_source -O - | tar xz --strip-components=1 && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 
 # tdom - fork with RL changes and extra stubs exports and misc
-ENV tdom_source="https://github.com/RubyLane/tdom/archive/cyan-0.9.3.1.tar.gz"
+ENV tdom_source="https://github.com/RubyLane/tdom/archive/cyan-0.9.3.2.tar.gz"
 WORKDIR /src/tdom
 RUN wget $tdom_source -O - | tar xz --strip-components=1 && \
     autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols --enable-html5 && \

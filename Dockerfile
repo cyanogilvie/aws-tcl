@@ -256,11 +256,10 @@ RUN wget $tclsignal_source -O - | tar xz --strip-components=1 && \
 	find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 
 # type
-ENV type_source="https://github.com/cyanogilvie/type/archive/v0.2.tar.gz"
+ENV type_source="https://github.com/cyanogilvie/type"
 WORKDIR /src/type
-RUN wget $type_source -O - | tar xz --strip-components=1 && \
-	ln -s /src/tclconfig && \
-	autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
+RUN git clone -q -b v0.2.1 --recurse-submodules --shallow-submodules --single-branch --depth 1 $type_source .
+RUN autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
 	make install-binaries install-libraries clean && \
 	find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 

@@ -420,14 +420,6 @@ RUN git clone --recurse-submodules --shallow-submodules --branch v0.9.4.2 --sing
     autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
     make install-binaries install-libraries clean && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# reuri
-ENV reuri_source="https://github.com/cyanogilvie/reuri"
-WORKDIR /src/reuri
-RUN git clone -b v0.4 --recurse-submodules --shallow-submodules --single-branch --depth 1 $reuri_source . && \
-    autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols --with-dedup=/usr/local/lib/dedup0.9.4 && \
-    #make pgo install-binaries install-libraries clean && \
-    make install-binaries install-libraries clean && \
-    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # brotli
 ENV brotli_source="https://github.com/cyanogilvie/tcl-brotli"
 WORKDIR /src/brotli
@@ -490,6 +482,15 @@ RUN git clone -b v3.0.0b21 --recurse-submodules --shallow-submodules --single-br
     make all && \
     cp -a tm/* /usr/local/lib/tcl8/site-tcl && \
     make clean && \
+    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
+
+# reuri
+ENV reuri_source="https://github.com/cyanogilvie/reuri"
+WORKDIR /src/reuri
+RUN git clone -b v0.4 --recurse-submodules --shallow-submodules --single-branch --depth 1 $reuri_source . && \
+    autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols --with-dedup=/usr/local/lib/dedup0.9.4 && \
+    #make pgo install-binaries install-libraries clean && \
+    make install-binaries install-libraries clean && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 
 # misc local bits

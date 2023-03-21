@@ -1,0 +1,91 @@
+if {"::tcltest" ni [namespace children]} {
+	package require tcltest
+	namespace import ::tcltest::*
+}
+
+set here	[file dirname [file normalize [info script]]]
+source [file join $here common.tcl]
+
+package require aws::s3
+
+test s3-1.1 {List buckets} -setup { #<<<
+	set hold	$::aws::debug
+	set ::aws::debug true
+} -body {
+	expr {
+		[json length [aws s3 list_buckets] Buckets] > 0
+	}
+} -cleanup {
+	set ::aws::debug	$hold
+	unset hold
+} -result 1
+#>>>
+test s3-2.1 {get_object} -setup { #<<<
+	set hold	$::aws::debug
+	set ::aws::debug 1
+} -body {
+	aws s3 get_object -region us-west-2 -bucket image1-rubylane -key inventory/image1-rubylane/usage-audit/2022-10-23T00-00Z/manifest.json
+} -cleanup {
+	set ::aws::debug $hold
+	unset -nocomplain hold
+} -result xx
+#>>>
+test s3-3.1 {write_get_object_reult} -setup { #<<<
+	set hold	$::aws::debug
+	set ::aws::debug 1
+} -body {
+	aws s3 write_get_object_response \
+		-status_code    200 \
+		-body           [encoding convertto utf-8 "Hello object lambda"] \
+		-content_type   text/plain \
+		-request_route  foo \
+		-request_token  bar
+} -cleanup {
+	set ::aws::debug $hold
+	unset -nocomplain hold
+} -result xx
+#>>>
+try {
+set i	0
+json foreach testcase [json extract [readfile [file join $here ../botocore/tests/functional/endpoint-rules/s3/endpoint-tests-1.json]] testCases] {
+	set extra	{}
+	set params	[json get $testcase params]
+	set endpoint_rules [readfile [file join $here ../botocore/botocore/data/s3/2006-03-01/endpoint-rule-set-1.json]]
+	json foreach {param details} [json extract $endpoint_rules parameters] {
+		if {[json exists $details default] && ![dict exists $params $param]} {
+			dict set params $param [json get $details default]
+		}
+	}
+	set body "\nset res \[::aws::s3::endpoint_rules [list $params]\]\n"
+	if {[json exists $testcase expect error]} {
+		lappend extra -returnCodes error -result [json get $testcase expect error]
+		set tail 1
+	} elseif {[json exists $testcase expect endpoint]} {
+		append body "\trltest::compare_json -subset left [list [json extract $testcase expect endpoint]] \$res\n"
+		lappend extra -result match
+		set tail 2
+	}
+	#if {$i ni {41 42}} {incr i; continue}
+
+	test s3_endpoint_rules_[incr i].$tail "endpoint rules functional testcase $i: [json get $testcase documentation]" -setup {
+		set tracecmd {apply {{cmdstr code res op} {
+			if {[string length $cmdstr] > 150} {set cmdstr "[string range $cmdstr 0 147]..."}
+			if {[string length $res] > 50} {set res "[string range $res 0 47]..."}
+			puts stderr "endpoint_rules leavestep cmdstr: ($cmdstr), op: ($op), code: ($code), res: ($res)"
+		}}}
+		#trace add execution ::aws::s3::endpoint_rules leavestep $tracecmd
+	} -body {try $body on error {errmsg options} {if 0 {puts stderr [dict get $options -errorinfo]}; return -options $options $errmsg}} -cleanup {
+		#trace remove execution ::aws::s3::endpoint_rules leavestep $tracecmd
+		unset -nocomplain res tracecmd body
+	} {*}$extra
+}
+} on error {errmsg options} {
+	puts stderr "Error autogenerating endpoint rules testcases: [dict get $options -errorinfo]"
+} finally {
+	unset -nocomplain i extra params endpoint_rules body
+}
+
+::tcltest::cleanupTests
+return
+
+# vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4

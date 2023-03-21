@@ -1,0 +1,48 @@
+if {[lsearch [namespace children] ::tcltest] == -1} {
+    package require tcltest
+    namespace import ::tcltest::*
+}
+
+tcltest::loadTestedCommands
+package require aws 2
+package require rl_json
+interp alias {} json {} ::rl_json::json
+
+tcltest::testConstraint have_s3_bucket [try { #<<<
+	aws::helpers::get_creds
+	set buckets_resp	[aws s3 list_buckets]
+	if {[json exists $buckets_resp Buckets 0 Name]} {
+		set bucket	[json get $buckets_resp Buckets 0 Name]
+	}
+} trap {AWS NO_CREDENTIALS} {} {
+	return -level 0 false
+} on ok {} {
+	info exists bucket
+} on error {errmsg options} {
+	puts stderr "Error checking for AWS credentials: ([dict get $options -errorcode]) [dict get $options -errorinfo]"
+	return -level 0 false
+} finally {
+	unset -nocomplain buckets_resp errmsg options
+}]
+#>>>
+
+test s3sigv4-1.1 {get key} -constraints have_s3_bucket -setup { #<<<
+	set key	{}
+	for {set c 0} {$c <= 255} {incr c} {
+		append key [format %c $c]
+	}
+	append key \u306f
+	set ::aws::debug	1
+} -body {
+	#aws s3 get_object -bucket $bucket -key /$key/$key
+	aws s3 get_object -bucket $bucket -key foo
+} -cleanup {
+	unset -nocomplain key c
+	set ::aws::debug	0
+} -match glob -returnCodes error -errorCode {AWS NoSuchKey *}
+
+# cleanup
+::tcltest::cleanupTests
+return
+
+# vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4

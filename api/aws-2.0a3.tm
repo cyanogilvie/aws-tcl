@@ -50,6 +50,14 @@ namespace eval aws {
 			::aws
 		}
 
+		try {
+			package require reuri 0.6
+		} on ok {} {
+			interp alias {} ::aws::helpers::sigencode {} ::reuri::uri encode awssig
+		} on error {} {
+			interp alias {} ::aws::helpers::sigencode {} urlencode rfc_urldecode -part path --
+		}
+
 		variable maxrate		50		;# Hz
 		variable ratelimit		50
 		variable last_slowdown	0
@@ -183,8 +191,8 @@ namespace eval aws {
 			if {[string trim $path /] eq ""} {
 				set canonized_path	/
 			} else {
-				set urlv	[lmap e [split [string trim $path /] /] {urlencode rfc_urldecode -- $e}]
-				set canonized_path	/[join [lmap e $urlv {urlencode rfc_urlencode -part path -- $e}] /]
+				set urlv	[lmap e [split [string trim $path /] /] {sigencode $e}]
+				set canonized_path	/[join [lmap e $urlv {sigencode $e}] /]
 				if {[string index $path end] eq "/" && [string index $canonized_path end] ne "/"} {
 					append canonized_path	/
 				}
@@ -216,7 +224,12 @@ namespace eval aws {
 			}
 			#>>>
 
-			set out_url			$scheme://$service.amazonaws.com$canonized_path[urlencode encode_query $params]
+			if {[llength $params]} {
+				set eparams		{}
+			} else {
+				set eparams		?[join [lmap {k v} $params {format %s=%s [sigencode $k] [sigencode $v]}] &]
+			}
+			set out_url			$scheme://$service.amazonaws.com$canonized_path$eparams
 
 			set string_to_sign	$method\n$content_md5\n$content_type\n$date\n$camz_headers$resource
 			set auth	"AWS $aws_id:[sign $aws_key $string_to_sign]"
@@ -332,7 +345,7 @@ namespace eval aws {
 				set canonical_uri		/
 				set canonical_uri_sig	/
 			} else {
-				set urlv	[lmap e [split [string trimleft $path /] /] {urlencode rfc_urldecode -- $e}]
+				set urlv	[lmap e [split [string trimleft $path /] /] {sigencode $e}]
 				if {$sig_service eq "s3"} {
 					set n_urlv	$urlv
 				} else {
@@ -478,7 +491,12 @@ namespace eval aws {
 			set out_authz		$authorization
 			lappend out_headers	Authorization $authorization
 
-			set url			$scheme://$endpoint$canonical_uri[urlencode encode_query $params]
+			if {[llength $params]} {
+				set eparams		{}
+			} else {
+				set eparams		?[join [lmap {k v} $params {format %s=%s [sigencode $k] [sigencode $v]}] &]
+			}
+			set url			$scheme://$endpoint$canonical_uri$eparams
 			set out_url		$url
 		}
 

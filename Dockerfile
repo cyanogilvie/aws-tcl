@@ -1,4 +1,4 @@
-ARG ALPINE_VER="3.16.3"
+ARG ALPINE_VER="3.16.4"
 
 FROM alpine:$ALPINE_VER as base-amd64
 # Since Nov 2020 Lambda has supported AVX2 (and haswell) in all regions except China
@@ -378,16 +378,6 @@ RUN wget $parsetcl_source -O - | tar xz --strip-components=1 && \
 	make install-binaries install-libraries clean && \
 	find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 
-# aws api, generated from the botocore repo json files
-ENV botocore_source="https://github.com/boto/botocore/archive/refs/tags/1.27.96.tar.gz"
-WORKDIR /src/botocore
-RUN wget $botocore_source -O - | tar xz --strip-components=1
-COPY api/build.tcl /src/botocore
-COPY api/*.tm /usr/local/lib/tcl8/site-tcl/
-COPY api/aws1/*.tm /usr/local/lib/tcl8/site-tcl/aws1/
-RUN tclsh build.tcl -definitions botocore/data -prefix /usr/local/lib/tcl8/site-tcl && \
-	rm -rf /src/botocore/*
-
 # flock
 ENV flock_source="https://github.com/cyanogilvie/flock/archive/v0.6.tar.gz"
 WORKDIR /src/flock
@@ -418,14 +408,6 @@ ENV dedup_source="https://github.com/cyanogilvie/dedup"
 WORKDIR /src/dedup
 RUN git clone --recurse-submodules --shallow-submodules --branch v0.9.4.2 --single-branch --depth 1 $dedup_source . && \
     autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
-    make install-binaries install-libraries clean && \
-    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# reuri
-ENV reuri_source="https://github.com/cyanogilvie/reuri"
-WORKDIR /src/reuri
-RUN git clone -b v0.4 --recurse-submodules --shallow-submodules --single-branch --depth 1 $reuri_source . && \
-    autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols --with-dedup=/usr/local/lib/dedup0.9.4 && \
-    #make pgo install-binaries install-libraries clean && \
     make install-binaries install-libraries clean && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
 # brotli
@@ -491,6 +473,28 @@ RUN git clone -b v3.0.0b21 --recurse-submodules --shallow-submodules --single-br
     cp -a tm/* /usr/local/lib/tcl8/site-tcl && \
     make clean && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
+
+# reuri
+ENV reuri_source="https://github.com/cyanogilvie/reuri"
+WORKDIR /src/reuri
+RUN git clone -b v0.6 --recurse-submodules --shallow-submodules --single-branch --depth 1 $reuri_source . && \
+    autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols --with-dedup=/usr/local/lib/dedup0.9.4 && \
+    #make pgo install-binaries install-libraries clean && \
+    make install-binaries install-libraries clean && \
+    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
+
+# aws api, generated from the botocore repo json files
+COPY botocore /src/botocore
+WORKDIR /src/botocore
+COPY api/build.tcl /src/botocore
+COPY api/*.tm /tmp/tm/
+COPY api/aws1/*.tm /tmp/tm/aws1/
+ARG TESTMODE
+RUN if test -z "$TESTMODE"; \
+	then \
+		cp -a /tmp/tm/* /usr/local/lib/tcl8/site-tcl; \
+		tclsh build.tcl -definitions botocore/data -prefix /usr/local/lib/tcl8/site-tcl; \
+	fi
 
 # misc local bits
 COPY tcl/tm /usr/local/lib/tcl8/site-tcl

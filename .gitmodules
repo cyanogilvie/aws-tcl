@@ -1,0 +1,3 @@
+[submodule "api/botocore"]
+	path = api/botocore
+	url = https://github.com/boto/botocore.git

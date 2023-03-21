@@ -39,6 +39,7 @@ namespace eval aws {
 	}]
 
 	variable dir	[file dirname [file normalize [info script]]]
+	variable endpoint_cache	{}
 
 	namespace eval helpers {
 		variable cache {}
@@ -429,7 +430,12 @@ namespace eval aws {
 			if {$variant eq "s3v4"} {
 				if {"x-amz-content-sha256" ni [lmap {k v} $headers {set k}]} {
 					# TODO: consider caching the sha256 of the empty body
-					lappend out_headers x-amz-content-sha256	[hash AWS4-HMAC-SHA256 $body]
+					puts stderr "setting x-amz-content-sha256"
+					if {$body eq ""} {
+						lappend out_headers x-amz-content-sha256	UNSIGNED-PAYLOAD
+					} else {
+						lappend out_headers x-amz-content-sha256	[hash AWS4-HMAC-SHA256 $body]
+					}
 				}
 			}
 
@@ -450,7 +456,13 @@ namespace eval aws {
 			set signed_headers	[join $signed_headers ";"]
 			# Canonical headers >>>
 
-			set hashed_payload	[hash $algorithm $body]
+			foreach {k v} $t_headers {
+				if {$k ne "x-amz-content-sha256"} continue
+				set hashed_payload $v
+			}
+			if {![info exists hashed_payload]} {
+				set hashed_payload	[hash $algorithm $body]
+			}
 
 			set canonical_request	"[string toupper $method]\n$canonical_uri_sig\n$canonical_query_string\n$canonical_headers\n$signed_headers\n$hashed_payload"
 			#log debug "canonical request" {{"creq": "~S:canonical_request"}}
@@ -642,6 +654,7 @@ namespace eval aws {
 						"method":			"~S:method",
 						"endpoint":			"~S:endpoint",
 						"path":				"~S:path",
+						"content_type":		"~S:content_type",
 						"sig_version":		"~S:version",
 						"signed_url":		"~S:signed_url",
 						"signed_headers":	"~S:signed_headers",
@@ -1206,7 +1219,7 @@ namespace eval aws {
 		set upvars	[uplevel 1 {info vars}]
 		#puts stderr "upvars: $upvars"
 		set service_ns	[uplevel 1 {
-			variable ei
+			if {![info exists ei]} {variable ei}
 			variable protocol
 			variable apiVersion
 			namespace current
@@ -1218,10 +1231,13 @@ namespace eval aws {
 		#puts stderr "endpoint_info:\n\t[join [lmap {k v} $endpoint_info {format {%20s: %s} $k $v}] \n\t]"
 		set uri_map_out	{}
 		foreach {pat arg} $uri_map {
-			lappend uri_map_out	"{$pat}" [if {[info exists _a_$arg]} {
-				urlencode rfc_urlencode -part path -- [set _a_$arg]
+			set rep	[if {[info exists _a_$arg]} {
+				set _a_$arg
 			}]
+			set repe	[urlencode rfc_urlencode -part path -- $rep]
+			lappend uri_map_out	"{$pat}" $repe "{$pat+}" $rep
 		}
+		puts stderr "uri_map_out: ($uri_map_out)"
 
 		foreach {header arg} $header_map {
 			if {[info exists _a_$arg]} {
@@ -1285,6 +1301,7 @@ namespace eval aws {
 			}
 		} else {
 			set body	{}
+			set content_type	""
 		}
 
 		#set scheme	[lindex [dict get $endpoint_info protocols] end]
@@ -1333,7 +1350,7 @@ namespace eval aws {
 							json set tmp $tail [json string $v]
 						}
 					}
-					if {[json size $tmp] > 0} {
+					if {[json length $tmp] > 0} {
 						# Only set the output var if matching headers were found
 						set _a_$var	$tmp
 					}
@@ -1581,6 +1598,1002 @@ namespace eval aws {
 	}
 
 	#>>>
+	proc from_camel str { # UseFIPS -> use_fips, WriteGetObjectResult -> write_get_object_result <<<
+		join [lmap {- caps title} [regexp -all -inline {([A-Z]+(?=[A-Z]|$))|([A-Za-z][a-z]+)} $str] {
+			if {$title ne {}} {
+				string tolower $title
+			} else {
+				set caps
+			}
+		}] _
+	}
+
+	#>>>
+	proc to_camel str { # use_FIPS -> UseFIPS, write_get_object_result -> WriteGetObjectResult <<<
+		join [lmap e [split $str _] {
+			if {[string is upper $e]} {
+				set e
+			} else {
+				string totitle $e
+			}	
+		}] {}
+	}
+
+	#>>>
+	proc _load_ziplet {} { #<<<
+		set file	[uplevel 1 {info script}]
+		set h		[open $file rb]
+		set bytes	[try {read $h} finally {close $h}]
+		set eof		[string first \u1A $bytes]
+		set source	[encoding convertfrom utf-8 [zlib gunzip [string range $bytes $eof+1 end]]]
+		uplevel #0 $source
+	}
+
+	#>>>
+	proc _undocument {objectvar args} { #<<<
+		upvar 1 $objectvar o
+		set path	$args
+		json foreach {k v} [json extract $o {*}$path] {
+			if {$k in {documentation documentationUrl}} {
+				json unset o {*}$path $k
+			} elseif {[json type $v] eq "object"} {
+				_undocument o {*}$path $k
+			}
+		}
+	}
+
+	#>>>
+
+	proc endpoint args { #<<<
+		variable endpoint_cache
+		variable default_region
+		variable endpoints
+
+		if {![dict exists $endpoint_cache $args]} {
+			package require aws::endpoints
+
+			parse_args $args {
+				-region			{}
+				-service		{-required}
+			}
+
+			if {![info exists region]} {set region $default_region}
+
+			set found	0
+			json foreach partition [json extract $endpoints partitions] {
+				if {[json exists $partition regions $region]} {
+					set found	1
+					break
+				}
+			}
+			if {!$found} {
+				error "Could not find endpoint data for region \"$region\""
+			}
+			set ei	[json extract $partition defaults]
+			if {![json exists $partition services $service]} {
+				error "Could not find service defined in partition for region \"$region\""
+			}
+
+			# Update with the service defaults
+			json foreach {k v} [json extract $partition services $service defaults] {
+				json set ei $k $v
+			}
+
+			# Update with the region specifics
+			json foreach {k v} [json extract $partition services $service endpoints $region] {
+				json set ei $k $v
+			}
+
+			dict set endpoint_cache $args $ei
+		}
+		dict get $endpoint_cache $args
+	}
+
+	#>>>
+	namespace eval _fn { # Functions used by the endpoint routing rules <<<
+		namespace path {::parse_args ::rl_json}
+
+		proc aws.isVirtualHostableS3Bucket {bucket allowdots} { #<<<
+			if {[string length $bucket] < 3} {return 0}
+			# TODO: verify the other requirements from https://docs.aws.amazon.com/AmazonS3/latest/userguide/bucketnamingrules.html?
+			if {$allowdots} {
+				regexp {^[a-z0-9.-]+$} $bucket
+			} else {
+				regexp {^[a-z0-9-]+$} $bucket
+			}
+		}
+
+		#>>>
+		proc aws.parseArn arn { #<<<
+			# https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazons3.html
+			if {![regexp {^arn:([^:]*):([^:]*):([^:]*):([^:]*):(?:([^:/]*)[:/])?(.*)$} $arn - partition service region accountid resource_type tail]} {
+				error "Cannot parse arn: \"$arn\""
+			}
+			if {$resource_type ne ""} {
+				set resource_ids	[list $resource_type]
+			} else {
+				set resource_ids	{}
+			}
+			lappend resource_ids	{*}[split $tail :/]
+			set resourceId		{[]}
+			foreach resource_id $resource_ids {
+				json set resourceId end+1 [json string $resource_id]
+			}
+
+			json template {
+				{
+					"region":		"~S:region",
+					"accountId":	"~S:accountid",
+					"service":		"~S:service",
+					"partition":	"~S:partition",
+					"resourceId":	"~J:resourceId"
+				}
+			}
+		}
+
+		#>>>
+		proc aws.partition {service region} { #<<<
+			#puts stderr "aws.partition service: ($service), region: ($region)"
+			#if {$region eq "aws-global"} {set region us-east-1}
+			package require aws::endpoints
+			json foreach partition [json extract $::aws::endpoints partitions] {
+				if {[json exists $partition services $service endpoints $region]} {
+					json set partition name [json get $partition partition]
+					return $partition
+				}
+			}
+			#puts stderr "Could not find partition for ($region), returning null"
+			return null
+			#error "No partition for region \"$region\""
+		}
+
+		#>>>
+		proc getAttr {doc key} { #<<<
+			if {[json isnull $doc]} {return null}
+			if {[regexp {^(.*)\[([0-9]+)\]$} $key - base idx]} {
+				#if {![json exists $doc $base $idx]} {return null}
+				json get $doc $base $idx
+			} else {
+				#if {![json exists $doc $key]} {return null}
+				json get $doc $key
+			}
+		}
+
+		#>>>
+		proc isValidHostLabel {str allowdots} { #<<<
+			#puts stderr "isValidHostLabel ($str), $allowdots"
+			if {$allowdots} {
+				regexp {^[a-zA-Z0-9.-]+$} $str
+			} else {
+				regexp {^[a-zA-Z0-9-]+$} $str
+			}
+		}
+
+		#>>>
+		proc parseURL uri { #<<<
+			try {
+			#puts stderr "aws::_fn::parseURL ($uri)"
+			package require reuri 0.2.6
+			set parts	[reuri::uri get $uri]
+			dict set parts scheme	[reuri::uri get $uri scheme]
+			dict set parts host		[reuri::uri get $uri host]
+			dict set parts hosttype	[reuri::uri get $uri hosttype]
+			dict set parts path		[reuri::uri get $uri path {}]
+			if {[reuri::uri exists $uri port]} {
+				dict append parts host :[reuri::uri get $uri port]
+			}
+			if {[dict get $parts path] in {/ {}}} {
+				dict set parts normalizedPath /
+			} else {
+				dict set parts normalizedPath [dict get $parts path]/
+			}
+			dict set parts isIp	[expr {
+				[dict get $parts hosttype] in {ipv4 ipv6}
+			}]
+			json template {
+				{
+					"scheme":			"~S:scheme",
+					"authority":		"~S:host",
+					"normalizedPath":	"~S:normalizedPath",
+					"path":				"~S:path",
+					"isIp":				"~B:isIp"
+				}
+			} $parts
+			} on ok res {
+				#puts stderr "::aws::_fn::parseURL returning [json pretty $res]"
+				set res
+			} on error {errmsg options} {
+				#puts stderr "::aws::_fn::parseURL: [dict get $options -errorinfo]"
+				return -options $options $errmsg
+			}
+		}
+
+		#>>>
+		proc substring {str idx len flag} { #<<<
+			# TODO: figure out what boolean $flag means
+			#puts stderr "::aws::_fn::substring str: ($str), idx: ($idx), len: ($len), flag: ($flag)"
+			string range $str $idx [expr {$idx+$len-1}]
+		}
+
+		#>>>
+		proc uriEncode str { #<<<
+			package require reuri
+			reuri::uri encode path $str
+		}
+
+		#>>>
+		proc _e args { #<<<
+			parse_args $args {
+				msg			{-required}
+				istemplate	{-required}
+				lookup		{}
+			}
+			if {[info exists lookup]} {
+				set msg	[lindex $lookup $msg]
+			}
+			if {$istemplate} {
+				throw terr $msg
+			} else {
+				error $msg
+			}
+		}
+
+		#>>>
+		proc _r args { #<<<
+			parse_args $args {
+				ep		{-required}
+				lookup	{}
+			}
+
+			if {[info exists lookup]} {
+				set ep	[lindex $lookup $ep]
+			}
+			return -code return $ep
+		}
+
+		#>>>
+		proc _t template { #<<<
+			upvar 1 p p
+			::aws::template $template [array get p]
+		}
+
+		#>>>
+		proc _a {var args} { #<<<
+			upvar 1 p p
+			try $args on ok res {
+				if {[json valid $res] && [json isnull $res]} {
+					return 0
+				}
+				set p($var) $res
+				return 1
+			} on error {errmsg options} {
+				return 0
+			}
+		}
+
+		#>>>
+	}
+
+	#>>>
+	proc _compile_rest-xml_op {ns cmd args} { #<<< 
+		variable ${ns}::service_def
+		variable ${ns}::endpoint_params
+		variable ${ns}::service_name_orig
+		variable ${ns}::exceptions
+		variable ${ns}::responses
+
+		set op	[to_camel $cmd]
+		if {![json exists $service_def operations $op]} {
+			error "Invalid operation \"$cmd\" for service [namespace tail [namespace current]], must be one of [join [json lmap op [json extract $service_def operations] {
+				from_camel $op
+			}] {, }]"
+		}
+
+		set opdef	[json extract $service_def operations $op]
+
+		set cx_suppress	{
+			UseObjectLambdaEndpoint	1
+		}
+		set cxparams	{}
+		set copy_to_cx	{}
+		if {[json exists $opdef staticContextParams]} {
+			json foreach {k v} [json extract $opdef staticContextParams] {
+				dict set cxparams		$k [json get $v value]
+				dict set cx_suppress	$k 1
+			}
+		}
+
+		# Add the operation input params to argspec and input wiring <<<
+		if {[json exists $opdef input]} {
+			set inputshape	[json extract $service_def shapes [json get $opdef input shape]]
+			set op_required	[if {[json exists $inputshape required]} {json get $inputshape required}]
+
+			set argspec			{}
+			json foreach {member def} [json extract $inputshape members] {
+				set required	[expr {$member in $op_required}]
+				if {[json exists $def contextParam]} {
+					lappend copy_to_cx $member [json get $def contextParam name]
+					dict set cx_suppress $member 1
+				}
+
+				set opt		-[aws from_camel $member]
+				set settings	[list -name $member]
+				if {$required} {lappend settings -required}
+
+				lappend argspec $opt $settings
+			}
+		}
+		# Add the operation input params to argspec and input wiring >>>
+
+		# Add the endpoint context input params to argspec and input wiring <<<
+		if {$endpoint_params eq {}} {
+			lappend argspec	-region	[list -default $::aws::default_region]
+		} else {
+			set cx_required	[if {[json exists $endpoint_params required]} {json get $endpoint_params required}]
+
+			json foreach {camel_name details} $endpoint_params {
+				set required	[expr {$camel_name in $cx_required}]
+				if {[dict exists cx_suppress $camel_name]} continue
+
+				set name		-[aws from_camel $camel_name]
+				set settings	{}
+				if {[json exists $details builtIn]} {
+					switch -exact -- [json get $details builtIn] {
+						AWS::Region {
+							lappend settings -default $::aws::default_region
+						}
+					}
+				}
+				lappend settings -name $camel_name
+				if {[json exists $details default]} {
+					lappend settings -default [json get $details default]
+				} elseif {[json exists $details required] && [json get $details required]} {
+					lappend settings -required
+				}
+				if {0 && [json exists $details documentation]} {
+					lappend settings -# [json get $details documentation]
+				}
+				switch -exact [json get $details type] {
+					String {}
+					Boolean {lappend settings -validate {string is boolean -strict}}
+					default {error "Unhandled endpoint rules param type: \"[json get $details type]\""}
+				}
+				lappend argspec $name $settings
+				lappend copy_to_cx $camel_name $camel_name
+			}
+		}
+		# Add the endpoint context input params to argspec and input wiring >>>
+
+		set body	""
+		append body	{variable service_def} \n
+		append body	[list set cxparams	$cxparams] \n
+		append body	"parse_args \$args [list $argspec] params\n"
+		append body {puts stderr "params: ($params)"} \n
+		append body {puts stderr "cxparams: ($cxparams)"} \n
+		if {[llength $copy_to_cx] > 0} {
+			append body "foreach {in_param cx_param} [list $copy_to_cx] " {{
+				if {[dict exists $params $in_param]} {
+					dict set cxparams $cx_param [dict get $params $in_param]
+				}
+			}} \n
+		}
+		append body	[list dict set params service [list $service_name_orig]] \n
+		append body	[list set op $op] \n
+		#append body {puts stderr "compute endpoint, first: [timerate {endpoint_rules $cxparams} 1 1]"} \n
+		#append body {puts stderr "compute endpoint: [timerate {endpoint_rules $cxparams}]"} \n
+		append body {set endpoint	[endpoint_rules $cxparams]} \n
+		append body {puts stderr "computed endpoint: [json pretty $endpoint]"} \n
+		append body	[list puts stderr "Would call [namespace tail [namespace current]]->$op: [json pretty $opdef]"] \n
+		if {[json exists $opdef input shape]} {
+			append body [list puts stderr "Input shape: [json pretty [json extract $service_def shapes [json get $opdef input shape]]]"]
+		}
+				set params		{}
+				set u			{}
+				set hm			{}
+				set q			{}
+				set b			{}
+				set x			{}
+				if {[json exists $opdef input]} {
+					aws::build::compile_input \
+						-argname_transform	{} \
+						-protocol	[json get $service_def metadata protocol] \
+						-params		params \
+						-uri_map	u \
+						-query_map	q \
+						-header_map	hm \
+						-payload	b \
+						-shapes		[json extract $service_def shapes] \
+						-shape		[json get $opdef input shape]
+
+					set x	[aws::build::compile_xml_input \
+						-shapes	[json extract $service_def shapes] \
+						-input	[json extract $opdef input]]
+				}
+		if {[json exists $opdef output shape]} {
+			set outshape	[json extract $service_def shapes [json get $opdef output shape]]
+			puts stderr "Output shape: [json pretty $outshape]"
+					if {[json exists $opdef errors]} {
+						set errors	[json lmap e [json extract $opdef errors] {json get $e shape}]
+					} else {
+						set errors	{}
+					}
+						if {[json exists $opdef output resultWrapper]} {
+							set resultWrapper	[json get $opdef output resultWrapper]
+						} else {
+							# Could be because the action returns nothing in the body, or that the context node is to be the root of the response document
+							#puts stderr "No resultWrapper for [json get $def metadata service_name] $op in [json pretty $opdef]"
+							set resultWrapper	{}
+						}
+						if {![info exists exceptions]} {
+							set exceptions	{}
+						}
+						foreach exception $errors {
+							set rshape	[json extract $service_def shapes $exception]
+							if {[dict exists $exceptions $exception]} continue
+							# TODO: strip html from [json get $rshape documentation]
+							if {[json exists $rshape error code]} {
+								set code	[json get $rshape error code]
+							} else {
+								set code	none
+							}
+							if {[json exists $rshape error senderFault]} {
+								set type	[expr {[json get $rshape error senderFault] ? "Sender" : "Server"}]
+							} else {
+								set type	unknown
+							}
+							if {[json exists $rshape documentation]} {
+								set msg		[json get $rshape documentation]
+							} else {
+								set msg		""
+							}
+							dict set exceptions $exception [string map [list \
+								%SVC%	[list [string toupper [json get $service_def metadata service_name]]] \
+								%type%	[list $type] \
+								%code%	[list $code] \
+								%msg%	[list $msg] \
+							] {throw {AWS %SVC% %type% %code%} %msg%}]
+						}
+						set response	[json get $opdef output shape]
+						set rshape		[json extract $service_def shapes $response]
+						set w			$resultWrapper
+						set fetchlist	{}
+						set template	[aws::build::compile_xml_transforms \
+							-shape		$response \
+							-shapes		[json extract $service_def shapes] \
+							-fetchlist	fetchlist]
+
+						if {[llength $fetchlist]} {
+							puts stderr "Response: ($response): fetchlist: ($fetchlist), template: ($template)"
+							dict set responses $response [list $fetchlist $template]
+						}
+		}
+		regsub {^/{Bucket}} [json get $opdef http requestUri] {} requestUri	;# Endpoint rules takes care of this
+		append body [string map [list \
+			%http_method%	[list [json get $opdef http method]] \
+			%requestUri%	[list $requestUri] \
+			%expect_status%	[list [expr {[json exists $opdef http responseCode] ? [json get $opdef http responseCode] : 200}]] \
+			%response%		[list [if {[info exists response]} {set response}]] \
+			%payload%		[list $b] \
+			%header_map%	[list $hm] \
+			%query_map%		[list $q] \
+			%uri_map%		[list $u] \
+			%xml_input%		[list $x] \
+			%resultWrapper%	[list [if {[info exists w]} {set w}]] \
+		] {
+			package require reuri
+
+			set ei	[list apply [list {endpoint region} {
+				set authscheme	[json extract $endpoint properties authSchemes 0]
+				if {![json exists $authscheme disableDoubleEncoding]} {
+					json set authscheme disableDoubleEncoding false
+				}
+
+				set sigver	[json get $authscheme name]
+				switch -exact -- $sigver {
+					sigv4	{
+						if {[json get $endpoint _ service] eq "s3"} {
+							set sigver	s3v4
+						} else {
+							set sigver	v4
+						}
+					}
+				}
+
+				set url		[json get $endpoint url]
+				dict create \
+					protocols				[list [reuri::uri get $url scheme http]] \
+					hostname				[reuri::uri get $url host] \
+					url						$url \
+					region					[json get $endpoint _ region] \
+					credentialScope			[json get $endpoint _ credentialScope] \
+					signatureVersions		[list $sigver] \
+					disableDoubleEncoding	[json get $authscheme disableDoubleEncoding]
+			}] $endpoint]
+
+			set path	[string trimright [reuri::uri get [json get $endpoint url] path {}] /]
+			append path	%requestUri%
+			dict with params {}		;# The unpacked key variables are accessed by the request procs through upvar
+			::aws::_service_req \
+				-s		[json get $endpoint properties authSchemes 0 signingName] \
+				-m		%http_method% \
+				-p		$path \
+				-R		%response% \
+				-e		%expect_status% \
+				-b		%payload% \
+				-hm		%header_map% \
+				-q		%query_map% \
+				-u		%uri_map% \
+				-w		%resultWrapper% \
+				-x		%xml_input%
+		}]
+		proc ${ns}::$cmd args $body
+		#puts stderr "JIT created ${ns}::$cmd:\n$body"
+		list	;# Have the ensemble unknown handler re-dispatch the call now that we've created the handler
+	}
+
+	#>>>
+	proc template {template dict} { #<<<
+		set res	""
+		#puts stderr "aws::template ($template), dict: ($dict)"
+		#puts stderr "aws::template ($template)"
+		foreach {- lit key} [regexp -all -inline {([^\u7b]*)(?:\u7b([^\u7d]+)\u7d)?} $template] {
+			#puts stderr "appending lit: ($lit), processing key ($key)"
+			switch -regexp -matchvar m -- $key {
+				{^(.*?)#(.*)$} {lassign $m - base attr
+					#puts stderr "matched attr syntax: base: ($base), attr: ($attr) ([set -)]"
+					set subst	[json get [dict get $dict $base] $attr]
+				}
+				{^$} {
+					set subst	{}
+				}
+				default {
+					set subst	[dict get $dict $key]
+				}
+			}
+			#puts stderr "aws::template appending lit ($lit), key: ($key), subst: ($subst)"
+			append res $lit $subst
+		}
+		#puts stderr "aws::template returning ($res)"
+		set res
+	}
+
+	#>>>
+	proc objecttemplate {object dict} { #<<<
+		#puts stderr "objecttemplate, object: ($object), dict keys: ([dict keys $dict])"
+		#puts stderr "rep: [tcl::unsupported::representation $object]"
+		#puts stderr "objecttemplate signingRegion: ([json get $object properties authSchemes 0 signingRegion]), rep: [tcl::unsupported::representation [json get $object properties authSchemes 0 signingRegion]]"
+		#puts stderr [json debug $object]
+		#set object	"$object "
+		#if {[dict exists $dict Region]} {
+		#	puts stderr "p(Region): ([dict get $dict Region])"
+		#}
+		set paths	[lmap e [json keys $object] {list $e}]
+		set nextpaths	{}
+		while {[llength $paths]} {
+			foreach path $paths {
+				switch -exact -- [json type $object {*}$path] {
+					string {
+						#puts stderr "objecttemplate processing string ([json get $object {*}$path]) at path $path\nobject: ($object)"
+						json set object {*}$path [json string [::aws::template [json get $object {*}$path] $dict]]
+					}
+					object {
+						lappend nextpaths	{*}[lmap e [json keys $object {*}$path] {list {*}$path $e}]
+					}
+					array {
+						for {set i 0; set len [json length $object {*}$path]} {$i < $len} {incr i} {
+							lappend nextpaths [list {*}$path $i]
+						}
+					}
+				}
+			}
+			set paths		$nextpaths
+			set nextpaths	{}
+		}
+		#puts stderr "template end, object rep: [tcl::unsupported::representation $object]"
+		#puts stderr [json debug $object]
+		set object
+	}
+
+	#>>>
+	namespace eval build {
+		namespace path {::parse_args ::rl_json}
+		proc compile_xml_transforms args { #<<<
+			parse_args $args {
+				-shapes		{-required}
+				-fetchlist	{-alias}
+				-shape		{-required}
+				-source		{-default {}}
+				-path		{-default {}}
+			}
+
+			try {
+				set nextkey	[expr {[llength $fetchlist] + 1}]
+				set rshape	[json extract $shapes $shape]
+				set type	[resolve_shape_type $shapes $shape]
+				lappend path	${shape}($type)
+				puts stderr "compile_xml_transforms, type: ($type), path: ($path), payload exists? ([json exists $rshape payload]), location: ([if {[json exists $rshape location]} {json get $rshape location}])"
+
+				switch -exact -- $type {
+					list {
+						if 0 {
+						set typekey	[string toupper [typekey [resolve_shape_type $shapes [json get $rshape member shape]]]]
+						#lappend fetchlist [list $nextkey $typekey $source]
+						lappend fetchlist [list $nextkey [typekey $type] $source $membertype]
+						}
+
+						set membershape	[json get $rshape member shape]
+						#set membertype	[resolve_shape_type $shapes $membershape]
+						set subfetchlist	{}
+						set valuetemplate	[compile_xml_transforms \
+							-shapes		$shapes \
+							-fetchlist	subfetchlist \
+							-shape		$membershape \
+							-source		{} \
+							-path		$path \
+						]
+						if {[json exists $rshape member locationName]} {
+							set elemname	[json get $rshape member locationName]
+						} else {
+							set elemname	$source
+						}
+						lappend fetchlist [list $nextkey [typekey $type] $source/$elemname $subfetchlist $valuetemplate]
+
+						set template	"~J:$nextkey"
+					}
+
+					structure {
+						set template	{{}}
+						json foreach {name member} [json extract $rshape members] {
+							puts stderr "structure member $name, location: ([if {[json exists $member location]} {json get $member location}])"
+							if {[json exists $member locationName]} {
+								set subsource	[json get $member locationName]
+							} else {
+								set subsource	$name
+							}
+							if {$source ne ""} {
+								set subsource	$source/$subsource
+							} else {
+								set subsource	$subsource
+							}
+							json set template $name [compile_xml_transforms \
+								-shapes		$shapes \
+								-fetchlist	fetchlist \
+								-shape		[json get $member shape] \
+								-source		$subsource \
+								-path		$path \
+							]
+						}
+					}
+
+					map {
+						set keytype	[resolve_shape_type $shapes [json get $rshape key shape]]
+						if {$keytype ne "string"} {
+							error "Unhandled case: map with key type $keytype"
+						}
+						set valueshape	[json get $rshape value shape]
+						#set valuetype	[resolve_shape_type $shapes $valueshape]
+						set subfetchlist	{}
+						set valuetemplate	[compile_xml_transforms \
+							-shapes		$shapes \
+							-fetchlist	subfetchlist \
+							-shape		$valueshape \
+							-source		$valueshape \
+							-path		$path \
+						]
+						lappend fetchlist [list $nextkey [typekey $type] $source [json get $rshape key shape] $subfetchlist $valuetemplate]
+						set template	[json string "~J:$nextkey"]
+					}
+
+					blob {
+						lappend fetchlist [list $nextkey [typekey $type] {*}[if {$source ne {}} {list $source}]]
+						set template	[json string "~J:$nextkey"]
+					}
+
+					string {
+						lappend fetchlist [list $nextkey [typekey $type] {*}[if {$source ne {}} {list $source}]]
+						set template	[json string "~J:$nextkey"]
+					}
+
+					boolean {
+						lappend fetchlist [list $nextkey [typekey $type] {*}[if {$source ne {}} {list $source}]]
+						set template	[json string "~J:$nextkey"]
+					}
+
+					timestamp {
+						lappend fetchlist [list $nextkey [typekey $type] {*}[if {$source ne {}} {list $source}]]
+						set template	[json string "~J:$nextkey"]
+					}
+
+					integer -
+					long -
+					double -
+					float {
+						lappend fetchlist [list $nextkey [typekey $type] {*}[if {$source ne {}} {list $source}]]
+						set template	[json string "~J:$nextkey"]
+					}
+
+					default {
+						error "Unhandled type \"$shape\" -> \"$type\""
+					}
+				}
+
+				set template
+			} trap unwind_compile_xml_transforms {errmsg options} {
+				return -options $options $errmsg
+			} on error {errmsg options} {
+				set prefix	"Error in compile_xml_transforms([join $path ->]):"
+				set errmsg	$prefix\n$errmsg
+				dict set options -errorinfo $prefix\n[dict get $options -errorinfo]
+				dict set options -errorcode [list unwind_compile_xml_transforms [dict get $options -errorcode]]
+				return -options $options $errmsg
+			}
+		}
+
+		#>>>
+		proc resolve_shape_type {shapes shape} { #<<<
+			if {[json exists $shapes $shape type]} {
+				return [json get $shapes $shape type]
+			}
+			# TODO: Some defense against definition loops?
+			tailcall resolve_shape_type $shapes [json get $shapes $shape shape]
+		}
+
+		#>>>
+		proc typekey type { #<<<
+			switch -exact -- $type {
+				string    {set typekey s}
+				boolean   {set typekey b}
+				blob      {set typekey x}
+				structure {set typekey t}
+				list      {set typekey l}
+				map       {set typekey m}
+				timestamp {set typekey c}
+				integer - long - double - float {set typekey n}
+				default {
+					error "Unhandled element type \"$type\""
+				}
+			}
+			set typekey
+		}
+
+		#>>>
+		proc compile_input args { #<<<
+			parse_args $args {
+				-argname		{}
+				-argname_transform	{-default aws::from_camel}
+				-protocol		{-required}
+				-params			{-alias}
+				-uri_map		{-alias}
+				-query_map		{-alias}
+				-header_map		{-alias}
+				-payload		{-alias}
+				-shapes			{-required}
+				-shape			{-required}
+			}
+
+			#puts stderr "compile_input, argname: ([if {[info exists argname]} {set argname}]), shape: ($shape)"
+			set input	[json extract $shapes $shape]
+			set type	[resolve_shape_type $shapes $shape]
+
+			#puts stderr "compile_input, type: [json pretty $input]"
+			switch -- $type {
+				structure {
+					# Only unfold the top level structure into params, just take sub-structures as json
+					if {[info exists argname]} {
+						return [json string "~J:$argname"]
+					}
+
+					set template_obj	{{}}
+					json foreach {camel_name member_def} [json extract $input members] {
+						if {$argname_transform eq ""} {
+							set name	$camel_name
+						} else {
+							set name	[{*}$argname_transform $camel_name]
+						}
+						set argspec	{}
+						if {[json exists $input required] && $camel_name in [json get $input required]} {
+							lappend argspec -required
+						}
+						if {
+							[resolve_shape_type $shapes [json get $member_def shape]] eq "boolean" ||
+							(
+								[json exists $shapes [json get $member_def shape]] &&
+								[json get $shapes [json get $member_def shape] type] eq "boolean"
+							)
+						} {
+							lappend argspec -boolean
+						}
+						lappend params	-$name $argspec
+						if {[json exists $member_def locationName]} {
+							set locationName	[json get $member_def locationName]
+						} else {
+							set locationName	$camel_name
+						}
+						if {[json exists $member_def location]} {
+							switch -- [json get $member_def location] {
+								uri	{
+									lappend uri_map	$locationName $name
+								}
+								querystring {
+									lappend query_map	$locationName $name
+								}
+								headers {
+									lappend header_map	$locationName* $name
+								}
+								header {
+									lappend header_map	$locationName $name
+								}
+								default {
+									error "Unhandled location for $camel_name: ([json get $member_def location])"
+								}
+							}
+						} elseif {$protocol in {json rest-json rest-xml}} {
+							if {[json get $member_def shape] in {Expression Expressions AttributeFilterList AttributeFilter}} {
+								json set template_obj $locationName [json string "~J:$name"]
+							} else {
+								#puts stderr "Recursing into shape [json get $member_def shape]"
+								json set template_obj $locationName [compile_input \
+									-protocol	$protocol \
+									-argname	$name \
+									-argname_transform	$argname_transform \
+									-params		params \
+									-uri_map	uri_map \
+									-query_map	query_map \
+									-header_map	header_map \
+									-payload	payload \
+									-shapes		$shapes \
+									-shape		[json get $member_def shape] \
+								]
+							}
+						} elseif {$protocol eq "query"} {
+							lappend query_map $locationName $name
+						} else {
+							error "Unhandled protocol: ($protocol)"
+						}
+					}
+				}
+				timestamp -
+				character -
+				string {
+					set template_obj	[json string "~S:$argname"]
+				}
+				map {
+					set template_obj	[json string "~J:$argname"]
+				}
+				list {
+					set template_obj	[json string "~J:$argname"]
+				}
+				integer -
+				long -
+				float -
+				double {
+					set template_obj	[json string "~N:$argname"]
+				}
+				boolean {
+					set template_obj	[json string "~B:$argname"]
+				}
+				blob {
+					set template_obj	[json string "~S:$argname"]
+				}
+				default {
+					error "Unhandled type \"[json get $input type]\""
+					if {![json exists $shapes [json get $input type]]} {
+						error "Unhandled type \"[json get $input type]\""
+					}
+					set template_obj	[compile_input \
+						-protocol	$protocol \
+						-argname	$argname \
+						-argname_transform	$argname_transform \
+						-params		params \
+						-uri_map	uri_map \
+						-query_map	query_map \
+						-header_map	header_map \
+						-payload	payload \
+						-shapes		$shapes \
+						-shape		[json get $input type] \
+					]
+				}
+			}
+
+			if {[json exists $input payload]} {
+				set payload	[join [lmap e [regexp -all -inline {[A-Za-z][a-z]+} [json get $input payload]] {string tolower $e}] _]
+			}
+
+			set template_obj
+		}
+
+		#>>>
+		proc _compile_xml_shape {shapes shape} { #<<<
+			set res	{}
+			set type	[resolve_shape_type $shapes $shape]
+			switch -exact -- $type {
+				structure {
+					json foreach {member inf} [json extract $shapes $shape members] {
+						set membershape	[json get $inf shape]
+						set membertype	[resolve_shape_type $shapes $membershape]
+						if {$membertype in {structure list map}} {
+							set children	[_compile_xml_shape $shapes $membershape]
+						} else {
+							set children	{}
+						}
+						lappend res $member $children
+					}
+				}
+
+				map {
+					set member	[json extract $shapes $shape]
+					if {[json exists $member locationName]} {
+						set locationName	[json get $member locationName]
+					} else {
+						set locationName	entry
+					}
+					if {[json exists $member key locationName]} {
+						set keyname			[json get $member key locationName]
+					} else {
+						set keyname			key
+					}
+					if {[json exists $member value locationName]} {
+						set valuename		[json get $member value locationName]
+					} else {
+						set valuename		value
+					}
+					lappend res =$locationName [list $keyname $valuename [_compile_xml_shape $shapes [json get $member value shape]]]
+				}
+
+				list {
+					set member	[json extract $shapes $shape member]
+					if {[json exists $member locationName]} {
+						set locationName	[json get $member locationName]
+					} else {
+						set locationName	[json get $member shape]
+					}
+					lappend res *$locationName [_compile_xml_shape $shapes [json get $member shape]]
+				}
+
+				default {
+				}
+			}
+			set res
+		}
+
+		#>>>
+		proc compile_xml_input args { #<<<
+			parse_args $args {
+				-shapes		{-required}
+				-input		{-required}
+			}
+
+			set shape	[json get $input shape]
+			if {[json exists $input locationName]} {
+				set locationName	[json get $input locationName]
+				set xmlns			[json get $input xmlNamespace uri]
+				set bodyshape		[json get $input shape]
+			} else {
+				json foreach {name member} [json extract $shapes $shape members] {
+					if {![json exists $member location]} {
+						if {[json exists $member locationName]} {
+							set locationName	[json get $member locationName]
+						} else {
+							set locationName	$name
+						}
+
+						if {[json exists $member xmlNamespace uri]} {
+							set xmlns		[json get $member xmlNamespace uri]
+						} else {
+							set xmlns		{}
+						}
+						set bodyshape	[json get $member shape]
+						break
+					}
+				}
+			}
+			if {[info exists bodyshape]} {
+				list $locationName $xmlns [_compile_xml_shape $shapes $bodyshape]
+			}
+		}
+
+		#>>>
+	}
 }
 
 # Hook into the tclreadline tab completion

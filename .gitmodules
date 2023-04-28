@@ -1,4 +1,3 @@
-[submodule "botocore"]
-	path = botocore
-	url = https://github.com/boto/botocore
-	shallow = true
+[submodule "api/botocore"]
+	path = api/botocore
+	url = https://github.com/boto/botocore.git

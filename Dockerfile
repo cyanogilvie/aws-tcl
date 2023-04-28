@@ -1,4 +1,4 @@
-ARG ALPINE_VER="3.16.4"
+ARG ALPINE_VER="3.17.3"
 
 FROM alpine:$ALPINE_VER as base-amd64
 # Since Nov 2020 Lambda has supported AVX2 (and haswell) in all regions except China
@@ -13,15 +13,16 @@ ARG CFLAGS="-O3"
 
 # alpine-tcl-build <<<
 ARG TARGETARCH
-FROM base-$TARGETARCH AS alpine-tcl-build
+# alpine-tcl-build-base <<<
+FROM base-$TARGETARCH AS alpine-tcl-build-base
 ARG CFLAGS
-RUN apk add --no-cache --update build-base autoconf automake bsd-compat-headers bash ca-certificates libssl1.1 libcrypto1.1 docker-cli git
+RUN apk add --no-cache --update build-base autoconf automake bsd-compat-headers bash ca-certificates libssl1.1 libcrypto1.1 docker-cli git libtool python3 pandoc pkgconfig
 RUN git config --global advice.detachedHead false
+
 # tcl: tip of core-8-branch
-ENV tcl_source="https://core.tcl-lang.org/tcl/tarball/99b8ad35a258cade/tcl.tar.gz"
 WORKDIR /src/tcl
-RUN wget $tcl_source -O - | tar xz --strip-components=1 && \
-    cd /src/tcl/unix && \
+RUN wget https://core.tcl-lang.org/tcl/tarball/93f005c985/tcl.tar.gz -O - | tar xz --strip-components=1
+RUN cd /src/tcl/unix && \
     ./configure CFLAGS="${CFLAGS}" --enable-64bit --enable-symbols && \
     make -j 8 all && \
     make install-binaries install-libraries install-tzdata install-packages install-headers install-private-headers && \
@@ -30,461 +31,429 @@ RUN wget $tcl_source -O - | tar xz --strip-components=1 && \
     make clean && \
     mkdir /usr/local/lib/tcl8/site-tcl && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
+
 # tclconfig: tip of trunk
-ENV tclconfig_source="https://core.tcl-lang.org/tclconfig/tarball/1f17dfd726292dc4/tclconfig.tar.gz"
 WORKDIR /src
-RUN wget $tclconfig_source -O - | tar xz
-# thread: tip of thread-2-8-branch
-ENV thread_source="https://core.tcl-lang.org/thread/tarball/2a83440579/thread.tar.gz"
+RUN wget https://core.tcl-lang.org/tclconfig/tarball/ed5ac018e8/tclconfig.tar.gz -O - | tar xz
+
+# thread: tip of thread-2-branch
 WORKDIR /src/thread
-RUN wget $thread_source -O - | tar xz --strip-components=1 && \
-    ln -s ../tclconfig && \
-    autoconf && \
-    ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
-    make -j 8 all && \
-    make install-binaries install-libraries clean && \
+RUN apk add --no-cache --update zip
+RUN wget https://core.tcl-lang.org/thread/tarball/61e980ef5c/thread.tar.gz -O - | tar xz --strip-components=1
+RUN ln -s ../tclconfig && autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols
+RUN make install-binaries install-libraries clean && \
     find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# tdbc - tip of connection-pool-git branch
-ENV tdbc_source="https://github.com/cyanogilvie/tdbc/archive/1f8b684.tar.gz"
-WORKDIR /src/tdbc
-RUN wget $tdbc_source -O - | tar xz --strip-components=1 && \
-    ln -s ../tclconfig && \
-    autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
-    make -j 8 all && \
-    make install-binaries install-libraries clean && \
-    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# tcltls
-ENV tcltls_source="https://core.tcl-lang.org/tcltls/tarball/tls-1-7-22/tcltls.tar.gz"
-WORKDIR /src/tcltls
-RUN apk add --no-cache --update --virtual build-dependencies curl openssl-dev curl-dev && \
-    wget $tcltls_source -O - | tar xz --strip-components=1 && \
-    ./autogen.sh && \
-    ./configure CFLAGS="${CFLAGS}" --prefix=/usr/local --libdir=/usr/local/lib --disable-sslv2 --disable-sslv3 --disable-tlsv1.0 --disable-tlsv1.1 --enable-ssl-fastpath --enable-symbols && \
-    make -j 8 all && \
-    make install clean && \
-    apk del build-dependencies && \
-    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# parse_args
-ENV parse_args_source="https://github.com/RubyLane/parse_args/archive/v0.3.4.tar.gz"
-WORKDIR /src
-RUN git clone --recurse-submodules --shallow-submodules --branch v0.3.4.1 --single-branch --depth 1 https://github.com/RubyLane/parse_args && \
-	cd parse_args && \
-    autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
-    make install-binaries install-libraries clean && \
-    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# rl_json - tip of master
-ENV rl_json_source="https://github.com/RubyLane/rl_json/archive/0.11.5.tar.gz"
-WORKDIR /src
-RUN git clone --recurse-submodules --shallow-submodules --branch 0.11.5.1 --single-branch --depth 1 https://github.com/RubyLane/rl_json && \
-	cd rl_json && \
-    autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
-    make -j 8 all && \
-    make install-binaries install-libraries clean && \
-    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# hash - tip of master
-ENV hash_source="https://github.com/cyanogilvie/hash"
-WORKDIR /src/hash
-RUN git clone -b v0.3.2 --recurse-submodules --shallow-submodules --single-branch --depth 1 $hash_source . && \
-    autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
-    make -j 8 all && \
-    make install-binaries install-libraries clean && \
-    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# unix_sockets - tip of master
-ENV unix_sockets_source="https://github.com/cyanogilvie/unix_sockets/archive/761daa5.tar.gz"
-WORKDIR /src/unix_sockets
-RUN wget $unix_sockets_source -O - | tar xz --strip-components=1 && \
-    autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
-    make -j 8 all && \
-    make install-binaries install-libraries clean && \
-    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# tcllib
-ENV tcllib_source="https://core.tcl-lang.org/tcllib/uv/tcllib-1.20.tar.gz"
-WORKDIR /src/tcllib
-RUN wget $tcllib_source -O - | tar xz --strip-components=1 && \
-    ./configure && \
-    make install-libraries install-applications clean && \
-    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# gc_class - tip of master
-ENV gc_class_source="https://github.com/RubyLane/gc_class/archive/f295f65.tar.gz"
-WORKDIR /src/gc_class
-RUN wget $gc_class_source -O - | tar xz --strip-components=1 && \
-    cp gc_class*.tm /usr/local/lib/tcl8/site-tcl && \
-    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# rl_http
-ENV rl_http_source="https://github.com/RubyLane/rl_http/archive/1.14.4.tar.gz"
-WORKDIR /src/rl_http
-RUN wget $rl_http_source -O - | tar xz --strip-components=1 && \
-	make install && \
-    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# sqlite3
-ENV sqlite3_source="https://sqlite.org/2021/sqlite-autoconf-3350400.tar.gz"
-WORKDIR /src/sqlite3
-RUN wget $sqlite3_source -O - | tar xz --strip-components=1 && \
-    cd tea && \
-    autoconf && ./configure CFLAGS="${CFLAGS}" && \
-    make all install-binaries install-libraries clean && \
-    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-## tcc4tcl - tip of master
-#ENV tcc4tcl_source="https://github.com/cyanogilvie/tcc4tcl/archive/b8171e0.tar.gz"
-#WORKDIR /src/tcc4tcl
-#RUN wget $tcc4tcl_source -O - | tar xz --strip-components=1 && \
-#    apk add --no-cache --update --virtual build-dependencies openssl && \
-#    build/pre.sh && \
-#    sed --in-place -e 's/^typedef __builtin_va_list \(.*\)/#if defined(__GNUC__) \&\& __GNUC__ >= 3\ntypedef __builtin_va_list \1\n#else\ntypedef char* \1\n#endif/g' /usr/include/bits/alltypes.h && \
-#    sed --in-place -e 's/@@VERS@@/0.30.1/g' configure.ac Makefile.in tcc4tcl.tcl && \
-#    autoconf && \
-#    ./configure --prefix=/usr/local && \
-#    make -j 8 all && \
-#    make install && \
-#    apk del build-dependencies && \
-#    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
+# alpine-tcl-build-base >>>
 
-# Codeforge packages and applications up to m2
-# tbuild - tip of master
-ENV tbuild_source="https://github.com/cyanogilvie/tbuild/archive/e526a9c.tar.gz"
-WORKDIR /src/tbuild
-RUN wget $tbuild_source -O - | tar xz --strip-components=1 && \
-	cp tbuild-lite.tcl /usr/local/bin/tbuild-lite && \
-	chmod +x /usr/local/bin/tbuild-lite && \
-    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# cflib
-ENV cflib_source="https://github.com/cyanogilvie/cflib/archive/1.16.1.tar.gz"
-WORKDIR /src/cflib
-RUN wget $cflib_source -O - | tar xz --strip-components=1 && \
-	tbuild-lite && cp tm/tcl/* /usr/local/lib/tcl8/site-tcl/ && \
-    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# sop - tip of master
-ENV sop_source="https://github.com/cyanogilvie/sop/archive/1.7.2.tar.gz"
-WORKDIR /src/sop
-RUN wget $sop_source -O - | tar xz --strip-components=1 && \
-	tbuild-lite && cp tm/tcl/* /usr/local/lib/tcl8/site-tcl/ && \
-    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# netdgram - tip of master
-ENV netdgram_source="https://github.com/cyanogilvie/netdgram/archive/v0.9.12.tar.gz"
-WORKDIR /src/netdgram
-RUN wget $netdgram_source -O - | tar xz --strip-components=1 && \
-	tbuild-lite && cp -r tm/tcl/* /usr/local/lib/tcl8/site-tcl/ && \
-    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# evlog - tip of master
-ENV evlog_source="https://github.com/cyanogilvie/evlog/archive/c6c2529.tar.gz"
-WORKDIR /src/evlog
-RUN wget $evlog_source -O - | tar xz --strip-components=1 && \
-	tbuild-lite build_tm evlog && cp -r tm/tcl/* /usr/local/lib/tcl8/site-tcl/ && \
-    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# dsl - tip of master
-ENV dsl_source="https://github.com/cyanogilvie/dsl/archive/v0.5.tar.gz"
-WORKDIR /src/dsl
-RUN wget $dsl_source -O - | tar xz --strip-components=1 && \
-	tbuild-lite && cp -r tm/tcl/* /usr/local/lib/tcl8/site-tcl/ && \
-    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# logging - tip of master
-ENV logging_source="https://github.com/cyanogilvie/logging/archive/e709389.tar.gz"
-WORKDIR /src/logging
-RUN wget $logging_source -O - | tar xz --strip-components=1 && \
-	tbuild-lite && cp -r tm/tcl/* /usr/local/lib/tcl8/site-tcl/ && \
-    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# sockopt - tip of master
-ENV sockopt_source="https://github.com/cyanogilvie/sockopt/archive/c574d92.tar.gz"
-WORKDIR /src/sockopt
-RUN wget $sockopt_source -O - | tar xz --strip-components=1 && \
-    autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
-    make -j 8 all && \
-    make install-binaries install-libraries clean && \
-    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# crypto - tip of master
-ENV crypto_source="https://github.com/cyanogilvie/crypto/archive/7a04540.tar.gz"
-WORKDIR /src/crypto
-RUN wget $crypto_source -O - | tar xz --strip-components=1 && \
-	tbuild-lite build_tm crypto && cp -r tm/tcl/* /usr/local/lib/tcl8/site-tcl/ && \
-    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# common_sighandler
-COPY common_sighandler-*.tm /usr/local/lib/tcl8/site-tcl/
-# m2
-ENV m2_source="https://github.com/cyanogilvie/m2/archive/v0.43.15.tar.gz"
-WORKDIR /src/m2
-RUN wget $m2_source -O - | tar xz --strip-components=1 && \
-	tbuild-lite build_tm m2 && cp -r tm/tcl/* /usr/local/lib/tcl8/site-tcl/ && \
-	mkdir -p /usr/local/opt/m2 && \
-	cp -r m2_node /usr/local/opt/m2/ && \
-	cp -r tools /usr/local/opt/m2/ && \
-	cp -r authenticator /usr/local/opt/m2/ && \
-	cp -r admin_console /usr/local/opt/m2/ && \
-	mkdir -p /etc/codeforge/authenticator && \
-	cp -r plugins /etc/codeforge/authenticator/ && \
-	find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-COPY m2/m2_node /usr/local/bin/
-COPY m2/authenticator /usr/local/bin/
-COPY m2/m2_keys /usr/local/bin/
-COPY m2/m2_admin_console /usr/local/bin/
-# datasource - tip of master
-ENV datasource_source="https://github.com/cyanogilvie/datasource/archive/v0.2.4.tar.gz"
-WORKDIR /src/datasource
-RUN wget $datasource_source -O - | tar xz --strip-components=1 && \
-	tbuild-lite && cp -r tm/tcl/* /usr/local/lib/tcl8/site-tcl/ && \
-    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# tools
-
-# tclreadline
-WORKDIR /src/tclreadline
-ENV tclreadline_source="https://github.com/cyanogilvie/tclreadline/archive/v2.3.8.1.tar.gz"
-RUN apk add --no-cache --update readline && \
-	apk add --no-cache --update --virtual build-dependencies readline-dev && \
-	wget $tclreadline_source -O - | tar xz --strip-components=1 && \
-    autoconf && ./configure CFLAGS="${CFLAGS}" --without-tk && \
-    make install-libLTLIBRARIES install-tclrlSCRIPTS && \
-    find . -type f -not -name '*.c' -and -not -name '*.h' -delete && \
-	apk del --no-cache build-dependencies
-COPY tcl/tclshrc /root/.tclshrc
-
-## expect: tip of trunk
-#ENV expect_source="https://core.tcl-lang.org/expect/tarball/f8e8464f14/expect.tar.gz"
-#WORKDIR /src/tcl
-#RUN wget $expect_source -O - | tar xz --strip-components=1 && \
-#    ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
-#    make -j 8 all && \
-#    make install-binaries install-libraries && \
-#    make clean && \
-#    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-
-# tclsignal
-ENV tclsignal_source="https://github.com/cyanogilvie/tclsignal/archive/v1.4.4.1.tar.gz"
-WORKDIR /src/tclsignal
-RUN wget $tclsignal_source -O - | tar xz --strip-components=1 && \
-	autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
-	make -j 8 all && \
-	make install-binaries install-libraries clean && \
-	find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-
-# type
-ENV type_source="https://github.com/cyanogilvie/type"
-WORKDIR /src/type
-RUN git clone -q -b v0.2.1 --recurse-submodules --shallow-submodules --single-branch --depth 1 $type_source .
+# package-jitc <<<
+FROM alpine-tcl-build-base AS package-jitc
+WORKDIR /src/jitc
+RUN apk add --no-cache --update libstdc++ libgcc
+RUN git clone -b v0.4 --recurse-submodules --shallow-submodules --single-branch --depth 1 https://github.com/cyanogilvie/jitc .
+RUN autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols
+RUN make tcc tools
+RUN make DESTDIR=/out install-binaries install-libraries
+# package-jitc >>>
+# package-pgwire <<<
+FROM alpine-tcl-build-base AS package-pgwire
+WORKDIR /src/pgwire
+RUN git clone -b v3.0.0b21 --recurse-submodules --shallow-submodules --single-branch --depth 1 https://github.com/cyanogilvie/pgwire .
+WORKDIR /src/pgwire/src
+RUN make all && \
+	mkdir -p /out/usr/local/lib/tcl8/site-tcl && \
+    cp -a tm/* /out/usr/local/lib/tcl8/site-tcl
+# package-pgwire >>>
+# package-dedup <<<
+FROM alpine-tcl-build-base AS package-dedup
+WORKDIR /src/dedup
+RUN git clone --recurse-submodules --shallow-submodules --branch v0.9.5 --single-branch --depth 1 https://github.com/cyanogilvie/dedup .
 RUN autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
-	make install-binaries install-libraries clean && \
-	find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-
-# inotify: tip of master
-ENV inotify_source="https://github.com/cyanogilvie/inotify/archive/298f608.tar.gz"
-WORKDIR /src/inotify
-RUN wget $inotify_source -O - | tar xz --strip-components=1 && \
-	ln -s /src/tclconfig && \
-	autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
-	make install-binaries install-libraries clean && \
-	find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-
-# pHash: tip of master
-ENV phash_source="https://github.com/aetilius/pHash/archive/dea9ffc.tar.gz"
+    make DESTDIR=/out install-binaries install-libraries clean && \
+    cp /out/usr/local/lib/dedup*/dedupConfig.sh /out/usr/local/lib/
+# package-dedup >>>
+# package-reuri <<<
+FROM alpine-tcl-build-base AS package-reuri
+WORKDIR /src/reuri
+RUN git clone -b v0.10 --recurse-submodules --shallow-submodules --single-branch --depth 1 https://github.com/cyanogilvie/reuri .
+COPY --link --from=package-dedup /out /
+RUN autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols
+RUN make tools
+#RUN make DESTDIR=/out pgo install-binaries install-libraries clean
+RUN make DESTDIR=/out install-binaries install-libraries clean
+# package-reuri >>>
+# package-rl_http <<<
+FROM alpine-tcl-build-base AS package-rl_http
+WORKDIR /src/rl_http
+RUN git clone -b 1.14.9 --recurse-submodules --shallow-submodules --single-branch --depth 1 https://github.com/RubyLane/rl_http .
+RUN make DESTDIR=/out install
+# package-rl_http >>>
+# package-brotli <<<
+FROM alpine-tcl-build-base AS package-brotli
+WORKDIR /src/brotli
+RUN apk add --no-cache --update brotli-libs
+RUN apk add --no-cache --update --virtual build-dependencies git brotli-dev
+RUN git clone -q -b v0.3.1 --recurse-submodules --shallow-submodules --single-branch --depth 1 https://github.com/cyanogilvie/tcl-brotli .
+RUN autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
+    make DESTDIR=/out install-binaries install-libraries clean
+# package-brotli >>>
+# package-rltest <<<
+FROM alpine-tcl-build-base AS package-rltest
+WORKDIR /src/rltest
+RUN git clone -b v1.5.1 --recurse-submodules --shallow-submodules --single-branch --depth 1 https://github.com/RubyLane/rltest .
+RUN make DESTDIR=/out install-tm
+# pacakge-rltest>>>
+# package-names <<<
+FROM alpine-tcl-build-base AS package-names
+WORKDIR /src/names
+RUN git clone -b v0.1.1 --recurse-submodules --shallow-submodules --single-branch --depth 1 https://github.com/cyanogilvie/names .
+RUN make test && make DESTDIR=/out install-tm
+# package-names >>>
+# package-prng <<<
+FROM alpine-tcl-build-base AS package-prng
+WORKDIR /src/prng
+RUN git clone -b v0.7.1 --recurse-submodules --shallow-submodules --single-branch --depth 1 https://github.com/cyanogilvie/prng .
+RUN make test && make DESTDIR=/out install-tm
+# package-prng >>>
+# package-sqlite3 <<<
+FROM alpine-tcl-build-base AS package-sqlite3
+WORKDIR /src/sqlite3
+RUN wget https://sqlite.org/2023/sqlite-autoconf-3410200.tar.gz -O - | tar xz --strip-components=1
+WORKDIR /src/sqlite3/tea
+RUN autoconf && ./configure CFLAGS="${CFLAGS}" && \
+    make DESTDIR=/out all install-binaries install-libraries clean
+# package-sqlite3 >>>
+# package-pixel <<<
+# pHash
+FROM alpine-tcl-build-base AS package-pixel
+RUN apk add --no-cache --update cmake boost-dev libjpeg-turbo-dev libpng-dev tiff-dev libjpeg-turbo-dev libexif-dev libpng-dev librsvg-dev libwebp-dev imlib2-dev
+#	libjpeg-turbo libexif libpng librsvg libwebp imlib2
 WORKDIR /src/phash
-RUN apk add --no-cache --update cmake boost-dev libjpeg-turbo-dev libpng-dev tiff-dev
-RUN wget $phash_source -O - | tar xz --strip-components=1
+RUN wget https://github.com/aetilius/pHash/archive/dea9ffc.tar.gz -O - | tar xz --strip-components=1
 RUN apk manifest cmake
 RUN cmake -DPHASH_DYNAMIC=ON -DPHASH_STATIC=OFF . && \
 	make install && \
-	cp -a third-party/CImg/* /usr/local/include && \
-	find . -type f -not -name '*.c' -and -not -name '*.cpp' -and  -name '*.h' -delete
+	cp -a third-party/CImg/* /usr/local/include
 
 # Pixel: tip of master
-ENV pixel_source="https://github.com/cyanogilvie/pixel"
 WORKDIR /src/pixel
-RUN apk add --no-cache --update libjpeg-turbo libexif libpng librsvg libwebp imlib2 && \
-	apk add --no-cache --update --virtual build-dependencies libjpeg-turbo-dev libexif-dev libpng-dev librsvg-dev libwebp-dev imlib2-dev
-RUN git clone -q -b v3.5.3 --recurse-submodules --shallow-submodules --single-branch --depth 1 $pixel_source .
-RUN cd pixel_core && \
-		ln -s /src/tclconfig && \
-		autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
-		make -j 8 install-binaries install-libraries && \
-		cp pixelConfig.sh /usr/local/lib && \
-	cd ../pixel_jpeg && \
-		autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
-		make install-binaries install-libraries clean && \
-	cd ../pixel_png && \
-		autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
-		make install-binaries install-libraries clean && \
-	cd ../pixel_svg_cairo && \
-		autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
-		make install-binaries install-libraries clean && \
-	cd ../pixel_webp && \
-		ln -s /src/tclconfig && \
-		autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
-		make install-binaries install-libraries clean && \
-	cd ../pixel_imlib2 && \
-		autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
-		make install-binaries install-libraries clean && \
-	cd ../pixel_phash && \
-		autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
-		make install-binaries install-libraries clean && \
-	cd ../pixel_core && \
-		make clean && \
-	cd .. && \
-	apk del --no-cache build-dependencies && \
-	find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-
-# chantricks
-ENV chantricks_source="https://github.com/cyanogilvie/chantricks/archive/v1.0.3.tar.gz"
-WORKDIR /src/chantricks
-RUN wget $chantricks_source -O - | tar xz --strip-components=1 && \
-	make install-tm && \
-    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-
-# openapi
-ENV openapi_source="https://github.com/cyanogilvie/tcl-openapi/archive/v0.4.11.tar.gz"
-WORKDIR /src/openapi
-RUN wget $openapi_source -O - | tar xz --strip-components=1 && \
-	cp *.tm /usr/local/lib/tcl8/site-tcl && \
-    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-
-# docker
-ENV docker_source="https://github.com/cyanogilvie/tcl-docker-client/archive/v0.9.0.tar.gz"
-WORKDIR /src/docker
-RUN wget $docker_source -O - | tar xz --strip-components=1 && \
-	make TM_MODE=-ziplet install-tm && \
-    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-
+RUN git clone -q -b v3.5.3 --recurse-submodules --shallow-submodules --single-branch --depth 1 https://github.com/cyanogilvie/pixel .
+WORKDIR /src/pixel/pixel_core
+RUN ln -s /src/tclconfig && \
+	autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
+	make -j 8 all && \
+	make install-binaries install-libraries && \
+	make DESTDIR=/out install-binaries install-libraries && \
+	cp pixelConfig.sh /usr/local/lib && \
+	cp pixelConfig.sh /out/usr/local/lib 
+WORKDIR /src/pixel/pixel_jpeg
+RUN autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
+    make DESTDIR=/out install-binaries install-libraries clean
+WORKDIR /src/pixel/pixel_png
+RUN autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
+	make DESTDIR=/out install-binaries install-libraries clean
+WORKDIR /src/pixel/pixel_svg_cairo
+RUN autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
+	make DESTDIR=/out install-binaries install-libraries clean
+WORKDIR /src/pixel/pixel_webp
+RUN ln -s /src/tclconfig && \
+	autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
+	make DESTDIR=/out install-binaries install-libraries clean
+WORKDIR /src/pixel/pixel_imlib2
+RUN autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
+	make DESTDIR=/out install-binaries install-libraries clean
+WORKDIR /src/pixel/pixel_phash
+RUN autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
+	make DESTDIR=/out install-binaries install-libraries clean
+# package-pixel >>>
+# package-tdom <<<
+FROM alpine-tcl-build-base AS package-tdom
 # gumbo (not a tcl package, needed for tdom)
-ENV gumbo_source="https://github.com/google/gumbo-parser/archive/v0.10.1.tar.gz"
 WORKDIR /src/gumbo
-RUN wget $gumbo_source -O - | tar xz --strip-components=1 && \
-	apk add --no-cache --update libtool && \
-	./autogen.sh && \
+RUN wget https://github.com/google/gumbo-parser/archive/v0.10.1.tar.gz -O - | tar xz --strip-components=1
+RUN ./autogen.sh && \
 	./configure CFLAGS="${CFLAGS}" --enable-static=no && \
 	make -j 8 all && \
 	make install && \
-	make clean && \
-    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
+	make DESTDIR=/out install
 
 # tdom - fork with RL changes and extra stubs exports and misc
-ENV tdom_source="https://github.com/RubyLane/tdom/archive/cyan-0.9.3.2.tar.gz"
 WORKDIR /src/tdom
-RUN wget $tdom_source -O - | tar xz --strip-components=1 && \
-    autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols --enable-html5 && \
+RUN git clone -b cyan-0.9.3.2 --recurse-submodules --shallow-submodules --single-branch --depth 1 https://github.com/RubyLane/tdom .
+RUN autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols --enable-html5 && \
     make -j 8 all && \
-    make install-binaries install-libraries clean && \
-    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-
-# tty
-ENV tty_source="https://github.com/cyanogilvie/tcl-tty/archive/v0.5.tar.gz"
-WORKDIR /src/tty
-RUN apk add --no-cache --update ncurses && \
-	wget $tty_source -O - | tar xz --strip-components=1 && \
-	make install-tm && \
-    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-
-# parsetcl - tip of master
-ENV parsetcl_source="https://github.com/cyanogilvie/parsetcl/archive/030a1439b76747ec7a016c5bd0ae78c93fc9bb7b.tar.gz"
+    make DESTDIR=/out install-binaries install-libraries
+# package-tdom >>>
+# package-parse_args <<<
+FROM alpine-tcl-build-base AS package-parse_args
+WORKDIR /src/parse_args
+RUN git clone --recurse-submodules --shallow-submodules --branch v0.3.4.1 --single-branch --depth 1 https://github.com/RubyLane/parse_args .
+RUN autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
+    make DESTDIR=/out install-binaries install-libraries clean
+# package-parse_args >>>
+# package-rl_json <<<
+FROM alpine-tcl-build-base AS package-rl_json
+WORKDIR /src/rl_json
+RUN git clone --recurse-submodules --shallow-submodules --branch 0.12.2 --single-branch --depth 1 https://github.com/RubyLane/rl_json .
+RUN autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
+    make -j 8 all && \
+    make DESTDIR=/out install-binaries install-libraries clean
+# package-rl_json >>>
+# package-hash <<<
+FROM alpine-tcl-build-base AS package-hash
+WORKDIR /src/hash
+RUN git clone -b v0.3.2 --recurse-submodules --shallow-submodules --single-branch --depth 1 https://github.com/cyanogilvie/hash .
+RUN autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
+    make -j 8 all && \
+    make DESTDIR=/out install-binaries install-libraries clean
+# package-hash >>>
+# package-unix_sockets <<<
+FROM alpine-tcl-build-base AS package-unix_sockets
+WORKDIR /src/unix_sockets
+RUN git clone -b v0.2.1 --recurse-submodules --shallow-submodules --single-branch --depth 1 https://github.com/cyanogilvie/unix_sockets .
+RUN autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
+    make -j 8 all && \
+    make DESTDIR=/out install-binaries install-libraries clean
+# package-unix_sockets >>>
+# package-tclreadline <<<
+FROM alpine-tcl-build-base AS package-tclreadline
+WORKDIR /src/tclreadline
+RUN apk add --no-cache --update readline readline-dev
+RUN git clone -b v2.3.8.1 --recurse-submodules --shallow-submodules --single-branch --depth 1 https://github.com/cyanogilvie/tclreadline .
+RUN autoconf && ./configure CFLAGS="${CFLAGS}" --without-tk && \
+	rm libtool && ln -s /usr/bin/libtool
+RUN make DESTDIR=/out LIBTOOL=/usr/bin/libtool install-libLTLIBRARIES install-tclrlSCRIPTS && \
+	mv /out/usr/local/lib/libtclreadline* /out/usr/local/lib/tclreadline2.3.8.1/
+COPY tcl/tclshrc /out/root/.tclshrc
+# package-tclreadline >>>
+# package-tclsignal <<<
+FROM alpine-tcl-build-base AS package-tclsignal
+WORKDIR /src/tclsignal
+RUN git clone -b v1.4.4.1 --recurse-submodules --shallow-submodules --single-branch --depth 1 https://github.com/cyanogilvie/tclsignal .
+RUN autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
+	make -j 8 all && \
+	make DESTDIR=/out install-binaries install-libraries clean
+# package-tclsignal >>>
+# package-type <<<
+FROM alpine-tcl-build-base AS package-type
+WORKDIR /src/type
+RUN git clone -q -b v0.2.1 --recurse-submodules --shallow-submodules --single-branch --depth 1 https://github.com/cyanogilvie/type .
+RUN autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
+	make DESTDIR=/out install-binaries install-libraries clean
+# package-type >>>
+# package-inotify <<<
+FROM alpine-tcl-build-base AS package-inotify
+WORKDIR /src/inotify
+RUN git clone -q -b v2.2.1 --recurse-submodules --shallow-submodules --single-branch --depth 1 https://github.com/cyanogilvie/inotify .
+RUN autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
+	make DESTDIR=/out install-binaries install-libraries clean
+# package-inotify >>>
+# package-parsetcl <<<
+FROM alpine-tcl-build-base AS package-parsetcl
+COPY --link --from=package-tdom /out /
 WORKDIR /src/parsetcl
-RUN wget $parsetcl_source -O - | tar xz --strip-components=1 && \
-	ln -s /src/tclconfig && \
-	autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
-	make install-binaries install-libraries clean && \
-	find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-
-# flock
-ENV flock_source="https://github.com/cyanogilvie/flock/archive/v0.6.tar.gz"
-WORKDIR /src/flock
-RUN wget $flock_source -O - | tar xz --strip-components=1 && \
-	make install && \
-    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# ck
-ENV ck_source="https://github.com/cyanogilvie/ck/archive/v8.6.tar.gz"
+RUN git clone -q -b v0.1.2 --recurse-submodules --shallow-submodules --single-branch --depth 1 https://github.com/cyanogilvie/parsetcl .
+RUN autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
+	make DESTDIR=/out install-binaries install-libraries clean
+# package-parsetcl >>>
+# package-ck <<<
+FROM alpine-tcl-build-base AS package-ck
+RUN apk add --no-cache --update ncurses-libs ncurses-dev
 WORKDIR /src/ck
-RUN apk add --no-cache --update ncurses-libs && \
-	apk add --no-cache --update --virtual build-dependencies ncurses-dev && \
-	wget $ck_source -O - | tar xz --strip-components=1 && \
-	ln -s /src/tclconfig && \
-	autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
-	make install-binaries install-libraries clean && \
-	cp -a library /usr/local/lib/ck8.6/ && \
-	apk del --no-cache build-dependencies && \
-	find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# resolve
-ENV resolve_source="https://github.com/cyanogilvie/resolve"
+RUN git clone -q -b v8.6.1 --recurse-submodules --shallow-submodules --single-branch --depth 1 https://github.com/cyanogilvie/ck .
+RUN autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
+	make DESTDIR=/out install-binaries install-libraries clean && \
+	cp -a library /out/usr/local/lib/ck8.6/
+# package-ck >>>
+# package-chantricks <<<
+FROM alpine-tcl-build-base AS package-chantricks
+WORKDIR /src/chantricks
+RUN git clone --recurse-submodules --shallow-submodules --branch v1.0.4 --single-branch --depth 1 https://github.com/cyanogilvie/chantricks .
+RUN make DESTDIR=/out install-tm
+# package-chantricks >>>
+# package-openapi <<<
+FROM alpine-tcl-build-base AS package-openapi
+WORKDIR /src/openapi
+RUN git clone --recurse-submodules --shallow-submodules --branch v0.4.11 --single-branch --depth 1 https://github.com/cyanogilvie/tcl-openapi .
+RUN mkdir -p /out/usr/local/lib/tcl8/site-tcl && \
+	cp *.tm /out/usr/local/lib/tcl8/site-tcl
+# package-openapi >>>
+# package-resolve <<<
+FROM alpine-tcl-build-base AS package-resolve
 WORKDIR /src/resolve
-RUN git clone --recurse-submodules --shallow-submodules --branch v0.10 --single-branch --depth 1 $resolve_source . && \
+RUN git clone --recurse-submodules --shallow-submodules --branch v0.10 --single-branch --depth 1 https://github.com/cyanogilvie/resolve .
+RUN autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
+    make DESTDIR=/out install-binaries install-libraries clean
+# package-resolve >>>
+# package-tcllib <<<
+FROM alpine-tcl-build-base AS package-tcllib
+WORKDIR /src/tcllib
+RUN wget https://core.tcl-lang.org/tcllib/uv/tcllib-1.21.tar.gz -O - | tar xz --strip-components=1
+RUN ./configure && make DESTDIR=/out install-libraries install-applications clean
+# package-tcllib >>>
+# package-docker <<<
+FROM alpine-tcl-build-base AS package-docker
+COPY --link --from=package-chantricks	/out /
+COPY --link --from=package-openapi		/out /
+COPY --link --from=package-rl_json		/out /
+COPY --link --from=package-parse_args	/out /
+COPY --link --from=package-tcllib		/out /
+WORKDIR /src/docker
+RUN git clone --recurse-submodules --shallow-submodules --branch v0.9.1 --single-branch --depth 1 https://github.com/cyanogilvie/tcl-docker-client .
+RUN make DESTDIR=/out TM_MODE=-ziplet install-tm
+# package-docker >>>
+# package-gc_class <<<
+FROM alpine-tcl-build-base AS package-gc_class
+WORKDIR /src/gc_class
+RUN git clone --recurse-submodules --shallow-submodules --branch v1.0 --single-branch --depth 1 https://github.com/RubyLane/gc_class .
+RUN mkdir -p /out/usr/local/lib/tcl8/site-tcl && cp gc_class*.tm /out/usr/local/lib/tcl8/site-tcl
+# package-gc_class >>>
+# package-tbuild <<<
+FROM alpine-tcl-build-base AS package-tbuild
+WORKDIR /src/tbuild
+RUN git clone --recurse-submodules --shallow-submodules --branch v0.5 --single-branch --depth 1 https://github.com/cyanogilvie/tbuild .
+RUN mkdir -p /out/usr/local/bin && \
+	cp tbuild-lite.tcl /out/usr/local/bin/tbuild-lite && \
+	chmod +x /out/usr/local/bin/tbuild-lite
+# package-tbuild >>>
+# package-cflib <<<
+FROM alpine-tcl-build-base AS package-cflib
+COPY --link --from=package-tbuild /out /
+WORKDIR /src/cflib
+RUN git clone --recurse-submodules --shallow-submodules --branch 1.16.1 --single-branch --depth 1 https://github.com/cyanogilvie/cflib .
+RUN tbuild-lite && mkdir -p /out/usr/local/lib/tcl8/site-tcl && cp tm/tcl/* /out/usr/local/lib/tcl8/site-tcl/
+# package-cflib >>>
+# package-sop <<<
+FROM alpine-tcl-build-base AS package-sop
+COPY --link --from=package-tbuild /out /
+WORKDIR /src/sop
+RUN git clone --recurse-submodules --shallow-submodules --branch 1.7.2 --single-branch --depth 1 https://github.com/cyanogilvie/sop .
+RUN tbuild-lite && mkdir -p /out/usr/local/lib/tcl8/site-tcl && cp tm/tcl/* /out/usr/local/lib/tcl8/site-tcl/
+# package-sop >>>
+# package-netdgram <<<
+FROM alpine-tcl-build-base AS package-netdgram
+COPY --link --from=package-tbuild /out /
+WORKDIR /src/netdgram
+RUN git clone --recurse-submodules --shallow-submodules --branch v0.9.12 --single-branch --depth 1 https://github.com/cyanogilvie/netdgram .
+RUN tbuild-lite && mkdir -p /out/usr/local/lib/tcl8/site-tcl && cp -a tm/tcl/* /out/usr/local/lib/tcl8/site-tcl/
+# package-netdgram >>>
+# package-evlog <<<
+FROM alpine-tcl-build-base AS package-evlog
+COPY --link --from=package-tbuild /out /
+WORKDIR /src/evlog
+RUN git clone --recurse-submodules --shallow-submodules --branch v0.3.1 --single-branch --depth 1 https://github.com/cyanogilvie/evlog .
+RUN tbuild-lite && mkdir -p /out/usr/local/lib/tcl8/site-tcl && cp tm/tcl/* /out/usr/local/lib/tcl8/site-tcl/
+# package-evlog >>>
+# package-dsl <<<
+FROM alpine-tcl-build-base AS package-dsl
+COPY --link --from=package-tbuild /out /
+WORKDIR /src/dsl
+RUN git clone --recurse-submodules --shallow-submodules --branch v0.5 --single-branch --depth 1 https://github.com/cyanogilvie/dsl .
+RUN tbuild-lite && mkdir -p /out/usr/local/lib/tcl8/site-tcl && cp tm/tcl/* /out/usr/local/lib/tcl8/site-tcl/
+# package-dsl >>>
+# package-logging <<<
+FROM alpine-tcl-build-base AS package-logging
+COPY --link --from=package-tbuild /out /
+WORKDIR /src/logging
+RUN git clone --recurse-submodules --shallow-submodules --branch v0.3 --single-branch --depth 1 https://github.com/cyanogilvie/logging .
+RUN tbuild-lite && mkdir -p /out/usr/local/lib/tcl8/site-tcl && cp tm/tcl/* /out/usr/local/lib/tcl8/site-tcl/
+# package-logging >>>
+# package-crypto <<<
+FROM alpine-tcl-build-base AS package-crypto
+COPY --link --from=package-tbuild /out /
+WORKDIR /src/crypto
+RUN git clone --recurse-submodules --shallow-submodules --branch 0.6 --single-branch --depth 1 https://github.com/cyanogilvie/crypto .
+RUN tbuild-lite && mkdir -p /out/usr/local/lib/tcl8/site-tcl && cp tm/tcl/* /out/usr/local/lib/tcl8/site-tcl/
+# package-crypto >>>
+# package-datasource <<<
+FROM alpine-tcl-build-base AS package-datasource
+COPY --link --from=package-tbuild /out /
+WORKDIR /src/datasource
+RUN git clone --recurse-submodules --shallow-submodules --branch v0.2.4 --single-branch --depth 1 https://github.com/cyanogilvie/datasource .
+RUN tbuild-lite && mkdir -p /out/usr/local/lib/tcl8/site-tcl && cp tm/tcl/* /out/usr/local/lib/tcl8/site-tcl/
+# package-datasource >>>
+# package-m2 <<<
+FROM alpine-tcl-build-base AS package-m2
+COPY --link --from=package-tbuild /out /
+WORKDIR /src/m2
+#RUN git clone --recurse-submodules --shallow-submodules --branch v0.43.15 --single-branch --depth 1 https://github.com/cyanogilvie/m2 .
+RUN git clone --branch v0.43.15 --single-branch --depth 1 https://github.com/cyanogilvie/m2 .
+RUN mkdir -p /out/usr/local/lib/tcl8/site-tcl && \
+	tbuild-lite build_tm m2 && \
+	cp -r tm/tcl/*			/out/usr/local/lib/tcl8/site-tcl/ && \
+	mkdir -p				/out/usr/local/opt/m2 && \
+	cp -r m2_node			/out/usr/local/opt/m2/ && \
+	cp -r tools				/out/usr/local/opt/m2/ && \
+	cp -r authenticator		/out/usr/local/opt/m2/ && \
+	cp -r admin_console		/out/usr/local/opt/m2/ && \
+	mkdir -p				/out/etc/codeforge/authenticator && \
+	cp -r plugins			/out/etc/codeforge/authenticator/
+COPY m2/m2_node				/out/usr/local/bin/
+COPY m2/authenticator		/out/usr/local/bin/
+COPY m2/m2_keys				/out/usr/local/bin/
+COPY m2/m2_admin_console	/out/usr/local/bin/
+# package-m2 >>>
+# package-tdbc <<<
+# tip of connection-pool-git branch
+FROM alpine-tcl-build-base AS package-tdbc
+WORKDIR /src/tdbc
+RUN wget https://github.com/cyanogilvie/tdbc/archive/1f8b684.tar.gz -O - | tar xz --strip-components=1
+RUN ln -s ../tclconfig && \
     autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
-    make install-binaries install-libraries clean && \
-    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# dedup
-ENV dedup_source="https://github.com/cyanogilvie/dedup"
-WORKDIR /src/dedup
-RUN git clone --recurse-submodules --shallow-submodules --branch v0.9.4.2 --single-branch --depth 1 $dedup_source . && \
-    autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
-    make install-binaries install-libraries clean && \
-    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-# brotli
-ENV brotli_source="https://github.com/cyanogilvie/tcl-brotli"
-WORKDIR /src/brotli
-RUN apk add --no-cache --update brotli-libs && \
-	apk add --no-cache --update --virtual build-dependencies git brotli-dev && \
-	git clone -q -b v0.3.1 --recurse-submodules --shallow-submodules --single-branch --depth 1 $brotli_source . && \
-    autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
-    make install-binaries install-libraries clean && \
-	apk del --no-cache build-dependencies && \
-    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-
-# aio
-ENV aio_source="https://github.com/cyanogilvie/aio/archive/v1.7.tar.gz"
+    make -j 8 all && \
+    make DESTDIR=/out install-binaries install-libraries clean
+# package-tdbc >>>
+# package-tcltls <<<
+FROM alpine-tcl-build-base AS package-tcltls
+WORKDIR /src/tcltls
+RUN apk add --no-cache --update --virtual build-dependencies curl openssl-dev curl-dev
+RUN wget https://core.tcl-lang.org/tcltls/tarball/tls-1-7-22/tcltls.tar.gz -O - | tar xz --strip-components=1
+RUN ./autogen.sh && \
+    ./configure CFLAGS="${CFLAGS}" --prefix=/usr/local --libdir=/usr/local/lib --disable-sslv2 --disable-sslv3 --disable-tlsv1.0 --disable-tlsv1.1 --enable-ssl-fastpath --enable-symbols && \
+    make -j 8 all && \
+    make DESTDIR=/out install clean
+# package-tcltls >>>
+# package-sockopt <<<
+FROM alpine-tcl-build-base AS package-sockopt
+COPY --link --from=package-rl_json /out /
+WORKDIR /src/sockopt
+RUN git clone --recurse-submodules --shallow-submodules --branch v0.2.1 --single-branch --depth 1 https://github.com/cyanogilvie/sockopt .
+RUN autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols && \
+    make DESTDIR=/out install-binaries install-libraries clean
+# package-sockopt >>>
+# package-tty <<<
+FROM alpine-tcl-build-base AS package-tty
+RUN apk add --no-cache --update ncurses
+WORKDIR /src/tty
+RUN git clone --recurse-submodules --shallow-submodules --branch v0.6.1 --single-branch --depth 1 https://github.com/cyanogilvie/tcl-tty .
+RUN make DESTDIR=/out install-tm
+# package-tty >>>
+# package-flock <<<
+FROM alpine-tcl-build-base AS package-flock
+WORKDIR /src/flock
+RUN git clone --recurse-submodules --shallow-submodules --branch v0.6.1 --single-branch --depth 1 https://github.com/cyanogilvie/flock .
+RUN make DESTDIR=/out install
+# package-flock >>>
+# package-aio <<<
+FROM alpine-tcl-build-base AS package-aio
 WORKDIR /src/aio
-RUN wget $aio_source -O - | tar xz --strip-components=1 && \
-	make test && \
-	make install-tm && \
-    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-
-# prng
-ENV prng_source="https://github.com/cyanogilvie/prng/archive/v0.7.tar.gz"
-WORKDIR /src/prng
-RUN wget $prng_source -O - | tar xz --strip-components=1 && \
-	make test && \
-	make install-tm && \
-    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-
-# names
-ENV names_source="https://github.com/cyanogilvie/names/archive/v0.1.tar.gz"
-WORKDIR /src/names
-RUN wget $names_source -O - | tar xz --strip-components=1 && \
-	make test && \
-	make install-tm && \
-    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-
-# rltest
-ENV rltest_source="https://github.com/RubyLane/rltest/archive/v1.5.tar.gz"
-WORKDIR /src/rltest
-RUN wget $rltest_source -O - | tar xz --strip-components=1 && \
-	make install-tm && \
-    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-
-# jitc
-ENV jitc_source="https://github.com/cyanogilvie/jitc"
-WORKDIR /src/jitc
-RUN apk add --no-cache --update --virtual build-dependencies git python3 && \
-	apk add --no-cache --update libstdc++ libgcc && \
-	git clone -b v0.2.1 --recurse-submodules --shallow-submodules --single-branch --depth 1 $jitc_source . && \
-	autoconf && \
-	./configure CFLAGS="${CFLAGS}" --enable-symbols && \
-    make install-binaries install-libraries clean && \
-	apk del --no-cache build-dependencies && \
-    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-
-# pgwire
-ENV pgwire_source="https://github.com/cyanogilvie/pgwire"
-WORKDIR /src/pgwire
-RUN git clone -b v3.0.0b21 --recurse-submodules --shallow-submodules --single-branch --depth 1 $pgwire_source . && \
-    cd src && \
-    make all && \
-    cp -a tm/* /usr/local/lib/tcl8/site-tcl && \
-    make clean && \
-    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-
-# reuri
-ENV reuri_source="https://github.com/cyanogilvie/reuri"
-WORKDIR /src/reuri
-RUN git clone -b v0.6 --recurse-submodules --shallow-submodules --single-branch --depth 1 $reuri_source . && \
-    autoconf && ./configure CFLAGS="${CFLAGS}" --enable-symbols --with-dedup=/usr/local/lib/dedup0.9.4 && \
-    #make pgo install-binaries install-libraries clean && \
-    make install-binaries install-libraries clean && \
-    find . -type f -not -name '*.c' -and -not -name '*.h' -delete
-
-# aws api, generated from the botocore repo json files
-COPY botocore /src/botocore
+RUN git clone --recurse-submodules --shallow-submodules --branch v1.7.1 --single-branch --depth 1 https://github.com/cyanogilvie/aio .
+RUN make test && \
+	make DESTDIR=/out install-tm
+# package-aio >>>
+# package-aws <<<
+FROM alpine-tcl-build-base AS package-aws
+COPY --link --from=package-tdom			/out /
+COPY --link --from=package-parse_args	/out /
+COPY --link --from=package-rl_json		/out /
+COPY --link --from=package-hash			/out /
+COPY --link --from=package-dedup		/out /
+COPY --link --from=package-reuri		/out /
+COPY --link --from=package-resolve		/out /
+COPY --link --from=package-gc_class		/out /
+COPY --link --from=package-rl_http		/out /
+COPY --link --from=package-tcllib		/out /
+COPY --link --from=package-chantricks	/out /
+COPY api/botocore /src/botocore
 WORKDIR /src/botocore
 COPY api/build.tcl /src/botocore
 COPY api/*.tm /tmp/tm/
@@ -492,13 +461,66 @@ COPY api/aws1/*.tm /tmp/tm/aws1/
 ARG TESTMODE
 RUN if test -z "$TESTMODE"; \
 	then \
+		mkdir /out/usr/local/lib/tcl8/site-tcl; \
 		cp -a /tmp/tm/* /usr/local/lib/tcl8/site-tcl; \
-		tclsh build.tcl -definitions botocore/data -prefix /usr/local/lib/tcl8/site-tcl; \
+		cp -a /tmp/tm/* /out/usr/local/lib/tcl8/site-tcl; \
+		tclsh build.tcl -definitions botocore/data -prefix /out/usr/local/lib/tcl8/site-tcl; \
 	fi
+# package-aws >>>
+
+FROM alpine-tcl-build-base AS alpine-tcl-build
+COPY --link --from=package-rl_http		/out /
+COPY --link --from=package-dedup		/out /
+COPY --link --from=package-jitc			/out /
+COPY --link --from=package-pgwire		/out /
+COPY --link --from=package-reuri		/out /
+COPY --link --from=package-brotli		/out /
+COPY --link --from=package-rltest		/out /
+COPY --link --from=package-names		/out /
+COPY --link --from=package-prng			/out /
+COPY --link --from=package-sqlite3		/out /
+COPY --link --from=package-pixel		/out /
+COPY --link --from=package-tdom			/out /
+COPY --link --from=package-parse_args	/out /
+COPY --link --from=package-rl_json		/out /
+COPY --link --from=package-hash			/out /
+COPY --link --from=package-unix_sockets	/out /
+COPY --link --from=package-tclreadline	/out /
+COPY --link --from=package-tclsignal	/out /
+COPY --link --from=package-type			/out /
+COPY --link --from=package-inotify		/out /
+COPY --link --from=package-parsetcl		/out /
+COPY --link --from=package-ck			/out /
+COPY --link --from=package-resolve		/out /
+COPY --link --from=package-tcllib		/out /
+COPY --link --from=package-tdbc			/out /
+COPY --link --from=package-tcltls		/out /
+COPY --link --from=package-sockopt		/out /
+COPY --link --from=package-chantricks	/out /
+COPY --link --from=package-openapi		/out /
+COPY --link --from=package-docker		/out /
+COPY --link --from=package-gc_class		/out /
+COPY --link --from=package-tbuild		/out /
+COPY --link --from=package-cflib		/out /
+COPY --link --from=package-sop			/out /
+COPY --link --from=package-netdgram		/out /
+COPY --link --from=package-evlog		/out /
+COPY --link --from=package-dsl			/out /
+COPY --link --from=package-logging		/out /
+COPY --link --from=package-crypto		/out /
+COPY --link --from=package-datasource	/out /
+COPY --link --from=package-m2			/out /
+COPY --link --from=package-tty			/out /
+COPY --link --from=package-flock		/out /
+COPY --link --from=package-aio			/out /
+COPY --link --from=package-aws			/out /
 
 # misc local bits
 COPY tcl/tm /usr/local/lib/tcl8/site-tcl
 COPY tools/* /usr/local/bin/
+
+# common_sighandler
+COPY common_sighandler-*.tm /usr/local/lib/tcl8/site-tcl/
 
 # meta
 #RUN /usr/local/bin/package_report

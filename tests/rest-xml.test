@@ -1,0 +1,22 @@
+if {[lsearch [namespace children] ::tcltest] == -1} {
+    package require tcltest
+    namespace import ::tcltest::*
+}
+
+tcltest::loadTestedCommands
+package require aws 2
+package require rl_json
+package require rltest
+interp alias {} json {} ::rl_json::json
+
+test rest-xml_route53-list_hosted_zones-1.1 {} -body { #<<<
+	aws route53 list_hosted_zones
+	json exists [aws route53 list_hosted_zones] HostedZones
+} -result 1
+#>>>
+
+# cleanup
+::tcltest::cleanupTests
+return
+
+# vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4

@@ -9,6 +9,7 @@ if {$tcl_interactive} {
 	namespace import ::rl_json::*
 	namespace import ::chantricks::*
 
+	tclreadline::readline historyexpansion no
 	tclreadline::Loop
 }
 

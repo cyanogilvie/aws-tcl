@@ -1,7 +1,8 @@
-VER=v0.9.65
+VER=v0.9.66
 PLATFORM=linux/arm64,linux/amd64
 DEST=--push
 TCLSH=tclsh
+APIVER=2.0a4
 
 CONTAINER_ENV = -v "`pwd`/here:/here" --network host --ulimit core=-1
 
@@ -56,13 +57,13 @@ lambdatest-amd64: aws-lambda-rie-x86_64
 	VER="$(VER)" PLATFORM=linux/amd64 RIE=aws-lambda-rie-x86_64 docker-compose logs lambda
 	VER="$(VER)" PLATFORM=linux/amd64 RIE=aws-lambda-rie-x86_64 docker-compose down
 
-tm/aws-2.0a3.tm: api/aws-2.0a3.tm api/build.tcl
+tm/aws-$(APIVER).tm: api/aws-$(APIVER).tm api/build.tcl
 	mkdir -p tm/aws1
 	cp api/*.tm tm/
 	cp api/aws1/*.tm tm/aws1/
-	$(TCLSH) api/build.tcl -definitions botocore/botocore/data -prefix tm
+	$(TCLSH) api/build.tcl -definitions api/botocore/botocore/data -prefix tm
 
-tm: tm/aws-2.0a3.tm
+tm: tm/aws-$(APIVER).tm
 
 test: tm alpine-tcl-test
 	docker run --rm --name aws-tcl-test \

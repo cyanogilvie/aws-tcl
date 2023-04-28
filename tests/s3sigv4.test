@@ -6,14 +6,26 @@ if {[lsearch [namespace children] ::tcltest] == -1} {
 tcltest::loadTestedCommands
 package require aws 2
 package require rl_json
+package require rltest
 interp alias {} json {} ::rl_json::json
 
 tcltest::testConstraint have_s3_bucket [try { #<<<
 	aws::helpers::get_creds
 	set buckets_resp	[aws s3 list_buckets]
-	if {[json exists $buckets_resp Buckets 0 Name]} {
-		set bucket	[json get $buckets_resp Buckets 0 Name]
+	if {[json exists $buckets_resp Buckets 0]} {
+		json foreach b [json extract $buckets_resp Buckets] {
+			if {[json get $b Name] eq "cyan-archive"} continue
+			set bucket	[json get $b Name]
+			break
+		}
 	}
+	#if {[json exists $buckets_resp Buckets 0 Name]} {
+	#	set bucket	[json get $buckets_resp Buckets 0 Name]
+	#}
+	set bucketlocation	[aws s3 get_bucket_location -bucket $bucket]
+	set bucket_region	[json get -default {} $bucketlocation LocationConstraint]
+	if {$bucket_region eq ""} {set bucket_region us-east-1}
+	#puts stderr "bucket: ($bucket), bucket_region: ($bucket_region), bucketlocation: ($bucketlocation)"
 } trap {AWS NO_CREDENTIALS} {} {
 	return -level 0 false
 } on ok {} {
@@ -22,24 +34,52 @@ tcltest::testConstraint have_s3_bucket [try { #<<<
 	puts stderr "Error checking for AWS credentials: ([dict get $options -errorcode]) [dict get $options -errorinfo]"
 	return -level 0 false
 } finally {
-	unset -nocomplain buckets_resp errmsg options
+	unset -nocomplain buckets_resp errmsg options b
 }]
 #>>>
 
-test s3sigv4-1.1 {get key} -constraints have_s3_bucket -setup { #<<<
+test s3sigv4-1.1 {get key, no encoding} -constraints have_s3_bucket -body { #<<<
+	aws s3 get_object -region aws-global -use_global_endpoint 1 -bucket $bucket -key foo
+} -cleanup {
+} -match glob -returnCodes error -errorCode {AWS NoSuchKey *} -result {AWS: The specified key does not exist.}
+#>>>
+test s3sigv4-1.2 {get key, no encoding} -constraints have_s3_bucket -body { #<<<
+	#aws s3 get_object -region aws-global -use_global_endpoint 1 -bucket $bucket -key foo\u306f
+	list [rltest compare_json [aws s3 get_object -region $bucket_region -bucket $bucket -key foo\u306f -payload payload] [json template {
+		{
+			"AcceptRanges":			"bytes",
+			"LastModified":			"?G:*",
+			"ContentLength":		3,
+			"ETag":					"?G:*",
+			"ContentType":			"binary/octet-stream",
+			"ServerSideEncryption":	"AES256",
+			"Metadata":				{}
+		}
+	}]] $payload
+} -cleanup {
+	unset -nocomplain payload
+} -result {match bar}
+# -match glob -returnCodes error -errorCode {AWS NoSuchKey *} -result {AWS: The specified key does not exist.}
+#>>>
+test s3sigv4-1.3 {get key, all 0x1f < codepoints <= 0xff and \u306f} -constraints have_s3_bucket -setup { #<<<
 	set key	{}
-	for {set c 0} {$c <= 255} {incr c} {
+	for {set c 0x20} {$c <= 0xff} {incr c} {
 		append key [format %c $c]
 	}
 	append key \u306f
-	set ::aws::debug	1
 } -body {
-	#aws s3 get_object -bucket $bucket -key /$key/$key
-	aws s3 get_object -bucket $bucket -key foo
+	aws s3 get_object -region aws-global -use_global_endpoint 1 -bucket $bucket -key [join [regexp -all -inline {.{80}} $key] /]
 } -cleanup {
 	unset -nocomplain key c
-	set ::aws::debug	0
-} -match glob -returnCodes error -errorCode {AWS NoSuchKey *}
+} -match glob -returnCodes error -errorCode {AWS NoSuchKey *} -result {AWS: The specified key does not exist.}
+#>>>
+
+#set aws::debug 1
+#try {
+#	puts stderr "bucket location: [aws s3 get_bucket_location -bucket cyan-archive]"
+#} on error {errmsg options} {
+#	puts stderr [dict get $options -errorinfo]
+#}
 
 # cleanup
 ::tcltest::cleanupTests

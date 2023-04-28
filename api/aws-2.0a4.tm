@@ -1,13 +1,13 @@
 # AWS signature version 4: https://docs.aws.amazon.com/general/latest/gr/signature-version-4.html
 # All services support version 4, except SimpleDB which requires version 2
 
-package require rl_http
-package require urlencode
+package require rl_http 1.14.9
 package require uri
 package require parse_args
 package require tdom
 package require rl_json
 package require chantricks
+package require reuri 0.10
 
 namespace eval aws {
 	namespace export *
@@ -51,13 +51,7 @@ namespace eval aws {
 			::aws
 		}
 
-		try {
-			package require reuri 0.6
-		} on ok {} {
-			interp alias {} ::aws::helpers::sigencode {} ::reuri::uri encode awssig
-		} on error {} {
-			interp alias {} ::aws::helpers::sigencode {} urlencode rfc_urldecode -part path --
-		}
+		interp alias {} ::aws::helpers::sigencode {} ::reuri::uri encode awssig
 
 		variable maxrate		50		;# Hz
 		variable ratelimit		50
@@ -146,21 +140,23 @@ namespace eval aws {
 			global env
 
 			parse_args::parse_args $args {
-				-variant			{-enum {v2 s3} -default v2}
-				-method				{-required}
-				-service			{-required}
-				-path				{-required}
-				-scheme				{-default http}
-				-headers			{-default {}}
-				-params				{-default {}}
-				-content_md5		{-default {}}
-				-content_type		{-default {}}
-				-body				{-default {}}
-				-sig_service		{-default {}}
+				-variant					{-enum {v2 s3} -default v2}
+				-method						{-required}
+				-service					{-required}
+				-path						{-required}
+				-scheme						{-default http}
+				-headers					{-default {}}
+				-params						{-default {}}
+				-content_md5				{-default {}}
+				-content_type				{-default {}}
+				-body						{-default {}}
+				-sig_service				{-default {}}
+				-disable_double_encoding	{-default 0}
+				-signing_region				{-default {}}
 
-				-out_url			{-alias}
-				-out_headers		{-alias}
-				-out_sts			{-alias}
+				-out_url					{-alias}
+				-out_headers				{-alias}
+				-out_sts					{-alias}
 			}
 
 			set creds		[get_creds]
@@ -192,7 +188,11 @@ namespace eval aws {
 			if {[string trim $path /] eq ""} {
 				set canonized_path	/
 			} else {
-				set urlv	[lmap e [split [string trim $path /] /] {sigencode $e}]
+				if {$disable_double_encoding} {
+					set urlv	[split [string trim $path /] /]
+				} else {
+					set urlv	[lmap e [split [string trim $path /] /] {sigencode $e}]
+				}
 				set canonized_path	/[join [lmap e $urlv {sigencode $e}] /]
 				if {[string index $path end] eq "/" && [string index $canonized_path end] ne "/"} {
 					append canonized_path	/
@@ -273,29 +273,33 @@ namespace eval aws {
 			global env
 
 			parse_args::parse_args $args {
-				-variant			{-enum {v4 s3v4} -default v4}
-				-method				{-required}
-				-endpoint			{-required}
-				-sig_service		{-default {}}
-				-region				{-default us-east-1}
-				-credential_scope	{-default ""}
-				-path				{-required}
-				-scheme				{-default http}
-				-headers			{-default {}}
-				-params				{-default {}}
-				-content_type		{-default {}}
-				-body				{-default {}}
-				-algorithm			{-enum {AWS4-HMAC-SHA256} -default AWS4-HMAC-SHA256}
+				-variant					{-enum {v4 s3v4} -default v4}
+				-method						{-required}
+				-endpoint					{-required}
+				-sig_service				{-default {}}
+				-region						{-default us-east-1}
+				-credential_scope			{-default ""}
+				-disable_double_encoding	{-default 0}
+				-signing_region				{-default {}}
+				-path						{-required}
+				-scheme						{-default http}
+				-headers					{-default {}}
+				-params						{-default {}}
+				-content_type				{-default {}}
+				-body						{-default {}}
+				-algorithm					{-enum {AWS4-HMAC-SHA256} -default AWS4-HMAC-SHA256}
 
-				-out_url			{-alias}
-				-out_headers		{-alias}
-				-out_sts			{-alias}
+				-out_url					{-alias}
+				-out_headers				{-alias}
+				-out_sts					{-alias}
 
-				-date				{-# {Fake the date - for test suite}}
-				-out_creq			{-alias -# {internal - used for test suite}}
-				-out_authz			{-alias -# {internal - used for test suite}}
-				-out_sreq			{-alias -# {internal - used for test suite}}
+				-date						{-# {Fake the date - for test suite}}
+				-out_creq					{-alias -# {internal - used for test suite}}
+				-out_authz					{-alias -# {internal - used for test suite}}
+				-out_sreq					{-alias -# {internal - used for test suite}}
 			}
+
+			if {$signing_region eq {}} {set signing_region	$region}
 
 			set creds		[get_creds]
 			set aws_id		[dict get $creds access_key]
@@ -321,20 +325,6 @@ namespace eval aws {
 				set date	[clock seconds]
 			}
 
-			set aws_encode {s { #<<<
-				foreach {- ok quote} [regexp -all -inline {([A-Za-z0-9_.~-]*)([^A-Za-z0-9_.~-]+)?} $s] {
-					append out $ok
-					if {$quote ne ""} {
-						binary scan [encoding convertto utf-8 $quote] cu* byteslist
-						foreach byte $byteslist {
-							append out [format %%%02X $byte]
-						}
-					}
-				}
-				set out
-			}}
-			#>>>
-
 			# Task1: Compile canonical request <<<
 			# Credential scope <<<
 			set fq_credential_scope	[amz-date $date]/[string tolower $credential_scope/$sig_service/aws4_request]
@@ -346,7 +336,7 @@ namespace eval aws {
 				set canonical_uri		/
 				set canonical_uri_sig	/
 			} else {
-				set urlv	[lmap e [split [string trimleft $path /] /] {sigencode $e}]
+				set urlv	[split [string trimleft $path /] /]
 				if {$sig_service eq "s3"} {
 					set n_urlv	$urlv
 				} else {
@@ -363,16 +353,14 @@ namespace eval aws {
 					if {$skipped} {lappend n_urlv ""}		;# Compensate for the switch on {. ""} stripping all the slashes off the end of the uri
 				}
 				set canonical_uri_sig	/[join [lmap e $n_urlv {
-					if {$sig_service eq "s3"} {
-						apply $aws_encode $e
+					if {$disable_double_encoding} {
+						sigencode $e
 					} else {
-						# Services other than S3 have to have the path elements encoded twice according to the documentation, but not the test vectors...
-						apply $aws_encode [apply $aws_encode $e]
-						#apply $aws_encode $e
+						sigencode [sigencode $e]
 					}
 				}] /]
 				set canonical_uri	/[join [lmap e $n_urlv {
-					apply $aws_encode $e
+					sigencode $e
 				}] /]
 				if {$sig_service eq "s3" && [string index $path end] eq "/" && [string index $canonical_uri end] ne "/"} {
 					append canonical_uri		/
@@ -383,7 +371,7 @@ namespace eval aws {
 
 			# Canonical query string <<<
 			#if {[info exists aws_token]} {
-			#	# Some services require the token to be added to th canonical request, others require it appended
+			#	# Some services require the token to be added to the canonical request, others require it appended
 			#	switch -- $sig_service {
 			#		?? {
 			#			lappend params X-Amz-Security-Token	$aws_token
@@ -407,7 +395,7 @@ namespace eval aws {
 
 				set canonical_query_string	[join [lmap e [lsort -command [list apply $paramsort] [lmap {k v} $params {list $k $v}]] {
 					lassign $e k v
-					format %s=%s [apply $aws_encode $k] [apply $aws_encode $v]
+					format %s=%s [sigencode $k] [sigencode $v]
 				}] &]
 			}
 
@@ -443,7 +431,6 @@ namespace eval aws {
 			if {$variant eq "s3v4"} {
 				if {"x-amz-content-sha256" ni [lmap {k v} $headers {set k}]} {
 					# TODO: consider caching the sha256 of the empty body
-					puts stderr "setting x-amz-content-sha256"
 					if {$body eq ""} {
 						lappend out_headers x-amz-content-sha256	UNSIGNED-PAYLOAD
 					} else {
@@ -493,7 +480,7 @@ namespace eval aws {
 
 			# Task3: Calculate signature <<<
 			package require hmac
-			set signing_key	[sigv4_signing_key -aws_key $aws_key -date $date -region $region -service $sig_service]
+			set signing_key	[sigv4_signing_key -aws_key $aws_key -date $date -region $signing_region -service $sig_service]
 			set signature	[binary encode hex [hmac::HMAC_SHA256 $signing_key [encoding convertto utf-8 $string_to_sign]]]
 			#puts stderr "sig:\n$signature"
 			# Task3: Calculate signature >>>
@@ -503,11 +490,15 @@ namespace eval aws {
 			set out_authz		$authorization
 			lappend out_headers	Authorization $authorization
 
-			if {[llength $params]} {
-				set eparams		{}
-			} else {
-				set eparams		?[join [lmap {k v} $params {format %s=%s [sigencode $k] [sigencode $v]}] &]
-			}
+			set eparams [if {[llength $params]} {
+				string cat ? [join [lmap {k v} $params {
+					if {$v eq ""} {
+						sigencode $k
+					} else {
+						format %s=%s [sigencode $k] [sigencode $v]
+					}
+				}] &]
+			}]
 			set url			$scheme://$endpoint$canonical_uri$eparams
 			set out_url		$url
 		}
@@ -554,7 +545,7 @@ namespace eval aws {
 				}
 				#>>>
 			} else { # Guess XML <<<
-				dom parse [$h body] doc
+				dom parse -ignorexmlns [$h body] doc
 				try {
 					if {$xml_ns ne ""} {
 						$doc selectNodesNamespaces [list a $xml_ns]
@@ -608,56 +599,70 @@ namespace eval aws {
 		#>>>
 		proc _req {method endpoint path args} { #<<<
 			parse_args::parse_args $args {
-				-scheme				{-default http}
-				-headers			{-default {}}
-				-params				{-default {}}
-				-content_type		{-default {}}
-				-body				{-default {}}
-				-xml_ns				{-default {}}
-				-response_headers	{-alias}
-				-status				{-alias}
-				-sig_service		{-default {}}
-				-version			{-enum {v4 v2 s3 s3v4} -default v4 -# {AWS signature version}}
-				-region				{-required}
-				-credential_scope	{-default ""}
-				-expecting_status	{-default 200}
+				-scheme						{-default http}
+				-headers					{-default {}}
+				-params						{-default {}}
+				-content_type				{-default {}}
+				-body						{-default {}}
+				-xml_ns						{-default {}}
+				-response_headers			{-alias}
+				-status						{-alias}
+				-sig_service				{-default {}}
+				-version					{-enum {v4 v2 s3 s3v4} -default v4 -# {AWS signature version}}
+				-region						{-required}
+				-credential_scope			{-default ""}
+				-disable_double_encoding	{-default 0}
+				-signing_region				{-default {}}
+				-expecting_status			{-default 200}
+			}
+			if {[reuri::uri exists $path query]} {
+				set q		[reuri::uri extract $path query]
+				set path	[reuri::uri extract $path path /]
+				foreach {k v} $params {
+					reuri::query set q $k $v
+				}
+				set params	[reuri::query get $q]
 			}
 
 			switch -- $version {
 				s3 - v2 {
 					sigv2 \
-						-variant		$version \
-						-method			$method \
-						-service		$service \
-						-path			$path \
-						-scheme			$scheme \
-						-headers		$headers \
-						-params			$params \
-						-content_type	$content_type \
-						-body			$body \
-						-sig_service	$sig_service \
-						-out_url		signed_url \
-						-out_headers	signed_headers \
-						-out_sts		string_to_sign
+						-variant					$version \
+						-method						$method \
+						-service					$service \
+						-path						$path \
+						-scheme						$scheme \
+						-headers					$headers \
+						-params						$params \
+						-content_type				$content_type \
+						-body						$body \
+						-sig_service				$sig_service \
+						-disable_double_encoding	$disable_double_encoding \
+						-signing_region				$signing_region \
+						-out_url					signed_url \
+						-out_headers				signed_headers \
+						-out_sts					string_to_sign
 				}
 
 				v4 - s3v4 {
 					sigv4 \
-						-variant			$version \
-						-method				$method \
-						-endpoint			$endpoint \
-						-sig_service		$sig_service \
-						-region				$region \
-						-path				$path \
-						-scheme				$scheme \
-						-headers			$headers \
-						-params				$params \
-						-content_type		$content_type \
-						-body				$body \
-						-credential_scope	$credential_scope \
-						-out_url			signed_url \
-						-out_headers		signed_headers \
-						-out_sts			string_to_sign
+						-variant					$version \
+						-method						$method \
+						-endpoint					$endpoint \
+						-sig_service				$sig_service \
+						-region						$region \
+						-path						$path \
+						-scheme						$scheme \
+						-headers					$headers \
+						-params						$params \
+						-content_type				$content_type \
+						-body						$body \
+						-credential_scope			$credential_scope \
+						-disable_double_encoding	$disable_double_encoding \
+						-signing_region				$signing_region \
+						-out_url					signed_url \
+						-out_headers				signed_headers \
+						-out_sts					string_to_sign
 				}
 
 				default {
@@ -697,9 +702,9 @@ namespace eval aws {
 			#puts stderr "rl_http $method $signed_url -headers [list $signed_headers] -data [list $body]"
 			package require chantricks
 			rl_http instvar h $method $signed_url \
-				-timeout   20 \
-				-keepalive 1 \
-				-headers   $signed_headers \
+				-timeout	20 \
+				-keepalive	1 \
+				-headers	$signed_headers \
 				-tapchan	[list ::chantricks::tapchan [list apply {
 					{name chan op args} {
 						::aws::helpers::_debug {
@@ -722,7 +727,7 @@ namespace eval aws {
 						}
 					}
 				}] rl_http_$signed_url] \
-				-data      $body
+				-data		$body
 
 			#puts stderr "rl_http $method $signed_url, headers: ($signed_headers), data: ($body)"
 			#puts stderr "got [$h code] headers: ([$h headers])\n[$h body]"
@@ -746,20 +751,22 @@ namespace eval aws {
 			variable maxrate
 
 			parse_args::parse_args $args {
-				-scheme				{-default http}
-				-headers			{-default {}}
-				-params				{-default {}}
-				-content_type		{-default {}}
-				-body				{-default {}}
-				-xml_ns				{-default {}}
-				-response_headers	{-alias}
-				-status				{-alias}
-				-sig_service		{-default {}}
-				-version			{-enum {v4 v2 s3 s3v4} -default v4 -# {AWS signature version}}
-				-retries			{-default 3}
-				-region				{-required}
-				-credential_scope	{-default ""}
-				-expecting_status	{-default 200}
+				-scheme						{-default http}
+				-headers					{-default {}}
+				-params						{-default {}}
+				-content_type				{-default {}}
+				-body						{-default {}}
+				-xml_ns						{-default {}}
+				-response_headers			{-alias}
+				-status						{-alias}
+				-sig_service				{-default {}}
+				-version					{-enum {v4 v2 s3 s3v4} -default v4 -# {AWS signature version}}
+				-retries					{-default 3}
+				-region						{-required}
+				-credential_scope			{-default ""}
+				-disable_double_encoding	{-default 0}
+				-signing_region				{-default {}}
+				-expecting_status			{-default 200}
 			}
 
 			if {$ratelimit < $maxrate && [clock seconds] - $last_slowdown > 10} {
@@ -772,19 +779,21 @@ namespace eval aws {
 				try {
 					ratelimit $ratelimit {
 						return [_req $method $endpoint $path \
-							-region				$region \
-							-credential_scope	$credential_scope \
-							-expecting_status	$expecting_status \
-							-headers			$headers \
-							-params				$params \
-							-content_type		$content_type \
-							-body				$body \
-							-response_headers	response_headers \
-							-status				status \
-							-scheme				$scheme \
-							-xml_ns				$xml_ns \
-							-sig_service		$sig_service \
-							-version			$version \
+							-region						$region \
+							-credential_scope			$credential_scope \
+							-disable_double_encoding	$disable_double_encoding \
+							-signing_region				$signing_region \
+							-expecting_status			$expecting_status \
+							-headers					$headers \
+							-params						$params \
+							-content_type				$content_type \
+							-body						$body \
+							-response_headers			response_headers \
+							-status						status \
+							-scheme						$scheme \
+							-xml_ns						$xml_ns \
+							-sig_service				$sig_service \
+							-version					$version \
 						]
 					}
 				} trap {AWS InternalError} {errmsg options} {
@@ -826,6 +835,7 @@ namespace eval aws {
 				# Environment variables <<<
 				if {
 					[info exists env(AWS_ACCESS_KEY_ID)] &&
+					$env(AWS_ACCESS_KEY_ID) ne "" &&
 					[info exists env(AWS_SECRET_ACCESS_KEY)]
 				} {
 					dict set creds access_key		$env(AWS_ACCESS_KEY_ID)
@@ -1202,6 +1212,8 @@ namespace eval aws {
 			-u			{-default {} -name uri_map}
 			-w			{-default {} -name resultWrapper}
 			-x			{-default {} -name xml_input}
+			-handleresp	{}
+			-payload	{-alias -name resp_payload}
 		}
 
 		if {$region eq ""} {
@@ -1252,10 +1264,11 @@ namespace eval aws {
 			set rep	[if {[info exists _a_$arg]} {
 				set _a_$arg
 			}]
-			set repe	[urlencode rfc_urlencode -part path -- $rep]
+			set repe	[reuri::uri encode path $rep]
+			#lappend uri_map_out	"{$pat}" $repe "{$pat+}" [string map {%2F /} $repe]
 			lappend uri_map_out	"{$pat}" $repe "{$pat+}" $rep
 		}
-		puts stderr "uri_map_out: ($uri_map_out)"
+		#puts stderr "uri_map_out: ($uri_map_out)"
 
 		foreach {header arg} $header_map {
 			if {[info exists _a_$arg]} {
@@ -1285,7 +1298,7 @@ namespace eval aws {
 
 		if {$content_type eq "application/x-www-form-urlencoded; charset=utf-8"} {
 			set body	[join [lmap {k v} $query {
-				format %s=%s [urlencode rfc_urlencode -- $k] [urlencode rfc_urlencode -- $v]
+				format %s=%s [reuri::uri encode query $k] [reuri::uri encode query $v]
 			}] &]
 			set query	{}
 		} elseif {$payload ne ""} {
@@ -1333,19 +1346,25 @@ namespace eval aws {
 		try {
 			#puts stderr "Requesting $method $hostname, path: ($path)($uri_map_out) -> ([string map $uri_map_out $path]), query: ($query), headers: ($headers), body:\n$body"
 			_aws_req $method $hostname [string map $uri_map_out $path] \
-				-params				$query \
-				-sig_service		$signingName \
-				-scheme				$scheme \
-				-region				[dict get $endpoint_info region] \
-				-credential_scope	[dict get $endpoint_info credentialScope region] \
-				-version			[lindex [dict get $endpoint_info signatureVersions] end] \
-				-body				$body \
-				-content_type		$content_type \
-				-headers			$headers \
-				-expecting_status	$expected_status \
-				-response_headers	response_headers \
-				-status				status
+				-params						$query \
+				-sig_service				$signingName \
+				-scheme						$scheme \
+				-region						[dict get $endpoint_info region] \
+				-credential_scope			[dict get $endpoint_info credentialScope region] \
+				-disable_double_encoding	[dict get $endpoint_info disableDoubleEncoding] \
+				-signing_region				[dict get $endpoint_info signingRegion] \
+				-version					[lindex [dict get $endpoint_info signatureVersions] end] \
+				-body						$body \
+				-content_type				$content_type \
+				-headers					$headers \
+				-expecting_status			$expected_status \
+				-response_headers			response_headers \
+				-status						status
 		} on ok body {
+			if {[info exists handleresp]} {
+				resp_cx instvar cx -status $status -headers $response_headers -body $body
+				return [{*}$handleresp -cx $cx -payload resp_payload]
+			}
 			if {$status_map ne ""} {
 				set _a_$status_map	$status
 			}
@@ -1383,7 +1402,7 @@ namespace eval aws {
 					# TODO: check content-type xml?
 					package require tdom
 					# Strip the xmlns
-					set doc [dom parse $body]
+					set doc [dom parse -ignorexmlns $body]
 					#puts stderr "converting XML response with (>$resultWrapper< [dict get [set ${service_ns}::responses] $response]):\n[$doc asXML]"
 					try {
 						set root	[$doc documentElement]
@@ -1411,6 +1430,335 @@ namespace eval aws {
 					}
 				}
 				set body
+			}
+		}
+	}
+
+	#>>>
+	gc_class create resp_cx { #<<<
+		variable {*}{
+			status
+			body
+			headers
+		}
+		constructor args { #<<<
+			namespace path [list {*}[namespace path] {*}{
+				::parse_args
+				::rl_json
+				::aws::helpers
+			}]
+			parse_args $args {
+				-status		{-required}
+				-body		{-required}
+				-headers	{-required}
+			}
+
+			if {[self next] ne {}} next
+		}
+
+		#>>>
+		foreach m {status body headers} {method $m {} [list set $m]}
+		method header args { #<<<
+			parse_args $args {
+				op		{-required -enum {get exists}}
+				name	{-required}
+			}
+
+			set name	[string tolower $name]
+			switch -exact -- $op {
+				exists	{dict exists $headers $name}
+				get		{lindex [dict get $headers $name] 0}
+			}
+		}
+
+		#>>>
+	}
+
+	#>>>
+	proc _build_resp_frag args { #<<<
+		parse_args $args {
+			-cx					{-required}
+			-def				{-required}
+			-shape				{-required}
+			-cxnode				{}
+			-header				{}
+			-headers			{}
+			-val				{}
+			-suppress_fields	{-default {}}
+			-toplevel			{-boolean}
+		}
+
+		switch -exact -- [json get $shape type] {
+			boolean - integer - long - timestamp - string {
+				if {![info exists val]} {
+					if {[info exists cxnode]} {
+						set val	[string trim [domNode $cxnode asText]]
+					} elseif {[info exists header]} {
+						if {![$cx header exists $header]} {
+							return null
+						}
+						set val	[string trim [$cx header get $header]]
+					} else {
+						error "No source location for response fragment"
+					}
+				}
+			}
+		}
+
+		_debug {log debug "_build_resp_frag [json get $shape type], suppress_fields: ($suppress_fields):\n[if {[info exists cxnode] && $cxnode ne {}} {domNode $cxnode asXML} {return -level 0 none}]\nshape: [json pretty $shape]"}
+
+		switch -exact -- [json get $shape type] {
+			blob { #<<<
+				set val
+				#>>>
+			}
+			boolean { #<<<
+				_debug { #<<<
+					json unset shape type
+					if {[json length $shape]} {puts stderr "Unhandled specification in boolean shape: [json pretty $shape]"}
+				}
+				#>>>
+				json boolean $val
+				#>>>
+			}
+			integer - long { #<<<
+				_debug { #<<<
+					json unset shape type
+					if {[json length $shape]} {puts stderr "Unhandled specification in long shape: [json pretty $shape]"}
+				}
+				#>>>
+				json number $val
+				#>>>
+			}
+			timestamp { #<<<
+				_debug { #<<<
+					json unset shape type
+					# TODO: handle timestampFormat {iso8601 rfc822}
+					json unset shape timestampFormat
+					if {[json length $shape]} {puts stderr "Unhandled specification in timestamp shape: [json pretty $shape]"}
+				}
+				#>>>
+				json string $val
+				#>>>
+			}
+			string { #<<<
+				_debug { #<<<
+					json unset shape type
+					json unset shape enum
+					json unset shape pattern
+					json unset shape sensitive
+					json unset shape min
+					json unset shape max
+					json unset shape documentation
+					if {[json length $shape]} {puts stderr "Unhandled keys in string shape: [json keys $shape]"}
+				}
+				#>>>
+				json string $val
+				#>>>
+			}
+			list { #<<<
+				set membershapename	[json get $shape member shape]
+				set location		[json get -default {} $shape member location]
+				set name			[json get -default $membershapename $shape member locationName]
+				set membershape		[json extract $def shapes $membershapename]
+				_debug { #<<<
+					json unset shape type
+					json unset shape member shape
+					json unset shape member locationName
+					json unset shape documentation
+					if {[json length $shape member] == 0} {json unset shape member}
+					if {[json length $shape]} {puts stderr "Unhandled specification in list shape: [json pretty $shape]"}
+				}
+				#>>>
+				set res {[]}
+				foreach node [domNode $cxnode selectNodes $name] {
+					json set res end+1 [_build_resp_frag \
+						-cx		$cx \
+						-def	$def \
+						-shape	$membershape \
+						-cxnode	$node \
+					]
+				}
+				set res
+				#>>>
+			}
+			structure { #<<<
+				set res	{{}}
+				json foreach {member info} [json extract $shape members] {
+					if {$member in $suppress_fields} continue
+					set membershape		[json extract $def shapes [json get $info shape]]
+					set location		[json get -default {} $info location]
+					set locationName	[json get -default $member $info locationName]
+
+					set cxargs			{}
+					switch -exact -- $location {
+						{} {
+							if {![info exists cxnode]} {
+								error "location dom but no cxnode, member ($member): [json pretty $info]"
+							}
+							if {[json get -default false $info xmlAttribute]} {
+								lappend mlist	[list $member]	[list -val [domNode $cxnode getAttribute $locationName]
+							} else {
+								set node		[domNode $cxnode selectNodes "$locationName\[1\]"]
+								if {$node eq "" && $toplevel} {
+									set node	[domNode $cxnode selectNodes "/$locationName\[1\]"]
+								}
+								if {$node eq ""} continue
+								lappend cxargs	-cxnode $node
+							}
+						}
+
+						header	{lappend cxargs -header $locationName}
+						headers	{lappend cxargs -headers $locationName}
+
+						querystring - uri - default {
+							error "Unexpected location for structure member \"$member\": \"$location\""
+						}
+					}
+
+					set val	[_build_resp_frag \
+						-cx		$cx \
+						-def	$def \
+						-shape	[json extract $def shapes [json get $info shape]] \
+						{*}$cxargs \
+					]
+
+					if {[json exists $val]} {
+						json set res $member $val
+					}
+
+					_debug { #<<<
+						json unset info shape
+						json unset info documentation
+						json unset info contextParam
+						json unset info location
+						json unset info locationName
+						#json unset info flattened			;# TODO: implement
+						#json unset info eventpayload		;# TODO: implement
+						#json unset info hostLabel			;# TODO: implement
+						json unset info deprecated
+						json unset info xmlNamespace
+						json unset info streaming
+						if {[json length $info]} {puts stderr "Unhandled keys in structure member: [json keys $info]"}
+					}
+					#>>>
+				}
+
+				_debug { #<<<
+					json unset shape type
+					json unset shape required
+					json unset shape members
+					json unset shape exception
+					json unset shape payload
+					json unset shape documentation
+					json unset shape event
+					json unset shape xmlNamespace
+					json unset shape locationName
+					json unset shape eventstream
+					if {[json length $shape]} {puts stderr "Unhandled keys in structure shape: [json keys $shape]"}
+				}
+				#>>>
+
+				set res
+				#>>>
+			}
+			map { #<<<
+				set keyshape	[json extract $shape key shape]
+				set valshape	[json extract $shape value shape]
+
+				set res	{{}}
+				if {[info exists headers]} {
+					set prefix		[string tolower $headers]
+					set prefix_len	[string length $prefix]
+					foreach {k v} [$cx headers] {
+						if {[string range $k 0 $prefix_len-1] eq $prefix} {
+
+							# Only strings are supported as json keys, so ignore $keyshape here (the only extant use resolves to a string anyway)
+							set key		[string range $k $prefix_len end]
+
+							set val		[_build_resp_frag \
+								-cx		$cx \
+								-def	$def \
+								-shape	$valshape \
+								-val	[lindex [dict get [$cx headers] $k] 0] \
+							]
+
+							json set res $key $val
+						}
+					}
+				} else {
+					error "Location for map not implemented"
+				}
+
+				_debug { #<<<
+					json unset shape type
+					json unset shape key shape
+					json unset shape value shape
+					if {[json length $shape key] == 0} {json unset shape key}
+					if {[json length $shape value] == 0} {json unset shape value}
+					if {[json length $shape]} {puts stderr "Unhandled keys in map shape: [json keys $shape]"}
+				}
+				#>>>
+
+				set res
+				#>>>
+			}
+			default {error "unknown outshape type: ([json get $outshape type])"}
+		}
+	}
+
+	#>>>
+	proc _handle_xml_resp {def op args} { #<<<
+		parse_args $args {
+			-cx			{-required}
+			-payload	{-alias}
+		}
+
+		set output		[json extract $def operations $op output]
+		set outshape	[json extract $def shapes [json get $def operations $op output shape]]
+
+		#_debug {
+		#	if {[json length $output] > 1} {
+		#		json unset output shape
+		#		log debug "keys other than shape defined in output: [json pretty $output]"
+		#	}
+		#}
+		#_debug {log debug "Output shape:\n[json pretty $outshape]"}
+		#_debug {log debug "status: [$cx status]"}
+		#_debug {log debug "headers:\n\t[join [lmap {k v} [$cx headers] {
+		#	format {%30s: %s} $k $v
+		#}] \n\t]"}
+		#_debug {log debug "body:\n[$cx body]"}
+
+		try {
+			set cxargs	{}
+
+			if {[json exists $outshape payload]} {
+				set suppress_fields	[list [json get $outshape payload]]
+				set payload	[_build_resp_frag \
+					-cx		$cx \
+					-def	$def \
+					-shape	[json extract $def shapes [json get $outshape members [json get $outshape payload] shape]] \
+					-val	[$cx body] \
+				]
+			} else {
+				if {[lindex [dict get [$cx headers] content-type] 0] in {text/xml application/xml}} {
+					set doc		[dom parse -ignorexmlns [$cx body]]
+					_debug {log debug "XML:\n[domDoc $doc asXML]"}
+					lappend cxargs	-cxnode [$doc documentElement]
+				}
+				set suppress_fields	{}
+			}
+
+			_build_resp_frag -toplevel \
+				-cx					$cx \
+				-def				$def \
+				-shape				$outshape \
+				-suppress_fields	$suppress_fields \
+				{*}$cxargs
+		} finally {
+			if {[info exists doc]} {
+				$doc delete
 			}
 		}
 	}
@@ -1586,7 +1934,7 @@ namespace eval aws {
 	#>>>
 	proc _resp_xml {resultWrapper fetchlist template xml} { #<<<
 		package require tdom
-		set doc	[dom parse $xml]
+		set doc	[dom parse -ignorexmlns $xml]
 		try {
 			set root	[$doc documentElement]
 			if {$resultWrapper eq {}} {
@@ -1709,7 +2057,7 @@ namespace eval aws {
 
 	#>>>
 	namespace eval _fn { # Functions used by the endpoint routing rules <<<
-		namespace path {::parse_args ::rl_json}
+		namespace path {::parse_args ::rl_json ::aws::helpers}
 
 		proc aws.isVirtualHostableS3Bucket {bucket allowdots} { #<<<
 			if {[string length $bucket] < 3} {return 0}
@@ -1755,9 +2103,15 @@ namespace eval aws {
 			#if {$region eq "aws-global"} {set region us-east-1}
 			package require aws::endpoints
 			json foreach partition [json extract $::aws::endpoints partitions] {
-				if {[json exists $partition services $service endpoints $region]} {
+				#puts stderr "Looking in partition ([json get $partition partition]) for ($region)"
+				set re	[string map {\\w [a-zA-Z0-9_] \\d [0-9]} [json get $partition regionRegex]]
+				#puts stderr "regionRegex: ($re): [regexp $re $region]"
+				if {[regexp $re $region] || [json exists $partition services $service endpoints $region]} {
 					json set partition name [json get $partition partition]
 					return $partition
+					#if {[json exists $partition services $service endpoints $region]} {
+					#	return $partition
+					#}
 				}
 			}
 			#puts stderr "Could not find partition for ($region), returning null"
@@ -1790,33 +2144,33 @@ namespace eval aws {
 		#>>>
 		proc parseURL uri { #<<<
 			try {
-			#puts stderr "aws::_fn::parseURL ($uri)"
-			package require reuri 0.2.6
-			set parts	[reuri::uri get $uri]
-			dict set parts scheme	[reuri::uri get $uri scheme]
-			dict set parts host		[reuri::uri get $uri host]
-			dict set parts hosttype	[reuri::uri get $uri hosttype]
-			dict set parts path		[reuri::uri get $uri path {}]
-			if {[reuri::uri exists $uri port]} {
-				dict append parts host :[reuri::uri get $uri port]
-			}
-			if {[dict get $parts path] in {/ {}}} {
-				dict set parts normalizedPath /
-			} else {
-				dict set parts normalizedPath [dict get $parts path]/
-			}
-			dict set parts isIp	[expr {
-				[dict get $parts hosttype] in {ipv4 ipv6}
-			}]
-			json template {
-				{
-					"scheme":			"~S:scheme",
-					"authority":		"~S:host",
-					"normalizedPath":	"~S:normalizedPath",
-					"path":				"~S:path",
-					"isIp":				"~B:isIp"
+				#puts stderr "aws::_fn::parseURL ($uri)"
+				#set parts	[reuri::uri get $uri]
+				set parts	{}
+				dict set parts scheme	[reuri::uri get $uri scheme]
+				dict set parts host		[reuri::uri get $uri host]
+				dict set parts hosttype	[reuri::uri get $uri hosttype]
+				dict set parts path		[reuri::uri extract $uri path {}]
+				if {[reuri::uri exists $uri port]} {
+					dict append parts host :[reuri::uri get $uri port]
 				}
-			} $parts
+				if {[dict get $parts path] in {/ {}}} {
+					dict set parts normalizedPath /
+				} else {
+					dict set parts normalizedPath [dict get $parts path]/
+				}
+				dict set parts isIp	[expr {
+					[dict get $parts hosttype] in {ipv4 ipv6}
+				}]
+				json template {
+					{
+						"scheme":			"~S:scheme",
+						"authority":		"~S:host",
+						"normalizedPath":	"~S:normalizedPath",
+						"path":				"~S:path",
+						"isIp":				"~B:isIp"
+					}
+				} $parts
 			} on ok res {
 				#puts stderr "::aws::_fn::parseURL returning [json pretty $res]"
 				set res
@@ -1948,6 +2302,7 @@ namespace eval aws {
 			lappend argspec	-region	[list -default $::aws::default_region]
 		} else {
 			set cx_required	[if {[json exists $endpoint_params required]} {json get $endpoint_params required}]
+			_debug {log debug "endpoint_params required: ($cx_required)"}
 
 			json foreach {camel_name details} $endpoint_params {
 				set required	[expr {$camel_name in $cx_required}]
@@ -1982,12 +2337,23 @@ namespace eval aws {
 		}
 		# Add the endpoint context input params to argspec and input wiring >>>
 
+		# If the response specifies a payload, wire up the -payload alias in argspec <<<
+		set post_parse_args	{}
+		if {[json exists $opdef output]} {
+			set output_shape	[json extract $service_def shapes [json get $opdef output shape]]
+			if {[json exists $output_shape payload]} {
+				lappend argspec	-payload	{}
+				append	post_parse_args	{if {[dict exists $params payload]} {upvar 1 [dict get $params payload] payload}} \n
+			}
+		}
+		# If the response specifies a payload, wire up the -payload alias in argspec >>>
+
 		set body	""
 		append body	{variable service_def} \n
 		append body	[list set cxparams	$cxparams] \n
 		append body	"parse_args \$args [list $argspec] params\n"
-		append body {puts stderr "params: ($params)"} \n
-		append body {puts stderr "cxparams: ($cxparams)"} \n
+		append body $post_parse_args
+		#append body {puts stderr "cxparams: ($cxparams)"} \n
 		if {[llength $copy_to_cx] > 0} {
 			append body "foreach {in_param cx_param} [list $copy_to_cx] " {{
 				if {[dict exists $params $in_param]} {
@@ -2000,91 +2366,99 @@ namespace eval aws {
 		#append body {puts stderr "compute endpoint, first: [timerate {endpoint_rules $cxparams} 1 1]"} \n
 		#append body {puts stderr "compute endpoint: [timerate {endpoint_rules $cxparams}]"} \n
 		append body {set endpoint	[endpoint_rules $cxparams]} \n
-		append body {puts stderr "computed endpoint: [json pretty $endpoint]"} \n
-		append body	[list puts stderr "Would call [namespace tail [namespace current]]->$op: [json pretty $opdef]"] \n
-		if {[json exists $opdef input shape]} {
-			append body [list puts stderr "Input shape: [json pretty [json extract $service_def shapes [json get $opdef input shape]]]"]
-		}
-				set params		{}
-				set u			{}
-				set hm			{}
-				set q			{}
-				set b			{}
-				set x			{}
-				if {[json exists $opdef input]} {
-					aws::build::compile_input \
-						-argname_transform	{} \
-						-protocol	[json get $service_def metadata protocol] \
-						-params		params \
-						-uri_map	u \
-						-query_map	q \
-						-header_map	hm \
-						-payload	b \
-						-shapes		[json extract $service_def shapes] \
-						-shape		[json get $opdef input shape]
+		append body {_debug {log notice "computed endpoint: endpoint_rules($cxparams) -> ($endpoint)"}} \n
+		#append body {_debug {log notice "computed endpoint: [json pretty $endpoint]"}} \n
+		#append body	[list puts stderr "Would call [namespace tail [namespace current]]->$op: [json pretty $opdef]"] \n
+		#if {[json exists $opdef input shape]} {
+		#	append body [list puts stderr "Input shape: [json pretty [json extract $service_def shapes [json get $opdef input shape]]]"] \n
+		#}
+		#if {[json exists $opdef output shape]} {
+		#	append body [list puts stderr "Output shape: [json pretty [json extract $service_def shapes [json get $opdef output shape]]]"] \n
+		#}
 
-					set x	[aws::build::compile_xml_input \
-						-shapes	[json extract $service_def shapes] \
-						-input	[json extract $opdef input]]
-				}
-		if {[json exists $opdef output shape]} {
+		set params		{}
+		set u			{}
+		set hm			{}
+		set q			{}
+		set b			{}
+		set x			{}
+		if {[json exists $opdef input]} {
+			aws::build::compile_input \
+				-argname_transform	{} \
+				-protocol	[json get $service_def metadata protocol] \
+				-params		params \
+				-uri_map	u \
+				-query_map	q \
+				-header_map	hm \
+				-payload	b \
+				-shapes		[json extract $service_def shapes] \
+				-shape		[json get $opdef input shape]
+
+			set x	[aws::build::compile_xml_input \
+				-shapes	[json extract $service_def shapes] \
+				-input	[json extract $opdef input]]
+		}
+
+		if {0 && [json exists $opdef output shape]} { #<<<
 			set outshape	[json extract $service_def shapes [json get $opdef output shape]]
-			puts stderr "Output shape: [json pretty $outshape]"
-					if {[json exists $opdef errors]} {
-						set errors	[json lmap e [json extract $opdef errors] {json get $e shape}]
-					} else {
-						set errors	{}
-					}
-						if {[json exists $opdef output resultWrapper]} {
-							set resultWrapper	[json get $opdef output resultWrapper]
-						} else {
-							# Could be because the action returns nothing in the body, or that the context node is to be the root of the response document
-							#puts stderr "No resultWrapper for [json get $def metadata service_name] $op in [json pretty $opdef]"
-							set resultWrapper	{}
-						}
-						if {![info exists exceptions]} {
-							set exceptions	{}
-						}
-						foreach exception $errors {
-							set rshape	[json extract $service_def shapes $exception]
-							if {[dict exists $exceptions $exception]} continue
-							# TODO: strip html from [json get $rshape documentation]
-							if {[json exists $rshape error code]} {
-								set code	[json get $rshape error code]
-							} else {
-								set code	none
-							}
-							if {[json exists $rshape error senderFault]} {
-								set type	[expr {[json get $rshape error senderFault] ? "Sender" : "Server"}]
-							} else {
-								set type	unknown
-							}
-							if {[json exists $rshape documentation]} {
-								set msg		[json get $rshape documentation]
-							} else {
-								set msg		""
-							}
-							dict set exceptions $exception [string map [list \
-								%SVC%	[list [string toupper [json get $service_def metadata service_name]]] \
-								%type%	[list $type] \
-								%code%	[list $code] \
-								%msg%	[list $msg] \
-							] {throw {AWS %SVC% %type% %code%} %msg%}]
-						}
-						set response	[json get $opdef output shape]
-						set rshape		[json extract $service_def shapes $response]
-						set w			$resultWrapper
-						set fetchlist	{}
-						set template	[aws::build::compile_xml_transforms \
-							-shape		$response \
-							-shapes		[json extract $service_def shapes] \
-							-fetchlist	fetchlist]
+			#puts stderr "Output shape: [json pretty $outshape]"
+			if {[json exists $opdef errors]} {
+				set errors	[json lmap e [json extract $opdef errors] {json get $e shape}]
+			} else {
+				set errors	{}
+			}
+			if {[json exists $opdef output resultWrapper]} {
+				set resultWrapper	[json get $opdef output resultWrapper]
+			} else {
+				# Could be because the action returns nothing in the body, or that the context node is to be the root of the response document
+				#puts stderr "No resultWrapper for [json get $def metadata service_name] $op in [json pretty $opdef]"
+				set resultWrapper	{}
+			}
+			if {![info exists exceptions]} {
+				set exceptions	{}
+			}
+			foreach exception $errors {
+				set rshape	[json extract $service_def shapes $exception]
+				if {[dict exists $exceptions $exception]} continue
+					# TODO: strip html from [json get $rshape documentation]
+					if {[json exists $rshape error code]} {
+					set code	[json get $rshape error code]
+				} else {
+					set code	none
+				}
+				if {[json exists $rshape error senderFault]} {
+					set type	[expr {[json get $rshape error senderFault] ? "Sender" : "Server"}]
+				} else {
+					set type	unknown
+				}
+				if {[json exists $rshape documentation]} {
+					set msg		[json get $rshape documentation]
+				} else {
+					set msg		""
+				}
+				dict set exceptions $exception [string map [list \
+					%SVC%	[list [string toupper [json get $service_def metadata service_name]]] \
+					%type%	[list $type] \
+					%code%	[list $code] \
+					%msg%	[list $msg] \
+					] {throw {AWS %SVC% %type% %code%} %msg%}]
+			}
+			set response	[json get $opdef output shape]
+			set rshape		[json extract $service_def shapes $response]
+			set w			$resultWrapper
+			set fetchlist	{}
+			set template	[aws::build::compile_xml_transforms \
+				-shape		$response \
+				-shapes		[json extract $service_def shapes] \
+				-fetchlist	fetchlist]
 
-						if {[llength $fetchlist]} {
-							puts stderr "Response: ($response): fetchlist: ($fetchlist), template: ($template)"
-							dict set responses $response [list $fetchlist $template]
-						}
+			if {[llength $fetchlist]} {
+				#puts stderr "Response: ($response): fetchlist: ($fetchlist), template: ($template)"
+				dict set responses $response [list $fetchlist $template]
+			}
 		}
+		#>>>
+
 		regsub {^/{Bucket}} [json get $opdef http requestUri] {} requestUri	;# Endpoint rules takes care of this
 		append body [string map [list \
 			%http_method%	[list [json get $opdef http method]] \
@@ -2097,9 +2471,8 @@ namespace eval aws {
 			%uri_map%		[list $u] \
 			%xml_input%		[list $x] \
 			%resultWrapper%	[list [if {[info exists w]} {set w}]] \
+			%op%			[list $op] \
 		] {
-			package require reuri
-
 			set ei	[list apply [list {endpoint region} {
 				set authscheme	[json extract $endpoint properties authSchemes 0]
 				if {![json exists $authscheme disableDoubleEncoding]} {
@@ -2125,24 +2498,27 @@ namespace eval aws {
 					region					[json get $endpoint _ region] \
 					credentialScope			[json get $endpoint _ credentialScope] \
 					signatureVersions		[list $sigver] \
-					disableDoubleEncoding	[json get $authscheme disableDoubleEncoding]
+					disableDoubleEncoding	[json get $authscheme disableDoubleEncoding] \
+					signingRegion			[json get $authscheme signingRegion] \
 			}] $endpoint]
 
-			set path	[string trimright [reuri::uri get [json get $endpoint url] path {}] /]
+			set path	[string trimright [reuri::uri extract [json get $endpoint url] path {}] /]
 			append path	%requestUri%
 			dict with params {}		;# The unpacked key variables are accessed by the request procs through upvar
 			::aws::_service_req \
-				-s		[json get $endpoint properties authSchemes 0 signingName] \
-				-m		%http_method% \
-				-p		$path \
-				-R		%response% \
-				-e		%expect_status% \
-				-b		%payload% \
-				-hm		%header_map% \
-				-q		%query_map% \
-				-u		%uri_map% \
-				-w		%resultWrapper% \
-				-x		%xml_input%
+				-s			[json get $endpoint properties authSchemes 0 signingName] \
+				-m			%http_method% \
+				-p			$path \
+				-R			%response% \
+				-e			%expect_status% \
+				-b			%payload% \
+				-hm			%header_map% \
+				-q			%query_map% \
+				-u			%uri_map% \
+				-w			%resultWrapper% \
+				-x			%xml_input% \
+				-handleresp	[list ::aws::_handle_xml_resp $service_def %op%] \
+				-payload	payload 
 		}]
 		proc ${ns}::$cmd args $body
 		#puts stderr "JIT created ${ns}::$cmd:\n$body"
@@ -2229,7 +2605,7 @@ namespace eval aws {
 				set rshape	[json extract $shapes $shape]
 				set type	[resolve_shape_type $shapes $shape]
 				lappend path	${shape}($type)
-				puts stderr "compile_xml_transforms, type: ($type), path: ($path), payload exists? ([json exists $rshape payload]), location: ([if {[json exists $rshape location]} {json get $rshape location}])"
+				#puts stderr "compile_xml_transforms, type: ($type), path: ($path), payload exists? ([json exists $rshape payload]), location: ([if {[json exists $rshape location]} {json get $rshape location}])"
 
 				switch -exact -- $type {
 					list {
@@ -2262,7 +2638,6 @@ namespace eval aws {
 					structure {
 						set template	{{}}
 						json foreach {name member} [json extract $rshape members] {
-							puts stderr "structure member $name, location: ([if {[json exists $member location]} {json get $member location}])"
 							if {[json exists $member locationName]} {
 								set subsource	[json get $member locationName]
 							} else {

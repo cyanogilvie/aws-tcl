@@ -554,11 +554,7 @@ proc build_aws_services args { #<<<
 		rest-xml	{}
 	}
 	foreach service_dir [glob -type d -tails -directory $definitions *] {
-<<<<<<< HEAD
-		set latest	[lindex [lsort -decreasing -dictionary [glob -type d -tails -directory [file join $definitions $service_dir] *]] 0]
-=======
 		set latest	[lindex [lsort -dictionary -decreasing [glob -type d -tails -directory [file join $definitions $service_dir] *]] 0]
->>>>>>> 9cb620e (WIP on endpoint-rules-set implementation)
 		if {$latest eq ""} {
 			error "Couldn't resolve latest version of $service_dir"
 		}
@@ -583,7 +579,10 @@ proc build_aws_services args { #<<<
 
 
 	dict for {protocol services} $by_protocol {
-		puts "$protocol:\n\t[join [lmap service $services {
+		set service_sort {{a b} {
+			string compare [json get $a metadata service_name] [json get $b metadata service_name]
+		}}
+		puts "$protocol:\n\t[join [lmap service [lsort -command [list apply $service_sort] $services] {
 			format {%30s: %s} [json get $service metadata service_name] [json get $service metadata serviceFullName]
 		}] \n\t]"
 	}
@@ -940,7 +939,7 @@ proc build_aws_services args { #<<<
 								if {[json get $arg argv 0 fn] eq "getAttr"} {
 									set path	[string map "\# { }" [lindex [apply $compile_arg [json extract $arg argv 0 argv 1] 0] 0]]
 									regsub -all {\[([0-9]+)\]} $path { \1} path
-									puts "([apply $compile_arg [json extract $arg argv 0 argv 1] 0]) -> ($path)"
+									#puts "([apply $compile_arg [json extract $arg argv 0 argv 1] 0]) -> ($path)"
 									set cexpr	"\[json exists [apply $compile_arg [json extract $arg argv 0 argv 0] 0] $path\]"
 								} else {
 									set cmd	[string range [apply $compile_arg [json extract $arg argv 0] 0] 1 end-1]	;# Strip off []
@@ -963,7 +962,7 @@ proc build_aws_services args { #<<<
 							foreach v {a b} {
 								if {[string match "{{*}}" [set $v]]} {
 									set inner	[string range [set $v] 2 end-2]
-									puts stderr "Extracting ($inner) from ([set $v])"
+									#puts stderr "Extracting ($inner) from ([set $v])"
 									if {[regexp {^(.*?)#(.*)$} $inner - base attr]} {
 										set $v "\[json get \$p($base) [list $attr]\]"
 									} else {
@@ -1142,6 +1141,7 @@ proc build_aws_services args { #<<<
 	# Endpoint rules compilation >>>
 
 	foreach service_def [dict get $by_protocol rest-xml] {
+		#if {[json get $service_def metadata service_name] ni {route53}} continue
 		aws::_undocument service_def
 
 		set service_dir			[json get $service_def metadata service_dir]
@@ -1154,7 +1154,7 @@ proc build_aws_services args { #<<<
 
 			set cexprmap	{}
 			lassign [apply $extract_leaves $endpoint_rules] leaves errors
-			#set errors	{}	;# DEBUG: diable deduplication of errors
+			#set errors	{}	;# DEBUG: disable deduplication of errors
 			set service		[json get $service_def metadata service_name_orig]
 			set comprules	[apply $compile_rules [json extract $endpoint_rules rules]]
 			set l_map		"set l {\n[join [lmap e [dict keys $leaves] {format "\t{%s}\n" $e}] {}]}"
@@ -1179,12 +1179,16 @@ proc build_aws_services args { #<<<
 				append trace_p {parray p} \n
 			}
 
-			set endpoint_rules	[list apply [list params "array set p \$params\n$l_map\n$trace_p$e_map\ntry {\n$comprules\n} on return template {
+			#writefile /tmp/comprules-$service.tcl "array set p \$params\n$l_map\n$trace_p$e_map\n$comprules"
+			set endpoint_rules	[list apply [list params "array set p \$params\n$l_map\n$trace_p$e_map\ntry {\n$comprules\nthrow {AWS ENDPOINT_RULES} {Could not resolve endpoint}\n} on return template {
+			_debug {log notice \"endpoint_rules resolved template: (\$template)\"}
 			set r	\[::aws::objecttemplate \$template \[array get p\]\]
 			json set r _ region \[json string \$p(Region)\]
 			json set r _ service	\[list [json string $service]\]
 			if {\[info exists p(partitionResult)\] && \[json exists \$p(partitionResult) services [list $service] \$p(Region) credentialScope\]} {
 				json set r _ credentialScope	\[json extract \$p(partitionResult) services [list $service] \$p(Region) credentialScope\]
+			} elseif {\[json exists \$r properties authSchemes 0 signingRegion\]} {
+				json set r _ credentialScope region \[json extract \$r properties authSchemes 0 signingRegion\]
 			} else {
 				json set r _ credentialScope region \$p(Region)
 			}
@@ -1198,7 +1202,10 @@ proc build_aws_services args { #<<<
 			} ::aws::_fn] [json get $service_def metadata service_name_orig]]
 		}
 
-		#puts $endpoint_rules
+		#puts stderr "endpoint_params: [json pretty $endpoint_params]"
+		if {[json get $service_def metadata service_name] eq "s3"} {
+			puts stderr "endpoint_rules: $endpoint_rules"
+		}
 		#puts "endpoint_rules: [string length $endpoint_rules] chars, zipped: [string length [zlib gzip [encoding convertto utf-8 $endpoint_rules] -level 9]] bytes"
 		#set zipped	[zlib gzip [encoding convertto utf-8 $service_def]]
 		#set ziplet	[encoding convertto utf-8 "package require aws 2;[list ::aws::_load_rest-xml $argspec $endpoint_rules]"]\u1A$zipped
@@ -1211,7 +1218,7 @@ proc build_aws_services args { #<<<
 			%endpoint_rules%	$endpoint_rules \
 		] {
 namespace eval ::aws::%service_name% {
-	namespace path {::parse_args ::rl_json ::aws}
+	namespace path {::parse_args ::rl_json ::aws ::aws::helpers}
 	namespace export *
 	namespace ensemble create -prefixes no -unknown ::aws::_compile_rest-xml_op
 	variable service_def		%service_def%
@@ -1223,7 +1230,7 @@ namespace eval ::aws::%service_name% {
 	proc endpoint_rules params {%endpoint_rules% $params}
 }
 		}]] -level 9]
-		set ziplet [encoding convertto utf-8 "package require aws 2;[list aws::_load_ziplet]"]\n\u1A$zipped
+		set ziplet [encoding convertto utf-8 "package require aws 2;aws::_load_ziplet"]\n\x1A$zipped
 		incr total_ziplet		[string length $ziplet]
 		set aws_ver	[package require aws 2]
 		writebin [file join $prefix aws/[string map {- _} [json get $service_def metadata service_name]]-$aws_ver.tm] $ziplet

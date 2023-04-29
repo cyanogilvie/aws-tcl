@@ -3,6 +3,7 @@ PLATFORM=linux/arm64,linux/amd64
 DEST=--push
 TCLSH=tclsh
 APIVER=2.0a4
+MODE=-ziplet
 
 CONTAINER_ENV = -v "`pwd`/here:/here" --network host --ulimit core=-1
 
@@ -14,7 +15,7 @@ alpine-tcl: Dockerfile
 	docker buildx build $(DEST) --target alpine-tcl-stripped --platform $(PLATFORM) -t cyanogilvie/alpine-tcl:$(VER)-stripped .
 
 alpine-tcl-gdb: Makefile Dockerfile
-	docker buildx build $(DEST) --build-arg TESTMODE=1 --target alpine-tcl-gdb --platform $(PLATFORM) -t cyanogilvie/alpine-tcl:$(VER)-gdb .
+	docker buildx build $(DEST) --target alpine-tcl-gdb --platform $(PLATFORM) -t cyanogilvie/alpine-tcl:$(VER)-gdb .
 
 alpine-tcl-test: Dockerfile
 	docker buildx build --load --target alpine-tcl -t alpine-tcl:test .
@@ -61,7 +62,10 @@ tm/aws-$(APIVER).tm: api/aws-$(APIVER).tm api/build.tcl
 	mkdir -p tm/aws1
 	cp api/*.tm tm/
 	cp api/aws1/*.tm tm/aws1/
-	$(TCLSH) api/build.tcl -definitions api/botocore/botocore/data -prefix tm
+	$(TCLSH) api/build.tcl $(MODE) -definitions api/botocore/botocore/data -prefix tm
+
+cleantm:
+	-rm tm/aws-$(APIVER).tm
 
 tm: tm/aws-$(APIVER).tm
 
@@ -76,4 +80,4 @@ test: tm alpine-tcl-test
 clean:
 	-rm -r aws-lambda-rie-arm64 aws-lamda-rie-x86_64 tm
 
-.PHONY: alpine-tcl alpine-tcl-gdb m2 package_report upload gdb clean lambdatest-arm64 lambdatest-amd64 tm
+.PHONY: alpine-tcl alpine-tcl-gdb m2 package_report upload gdb clean lambdatest-arm64 lambdatest-amd64 tm cleantm

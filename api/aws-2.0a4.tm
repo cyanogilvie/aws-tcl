@@ -259,6 +259,7 @@ namespace eval aws {
 				-region			{-required}
 				-service		{-required}
 			}
+			_debug {log notice "sigv4_signing_key, region: $region, service: $service"}
 
 			package require hmac
 			set amzDate		[amz-date $date]
@@ -298,6 +299,7 @@ namespace eval aws {
 				-out_authz					{-alias -# {internal - used for test suite}}
 				-out_sreq					{-alias -# {internal - used for test suite}}
 			}
+			_debug {log notice "sigv4 args: $args"}
 
 			if {$signing_region eq {}} {set signing_region	$region}
 
@@ -1181,6 +1183,7 @@ namespace eval aws {
 			dict set endpoint_cache $region sslCommonName		$sslCommonName
 			dict set endpoint_cache $region protocols			[dict get $defaults protocols]
 			dict set endpoint_cache $region signatureVersions	[dict get $defaults signatureVersions]
+			dict set endpoint_cache $region disableDoubleEncoding	true
 			if {[dict exists $defaults credentialScope]} {
 				dict set endpoint_cache $region credentialScope	[dict get $defaults credentialScope]
 			} else {
@@ -1190,6 +1193,72 @@ namespace eval aws {
 		}
 
 		dict get $endpoint_cache $region
+	}
+
+	#>>>
+	proc _eir region_ignored { #<<<
+		set endpoint	[uplevel 2 {endpoint_rules $cxparams}]
+
+		set authscheme	[if {[json exists $endpoint properties authSchemes 0]} {
+			json extract $endpoint properties authSchemes 0
+		} else {
+			set default_region	[json get $endpoint _ region]
+			json template {
+				{
+					"name":						"sigv4",
+					"disableDoubleEncoding":	false,
+					"signingRegion":			"~S:default_region"
+				}
+			}
+		}]
+
+		if {![json exists $authscheme disableDoubleEncoding]} {
+			json set authscheme disableDoubleEncoding false
+		}
+
+		set sigver	[json get $authscheme name]
+		switch -exact -- $sigver {
+			sigv4	{
+				set sigver	v4
+			}
+		}
+
+		set url		[json get $endpoint url]
+		dict create \
+			protocols				[list [reuri::uri get $url scheme http]] \
+			hostname				[reuri::uri get $url host] \
+			url						$url \
+			region					[json get $endpoint _ region] \
+			credentialScope			[json get $endpoint _ credentialScope] \
+			signatureVersions		[list $sigver] \
+			disableDoubleEncoding	[json get $authscheme disableDoubleEncoding] \
+			signingRegion			[json get $authscheme signingRegion]
+	}
+
+	#>>>
+	proc _copy2cx args { #<<<
+		uplevel 1 [list set cxparams {}]
+		uplevel 1 [list foreach {in_param cx_param} $args {
+			if {[info exists $in_param]} {
+				dict set cxparams $cx_param [set $in_param]
+			}
+		}]
+	}
+
+	#>>>
+	proc _builtins args { #<<<
+		foreach {v handler} $args {
+			switch -exact -- $handler {
+				AWS::Region {
+					if {![uplevel 1 [list info exists $v]]} {
+						uplevel 1 [list set $v $::aws::default_region]
+					}
+				}
+				default {
+					log warning "Built-in not implemented: \"$handler\""
+				}
+			}
+		}
 	}
 
 	#>>>
@@ -1255,10 +1324,10 @@ namespace eval aws {
 			namespace current
 		}]
 
-		upvar 1 ei ei  protocol protocol  response_headers response_headers  {*}[concat {*}[lmap uv $upvars {list $uv _a_$uv}]]
+		upvar 1 ei ei  protocol protocol  response_headers response_headers  cxparams cxparams  {*}[concat {*}[lmap uv $upvars {list $uv _a_$uv}]]
 
 		set endpoint_info	[{*}$ei $region]
-		#puts stderr "endpoint_info:\n\t[join [lmap {k v} $endpoint_info {format {%20s: %s} $k $v}] \n\t]"
+		_debug {log notice "endpoint_info:\n\t[join [lmap {k v} $endpoint_info {format {%20s: %s} $k $v}] \n\t]"}
 		set uri_map_out	{}
 		foreach {pat arg} $uri_map {
 			set rep	[if {[info exists _a_$arg]} {
@@ -1325,10 +1394,38 @@ namespace eval aws {
 				set body	{}
 			}
 		} elseif {$template ne {}} {
-			set body	[encoding convertto utf-8 [uplevel 1 [list json template $template]]]
-			if {[json length $body] == 0} {
+			set bodydoc	[uplevel 1 [list json template $template]]
+			# Strip null object keys and array elements <<<
+			set paths	{{}}
+			while {[llength $paths]} {
+				set paths	[lassign $paths thispath]
+				switch -exact -- [json type $bodydoc {*}$thispath] {
+					object {
+						json foreach {k v} [json extract $bodydoc {*}$thispath] {
+							if {[json exists $v]} {
+								lappend paths	[list {*}$thispath $k]
+							} else {
+								json unset bodydoc {*}$thispath $k
+							}
+						}
+					}
+					array {
+						for {set i [json length [json extract $bodydoc {*}$thispath]]} {$i >= 0} {incr i -1} {
+							if {[json exists $bodydoc {*}$thispath $i]} {
+								lappend paths	[list {*}$thispath $i]
+							} else {
+								json unset bodydoc {*}$thispath $i
+							}
+						}
+					}
+				}
+			}
+			# Strip null object keys and array elements >>>
+			if {0 && [json length $bodydoc] == 0} {
 				set body	""
 				set content_type	""
+			} else {
+				set body	[encoding convertto utf-8 $bodydoc]
 			}
 		} else {
 			set body	{}
@@ -1344,15 +1441,15 @@ namespace eval aws {
 		}
 
 		try {
-			#puts stderr "Requesting $method $hostname, path: ($path)($uri_map_out) -> ([string map $uri_map_out $path]), query: ($query), headers: ($headers), body:\n$body"
+			_debug {log notice "Requesting $method $hostname, path: ($path)($uri_map_out) -> ([string map $uri_map_out $path]), query: ($query), headers: ($headers), body:\n$body"}
 			_aws_req $method $hostname [string map $uri_map_out $path] \
 				-params						$query \
 				-sig_service				$signingName \
 				-scheme						$scheme \
 				-region						[dict get $endpoint_info region] \
 				-credential_scope			[dict get $endpoint_info credentialScope region] \
-				-disable_double_encoding	[dict get $endpoint_info disableDoubleEncoding] \
-				-signing_region				[dict get $endpoint_info signingRegion] \
+				-disable_double_encoding	[if {[dict exists $endpoint_info disableDoubleEncoding]} {dict get $endpoint_info disableDoubleEncoding} else {return -level 0 true}] \
+				-signing_region				[if {[dict exists $endpoint_info signingRegion]} {dict get $endpoint_info signingRegion} else {dict get $endpoint_info region}] \
 				-version					[lindex [dict get $endpoint_info signatureVersions] end] \
 				-body						$body \
 				-content_type				$content_type \
@@ -1953,14 +2050,52 @@ namespace eval aws {
 		set file	[uplevel 1 {info script}]
 		set h		[open $file rb]
 		set bytes	[try {read $h} finally {close $h}]
-		set eof		[string first \u1A $bytes]
-		set reconstructed [string map [list \
-			%p		" args \{parse_args \$args \{-region \{-default {}\} -requestid -alias -response_headers -alias " \
-			%r		";_service_req -r \$region " \
-			{*}$custom_maps \
-		] [encoding convertfrom utf-8 [zlib gunzip [string range $bytes $eof+1 end]]]]
+		set eof		[string first \x1A $bytes]
+		set reconstructed	[_reconstruct $custom_maps [encoding convertfrom utf-8 [zlib gunzip [string range $bytes $eof+1 end]]]]
 		#puts stderr "reconstructed:\n$reconstructed"
 		eval $reconstructed
+	}
+
+	#>>>
+	proc _load_br {{custom_maps {}}} { #<<<
+		package require brotli
+		set file	[uplevel 1 {info script}]
+		set h		[open $file rb]
+		set bytes	[try {read $h} finally {close $h}]
+		set eof		[string first \x1A $bytes]
+		set reconstructed	[_reconstruct $custom_maps [encoding convertfrom utf-8 [brotli::decompress [string range $bytes $eof+1 end]]]]
+		#puts stderr "reconstructed:\n$reconstructed"
+		eval $reconstructed
+	}
+
+	#>>>
+	proc _load_ziplet {} { #<<<
+		set file	[uplevel 1 {info script}]
+		set h		[open $file rb]
+		set bytes	[try {read $h} finally {close $h}]
+		set eof		[string first \u1A $bytes]
+		set source	[encoding convertfrom utf-8 [zlib gunzip [string range $bytes $eof+1 end]]]
+		uplevel #0 $source
+	}
+
+	#>>>
+	proc _load_brlet {} { #<<<
+		package require brotli
+		set file	[uplevel 1 {info script}]
+		set h		[open $file rb]
+		set bytes	[try {read $h} finally {close $h}]
+		set eof		[string first \u1A $bytes]
+		set source	[encoding convertfrom utf-8 [brotli::decompress [string range $bytes $eof+1 end]]]
+		uplevel #0 $source
+	}
+
+	#>>>
+	proc _reconstruct {custom_maps in} { #<<<
+		string map [list \
+			%p		" args \{parse_args \$args \{-requestid -alias -response_headers -alias " \
+			%r		";_service_req -r \$region " \
+			{*}$custom_maps \
+		] $in
 	}
 
 	#>>>
@@ -1983,16 +2118,6 @@ namespace eval aws {
 				string totitle $e
 			}	
 		}] {}
-	}
-
-	#>>>
-	proc _load_ziplet {} { #<<<
-		set file	[uplevel 1 {info script}]
-		set h		[open $file rb]
-		set bytes	[try {read $h} finally {close $h}]
-		set eof		[string first \u1A $bytes]
-		set source	[encoding convertfrom utf-8 [zlib gunzip [string range $bytes $eof+1 end]]]
-		uplevel #0 $source
 	}
 
 	#>>>
@@ -2385,79 +2510,26 @@ namespace eval aws {
 		if {[json exists $opdef input]} {
 			aws::build::compile_input \
 				-argname_transform	{} \
-				-protocol	[json get $service_def metadata protocol] \
-				-params		params \
-				-uri_map	u \
-				-query_map	q \
-				-header_map	hm \
-				-payload	b \
-				-shapes		[json extract $service_def shapes] \
-				-shape		[json get $opdef input shape]
+				-protocol			[json get $service_def metadata protocol] \
+				-params				params \
+				-cxparams			_cxparams \
+				-copy_to_cx			_copy_to_cx \
+				-cx_suppress		_cx_suppress \
+				-uri_map			u \
+				-query_map			q \
+				-header_map			hm \
+				-payload			b \
+				-shapes				[json extract $service_def shapes] \
+				-shape				[json get $opdef input shape] \
+				-endpoint_params	$endpoint_params \
+				-builtins			_builtins
+
+			# TODO: check that _cxparams, _copy_to_cx, _cx_supporess matches with what the code above generated, and remove that code if it does
 
 			set x	[aws::build::compile_xml_input \
 				-shapes	[json extract $service_def shapes] \
 				-input	[json extract $opdef input]]
 		}
-
-		if {0 && [json exists $opdef output shape]} { #<<<
-			set outshape	[json extract $service_def shapes [json get $opdef output shape]]
-			#puts stderr "Output shape: [json pretty $outshape]"
-			if {[json exists $opdef errors]} {
-				set errors	[json lmap e [json extract $opdef errors] {json get $e shape}]
-			} else {
-				set errors	{}
-			}
-			if {[json exists $opdef output resultWrapper]} {
-				set resultWrapper	[json get $opdef output resultWrapper]
-			} else {
-				# Could be because the action returns nothing in the body, or that the context node is to be the root of the response document
-				#puts stderr "No resultWrapper for [json get $def metadata service_name] $op in [json pretty $opdef]"
-				set resultWrapper	{}
-			}
-			if {![info exists exceptions]} {
-				set exceptions	{}
-			}
-			foreach exception $errors {
-				set rshape	[json extract $service_def shapes $exception]
-				if {[dict exists $exceptions $exception]} continue
-					# TODO: strip html from [json get $rshape documentation]
-					if {[json exists $rshape error code]} {
-					set code	[json get $rshape error code]
-				} else {
-					set code	none
-				}
-				if {[json exists $rshape error senderFault]} {
-					set type	[expr {[json get $rshape error senderFault] ? "Sender" : "Server"}]
-				} else {
-					set type	unknown
-				}
-				if {[json exists $rshape documentation]} {
-					set msg		[json get $rshape documentation]
-				} else {
-					set msg		""
-				}
-				dict set exceptions $exception [string map [list \
-					%SVC%	[list [string toupper [json get $service_def metadata service_name]]] \
-					%type%	[list $type] \
-					%code%	[list $code] \
-					%msg%	[list $msg] \
-					] {throw {AWS %SVC% %type% %code%} %msg%}]
-			}
-			set response	[json get $opdef output shape]
-			set rshape		[json extract $service_def shapes $response]
-			set w			$resultWrapper
-			set fetchlist	{}
-			set template	[aws::build::compile_xml_transforms \
-				-shape		$response \
-				-shapes		[json extract $service_def shapes] \
-				-fetchlist	fetchlist]
-
-			if {[llength $fetchlist]} {
-				#puts stderr "Response: ($response): fetchlist: ($fetchlist), template: ($template)"
-				dict set responses $response [list $fetchlist $template]
-			}
-		}
-		#>>>
 
 		regsub {^/{Bucket}} [json get $opdef http requestUri] {} requestUri	;# Endpoint rules takes care of this
 		append body [string map [list \
@@ -2590,7 +2662,7 @@ namespace eval aws {
 
 	#>>>
 	namespace eval build {
-		namespace path {::parse_args ::rl_json}
+		namespace path {::parse_args ::rl_json ::aws::helpers}
 		proc compile_xml_transforms args { #<<<
 			parse_args $args {
 				-shapes		{-required}
@@ -2752,16 +2824,21 @@ namespace eval aws {
 		#>>>
 		proc compile_input args { #<<<
 			parse_args $args {
-				-argname		{}
+				-argname			{}
 				-argname_transform	{-default aws::from_camel}
-				-protocol		{-required}
-				-params			{-alias}
-				-uri_map		{-alias}
-				-query_map		{-alias}
-				-header_map		{-alias}
-				-payload		{-alias}
-				-shapes			{-required}
-				-shape			{-required}
+				-protocol			{-required}
+				-params				{-alias}
+				-cxparams			{-alias}
+				-copy_to_cx			{-alias}
+				-cx_suppress		{-alias}
+				-uri_map			{-alias}
+				-query_map			{-alias}
+				-header_map			{-alias}
+				-payload			{-alias}
+				-shapes				{-required}
+				-shape				{-required}
+				-endpoint_params	{-required}
+				-builtins			{-alias}
 			}
 
 			#puts stderr "compile_input, argname: ([if {[info exists argname]} {set argname}]), shape: ($shape)"
@@ -2778,10 +2855,13 @@ namespace eval aws {
 
 					set template_obj	{{}}
 					json foreach {camel_name member_def} [json extract $input members] {
-						if {$argname_transform eq ""} {
-							set name	$camel_name
-						} else {
-							set name	[{*}$argname_transform $camel_name]
+						set name	[if {$argname_transform eq ""} {set camel_name} else {{*}$argname_transform $camel_name}]
+						if {[json exists $member_def contextParam]} {
+							lappend copy_to_cx $name [json get $member_def contextParam name]
+							dict set cx_suppress $camel_name 1
+						}
+						if {[json exists $member_def builtIn]} {
+							lappend builtins	$name [json get $member_def builtIn]
 						}
 						set argspec	{}
 						if {[json exists $input required] && $camel_name in [json get $input required]} {
@@ -2826,16 +2906,21 @@ namespace eval aws {
 							} else {
 								#puts stderr "Recursing into shape [json get $member_def shape]"
 								json set template_obj $locationName [compile_input \
-									-protocol	$protocol \
-									-argname	$name \
+									-protocol			$protocol \
+									-argname			$name \
 									-argname_transform	$argname_transform \
-									-params		params \
-									-uri_map	uri_map \
-									-query_map	query_map \
-									-header_map	header_map \
-									-payload	payload \
-									-shapes		$shapes \
-									-shape		[json get $member_def shape] \
+									-params				params \
+									-cxparams			cxparams \
+									-copy_to_cx			copy_to_cx \
+									-cx_suppress		cx_suppress \
+									-uri_map			uri_map \
+									-query_map			query_map \
+									-header_map			header_map \
+									-payload			payload \
+									-shapes				$shapes \
+									-shape				[json get $member_def shape] \
+									-endpoint_params	$endpoint_params \
+									-builtins			builtins \
 								]
 							}
 						} elseif {$protocol eq "query"} {
@@ -2874,23 +2959,64 @@ namespace eval aws {
 						error "Unhandled type \"[json get $input type]\""
 					}
 					set template_obj	[compile_input \
-						-protocol	$protocol \
-						-argname	$argname \
+						-protocol			$protocol \
+						-argname			$argname \
 						-argname_transform	$argname_transform \
-						-params		params \
-						-uri_map	uri_map \
-						-query_map	query_map \
-						-header_map	header_map \
-						-payload	payload \
-						-shapes		$shapes \
-						-shape		[json get $input type] \
+						-params				params \
+						-cxparams			cxparams \
+						-copy_to_cx			copy_to_cx \
+						-cx_suppress		cx_suppress \
+						-uri_map			uri_map \
+						-query_map			query_map \
+						-header_map			header_map \
+						-payload			payload \
+						-shapes				$shapes \
+						-shape				[json get $input type] \
+						-endpoint_params	$endpoint_params \
+						-builtins			builtins \
 					]
 				}
 			}
 
 			if {[json exists $input payload]} {
-				set payload	[join [lmap e [regexp -all -inline {[A-Za-z][a-z]+} [json get $input payload]] {string tolower $e}] _]
+				set payload	[aws from_camel [json get $input payload]]
 			}
+
+			# Add the endpoint context input params to argspec and input wiring <<<
+			if {$endpoint_params eq {} && ![dict exists $params -region]} {
+				lappend params		-region	[list -default $::aws::default_region]
+				lappend builtins	region AWS::Region
+			} else {
+				set cx_required	[if {[json exists $endpoint_params required]} {json get $endpoint_params required}]
+				_debug {log debug "endpoint_params required: ($cx_required)"}
+
+				json foreach {camel_name details} $endpoint_params {
+					if {[dict exists cx_suppress $camel_name]} continue
+					set required	[expr {$camel_name in $cx_required}]
+
+					set name		[aws from_camel $camel_name]
+					set settings	{}
+					if {[json exists $details builtIn]} {
+						lappend builtins	$name	[json get $details builtIn]
+					}
+					if {[json exists $details default]} {
+						lappend settings -default [json get $details default]
+					} elseif {[json exists $details required] && [json get $details required]} {
+						lappend settings -required
+					}
+					if {0 && [json exists $details documentation]} {
+						lappend settings -# [json get $details documentation]
+					}
+					switch -exact [json get $details type] {
+						String {}
+						Boolean {lappend settings -validate {string is boolean -strict}}
+						default {error "Unhandled endpoint rules param type: \"[json get $details type]\""}
+					}
+					lappend params -$name $settings
+					lappend copy_to_cx $name $camel_name
+				}
+			}
+			# Add the endpoint context input params to argspec and input wiring >>>
 
 			set template_obj
 		}

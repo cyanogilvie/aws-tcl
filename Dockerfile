@@ -461,7 +461,7 @@ COPY api/aws1/*.tm /tmp/tm/aws1/
 ARG TESTMODE
 RUN if test -z "$TESTMODE"; \
 	then \
-		mkdir /out/usr/local/lib/tcl8/site-tcl; \
+		mkdir -p /out/usr/local/lib/tcl8/site-tcl; \
 		cp -a /tmp/tm/* /usr/local/lib/tcl8/site-tcl; \
 		cp -a /tmp/tm/* /out/usr/local/lib/tcl8/site-tcl; \
 		tclsh build.tcl -definitions botocore/data -prefix /out/usr/local/lib/tcl8/site-tcl; \
@@ -539,7 +539,7 @@ RUN find /usr -name "*.so" -exec strip {} \;
 
 # alpine-tcl <<<
 FROM alpine:$ALPINE_VER AS alpine-tcl
-RUN apk add --no-cache --update musl-dev readline libjpeg-turbo libexif libpng libwebp tiff ncurses ncurses-libs libstdc++ libgcc && \
+RUN apk add --no-cache --update musl-dev readline libjpeg-turbo libexif libpng libwebp tiff ncurses ncurses-libs libstdc++ libgcc brotli && \
 	rm /usr/lib/libc.a
 COPY --from=alpine-tcl-build /usr/local /usr/local
 COPY --from=alpine-tcl-build /root/.tclshrc /root/

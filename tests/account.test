@@ -9,8 +9,8 @@ package require rl_json
 package require rltest
 interp alias {} json {} ::rl_json::json
 
-test rest-xml_route53-list_hosted_zones-1.1 {} -body { #<<<
-	json exists [aws route53 list_hosted_zones] HostedZones
+test account-get_contact_information-1.1 {} -body { #<<<
+	json exists [aws account get_contact_information] ContactInformation
 } -result 1
 #>>>
 

@@ -1,7 +1,7 @@
 DESTDIR=
 PREFIX=/usr/local
 PACKAGE_NAME=aws
-VER=2.0a5
+VER=2.0a5.1
 MODE=-ziplet
 TCLSH=tclsh
 
@@ -31,6 +31,7 @@ test: tm
 install: tm
 	mkdir -p $(DESTDIR)$(PREFIX)/lib/tcl8/site-tcl
 	cp -a tm/* $(DESTDIR)$(PREFIX)/lib/tcl8/site-tcl/
+	cp api/hmac-0.1.tm $(DESTDIR)$(PREFIX)/lib/tcl8/site-tcl/
 
 clean:
 	-rm -r tm

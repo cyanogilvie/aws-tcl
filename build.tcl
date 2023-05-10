@@ -7,7 +7,7 @@
 #if {[file exists /here/api]} {
 #	tcl::tm::path add /here/api
 #}
-tcl::tm::path add [file dirname [file normalize [info script]]]
+tcl::tm::path add [file join [file dirname [file normalize [info script]]] tm]
 set aws_ver	[package require aws 2]
 
 package require rl_json
@@ -332,134 +332,164 @@ proc extract_leaves endpoint_rules { # Pre-scan for duplicate leaves and errors 
 proc compile_arg {arg inexpr} { #<<<
 	upvar 1 service service
 
-	switch -exact -- [json type $arg] {
-		string				{
-			if {$inexpr} {
-				return -level 0 "{[json get $arg]}"
-			} else {
-				list [json get $arg]
-			}
-		}
-		boolean	- number	{json get $arg}
-		null				{error "Tried to compile arg with null value"}
-		object {
-			if {[json exists $arg ref]} {
-				return "\$p([json get $arg ref])"
-			} elseif {[json exists $arg fn]} {
-				unset -nocomplain cexpr cmd
-				switch -exact -- [json get $arg fn] {
-					booleanEquals {
-						set lhs	[compile_arg [json extract $arg argv 0] 1]
-						set rhs	[compile_arg [json extract $arg argv 1] 1]
-						if {[json type $arg argv 1] eq "boolean"} {
-							if {[json get $arg argv 1]} {
-								set cexpr $lhs
-							} else {
-								set cexpr !($lhs)
-							}
-						} else {
-							set cexpr "$lhs==$rhs"
-						}
+	try {
+		switch -exact -- [json type $arg] {
+			string				{
+				switch -regexp -matchvar m -- [json get $arg] {
+					{^{([^#]+)#(.*)}$} {
+						lassign $m - base key
+						return -level 0 "\[getAttr \$p($base) [list $key]\]"
 					}
-					isSet {
-						if {[json length $arg argv] != 1} {
-							error "Condition fn isSet with bad argv length: [json length $arg argv]"
-						}
-						if {[json exists $arg argv 0 ref]} {
-							set cexpr "\[info exists p([json get $arg argv 0 ref])\]"
-						} elseif {[json exists $arg argv 0 fn]} {
-							if {[json get $arg argv 0 fn] eq "getAttr"} {
-								set path	[string map "\# { }" [lindex [compile_arg [json extract $arg argv 0 argv 1] 0] 0]]
-								regsub -all {\[([0-9]+)\]} $path { \1} path
-								#puts "([compile_arg [json extract $arg argv 0 argv 1] 0]) -> ($path)"
-								set cexpr	"\[json exists [compile_arg [json extract $arg argv 0 argv 0] 0] $path\]"
-							} else {
-								set cmd	[string range [compile_arg [json extract $arg argv 0] 0] 1 end-1]	;# Strip off []
-								set cexpr "(!\[catch [list $cmd] _r\]&&\[json valid \$_r\]&&!\[json isnull \$_r\])"
-								#set cexpr "!\[catch [list $cmd] _r\]"
-							}
-						} else {
-							error "Unhandled isSet case, argv: [json extract $arg argv]"
-						}
+					{^{(.*)}$} {
+						return -level 0 \$p([lindex $m 1])
 					}
-					not {
-						if {[json length $arg argv] != 1} {
-							error "Condition fn not with bad argv length: [json length $arg argv]"
-						}
-						set cexpr !([compile_arg [json extract $arg argv 0] 1])
-					}
-					stringEquals {
-						set a	[compile_arg [json extract $arg argv 0] 1]
-						set b	[compile_arg [json extract $arg argv 1] 1]
-						foreach v {a b} {
-							if {[string match "{{*}}" [set $v]]} {
-								set inner	[string range [set $v] 2 end-2]
-								#puts stderr "Extracting ($inner) from ([set $v])"
-								if {[regexp {^(.*?)#(.*)$} $inner - base attr]} {
-									set $v "\[json get \$p($base) [list $attr]\]"
-								} else {
-									set $v "\$p($inner)"
-								}
-							} elseif {[string match {{*{*}*}} [set $v]]} {
-								set $v "\[_t [set $v]\]"
-							}
-						}
-						set cexpr	"${a}eq${b}"
-
-					}
-
-					aws.partition {
-						set cmd	[list [json get $arg fn]]
-						json foreach a [json extract $arg argv] {
-							append cmd " [list $service] [compile_arg $a 0]"
-						}
-					}
-
-					aws.isVirtualHostableS3Bucket -
-					aws.parseArn -
-					getAttr -
-					isValidHostLabel -
-					parseURL -
-					substring -
-					uriEncode {
-						set cmd	[list [json get $arg fn]]
-						json foreach a [json extract $arg argv] {
-							append cmd " [compile_arg $a 0]"
-						}
-					}
-
 					default {
-						error "Unhandled condition fn: \"[json get $arg fn]\""
+						if {$inexpr} {
+							return -level 0 "{[json get $arg]}"
+						} else {
+							list [json get $arg]
+						}
 					}
 				}
-				if {[info exists cexpr]} {
-					if {[json exists $arg assign]} {
-						set cexpr "!\[catch {expr [list $cexpr]} [list p([json get $arg assign])]\]"
-					}
-					#puts stderr "Compiling [json get $arg fn] [json extract $arg argv] -> ($cexpr)"
-					if {$inexpr} {
-						return $cexpr
-					} else {
-						return "\[expr {$cexpr}\]"
-					}
-				} else {
-					#puts stderr "Compiling [json get $arg fn] [json extract $arg argv] -> ($cmd)"
-					if {[json exists $arg assign]} {
-						#return "!\[catch {$cmd} [list p([json get $arg assign])]\]"
-						return "\[_a [list [json get $arg assign]] $cmd\]"
-					} elseif {$inexpr} {
-						return "\[try [list $cmd] on error {} {expr 0}\]"
-					} else {
-						return "\[$cmd\]"
-					}
-				}
+			}
+			boolean	- number	{json get $arg}
+			null				{error "Tried to compile arg with null value"}
+			object {
+				if {[json exists $arg ref]} {
+					return "\$p([json get $arg ref])"
+				} elseif {[json exists $arg fn]} {
+					unset -nocomplain cexpr cmd
+					switch -exact -- [json get $arg fn] {
+						booleanEquals {
+							set lhs	[compile_arg [json extract $arg argv 0] 1]
+							set rhs	[compile_arg [json extract $arg argv 1] 1]
+							if {[json type $arg argv 1] eq "boolean"} {
+								if {[json get $arg argv 1]} {
+									set cexpr aws_b($lhs)
+								} else {
+									set cexpr !aws_b($lhs)
+								}
+							} else {
+								set cexpr aws_b($lhs)==aws_b($rhs)
+							}
+						}
+						isSet {
+							if {[json length $arg argv] != 1} {
+								error "Condition fn isSet with bad argv length: [json length $arg argv]"
+							}
+							if {[json exists $arg argv 0 ref]} {
+								set cexpr "\[info exists p([json get $arg argv 0 ref])\]"
+							} elseif {[json exists $arg argv 0 fn]} {
+								if {[json get $arg argv 0 fn] eq "getAttr"} {
+									set tmp	[compile_arg [json extract $arg argv 0 argv 1] 0]
+									# Accomodate expression debug decoration
+									switch -regexp -matchvar m -- $tmp {
+										{^\[::tcl::mathfunc::track_term (.*) } {set tmp [lindex $m 1]}
+									}
+									set path	[string map "\# { }" [lindex $tmp 0]]
+									regsub -all {\[([0-9]+)\]} $path { \1} path
+									#puts "([compile_arg [json extract $arg argv 0 argv 1] 0]) -> ($path)"
+									set cexpr	"\[json exists [compile_arg [json extract $arg argv 0 argv 0] 0] $path\]"
+								} else {
+									set cmd	[string range [compile_arg [json extract $arg argv 0] 0] 1 end-1]	;# Strip off []
+									set cexpr "(!\[catch [list $cmd] _r\]&&\[json valid \$_r\]&&!\[json isnull \$_r\])"
+									#set cexpr "!\[catch [list $cmd] _r\]"
+								}
+							} else {
+								error "Unhandled isSet case, argv: [json extract $arg argv]"
+							}
+						}
+						not {
+							if {[json length $arg argv] != 1} {
+								error "Condition fn not with bad argv length: [json length $arg argv]"
+							}
+							set cexpr !([compile_arg [json extract $arg argv 0] 1])
+						}
+						stringEquals {
+							set a	[compile_arg [json extract $arg argv 0] 1]
+							set b	[compile_arg [json extract $arg argv 1] 1]
+							foreach v {a b} {
+								if {[string match "{{*}}" [set $v]]} {
+									set inner	[string range [set $v] 2 end-2]
+									#puts stderr "Extracting ($inner) from ([set $v])"
+									if {[regexp {^(.*?)#(.*)$} $inner - base attr]} {
+										set $v "\[json get \$p($base) [list $attr]\]"
+									} else {
+										set $v "\$p($inner)"
+									}
+								} elseif {[string match {{*{*}*}} [set $v]]} {
+									set $v "\[_t [set $v]\]"
+								}
+							}
+							set cexpr	"${a}eq${b}"
 
-			} else {
-				error "Don't know how to compile arg \"$arg\""
+						}
+
+						aws.partition {
+							set cmd	[list [json get $arg fn]]
+							json foreach a [json extract $arg argv] {
+								append cmd " [list $service] [compile_arg $a 0]"
+							}
+						}
+
+						aws.isVirtualHostableS3Bucket -
+						aws.parseArn -
+						getAttr -
+						isValidHostLabel -
+						parseURL -
+						substring -
+						uriEncode {
+							set cmd	[list [json get $arg fn]]
+							json foreach a [json extract $arg argv] {
+								append cmd " [compile_arg $a 0]"
+							}
+						}
+
+						default {
+							error "Unhandled condition fn: \"[json get $arg fn]\""
+						}
+					}
+					if {[info exists cexpr]} {
+						if {[json exists $arg assign]} {
+							set cexpr "!\[catch {expr [list $cexpr]} [list p([json get $arg assign])]\]"
+						}
+						#puts stderr "Compiling [json get $arg fn] [json extract $arg argv] -> ($cexpr)"
+						if {$inexpr} {
+							return $cexpr
+						} else {
+							return "\[expr {$cexpr}\]"
+						}
+					} else {
+						#puts stderr "Compiling [json get $arg fn] [json extract $arg argv] -> ($cmd)"
+						if {[json exists $arg assign]} {
+							#return "!\[catch {$cmd} [list p([json get $arg assign])]\]"
+							return "\[_a [list [json get $arg assign]] $cmd\]"
+						} elseif {$inexpr} {
+							return "\[try [list $cmd] on error {} {expr 0}\]"
+						} else {
+							return "\[$cmd\]"
+						}
+					}
+
+				} else {
+					error "Don't know how to compile arg \"$arg\""
+				}
+			}
+			default {
+				error "Unhandled arg type: [json type $arg]"
 			}
 		}
-		default {
-			error "Unhandled arg type: [json type $arg]"
+	} on ok compiled - on return compiled {
+		if 1 {
+			if {$inexpr} {
+				#return -level 0 " track_term($compiled, $arg)"
+				set compiled
+			} else {
+				#return "\[::tcl::mathfunc::track_term $compiled [list $arg]\]"
+				set compiled
+			}
+		} else {
+			set compiled
 		}
 	}
 }
@@ -472,6 +502,8 @@ proc compile_conditions conditions { #<<<
 	}]
 	if {[llength $cexprs] == 0} {
 		return 1
+	} elseif {[llength $cexprs] == 1} {
+		return aws_b([lindex $cexprs 0])
 	} else {
 		if 0 {
 		join [lmap e $cexprs {
@@ -545,7 +577,7 @@ proc compile_rules {rules {depth 1}} { #<<<
 			set block "puts {block $blocknr};$block"
 			#append block " ;# $blocknr"
 		}
-		if {1 || [llength $conditional_blocks] == 0} {
+		if {[llength $conditional_blocks] == 0} {
 			lappend conditional_blocks $block
 		} else {
 			lappend conditional_blocks [indent $depth $block]
@@ -584,8 +616,12 @@ proc compile_endpoint_rules {definitions service_def} { #<<<
 		#set errors	{}	;# DEBUG: disable deduplication of errors
 		set service		[json get $service_def metadata service_name_orig]
 		set comprules	[compile_rules [json extract $endpoint_rules_json rules]]
-		set l_map		"set l {\n[join [lmap e [dict keys $leaves] {format "\t{%s}\n" $e}] {}]}"
-		set e_map		"set e {\n[join [lmap {e idx} $errors {format "\t%s\n" [list $e]}] {}]}"
+		set l_map	[if {[dict size $leaves]} {
+			return -level 0 "set l {\n[join [lmap e [dict keys $leaves] {format "\t{%s}\n" $e}] {}]}"
+		}]
+		set e_map	[if {[llength $errors]} {
+			return -level 0 "set e {\n[join [lmap {e idx} $errors {format "\t%s\n" [list $e]}] {}]}"
+		}]
 		if 0 {
 			set trace_p		{trace add variable p write {apply {{n1 n2 op} {
 				if {$n2 eq {}} {
@@ -607,18 +643,28 @@ proc compile_endpoint_rules {definitions service_def} { #<<<
 		}
 
 		#writefile /tmp/comprules-$service.tcl "array set p \$params\n$l_map\n$trace_p$e_map\n$comprules"
-		set endpoint_rules	[list apply [list params "array set p \$params\n$l_map\n$trace_p$e_map\ntry {\n$comprules\nthrow {AWS ENDPOINT_RULES} {Could not resolve endpoint}\n} on return template {
+		set endpoint_rules	[list apply [list params "array set p \$params\n_debug {parray p}\n$l_map\n$trace_p$e_map\ntry {\n$comprules\nthrow {AWS ENDPOINT_RULES} {Could not resolve endpoint}\n} on return template {
 		_debug {log notice \"endpoint_rules resolved template: (\$template)\"}
+		if {\[json type \$template url\] eq \"object\"} {
+			if {\[json exists \$template url ref\]} {
+				json set template url \[json string \$p(\[json get \$template url ref\])\]
+			} else {
+				error \"Don't know how to compile endpoint url: \[json pretty \$template url\]\"
+			}
+		}
 		set r	\[::aws::objecttemplate \$template \[array get p\]\]
-		json set r _ region \[json string \$p(Region)\]
 		json set r _ service	\[list [json string $service]\]
-		if {\[info exists p(partitionResult)\] && \[json exists \$p(partitionResult) services [list $service] \$p(Region) credentialScope\]} {
-			json set r _ credentialScope	\[json extract \$p(partitionResult) services [list $service] \$p(Region) credentialScope\]
+		if {\[info exists p(Region)\]} {
+			json set r _ region \[json string \$p(Region)\]
+		}
+		if {\[info exists p(_partition_result)\] && \[json exists \$p(_partition_result) services [list $service] \$p(Region) credentialScope\]} {
+			json set r _ credentialScope	\[json extract \$p(_partition_result) services [list $service] \$p(Region) credentialScope\]
 		} elseif {\[json exists \$r properties authSchemes 0 signingRegion\]} {
 			json set r _ credentialScope region \[json extract \$r properties authSchemes 0 signingRegion\]
-		} else {
+		} elseif {\[info exists p(Region)\]} {
 			json set r _ credentialScope region \$p(Region)
 		}
+		_debug {log notice \"endpoint_rules substituted template: (\$r)\"}
 		set r
 	} trap terr {errmsg options} {\n\tthrow {AWS ENDPOINT_RULES} \[::aws::template \$errmsg \[array get p\]\]\n}" ::aws::_fn]]
 	} else {
@@ -637,8 +683,9 @@ proc compile_endpoint_rules {definitions service_def} { #<<<
 
 proc build_aws_services args { #<<<
 	parse_args $args {
+		-ver			{-required}
 		-definitions	{-required -# {Directory containing the service definitions from botocore}}
-		-prefix			{-default api_out -# {Where to write the service tms}}
+		-prefix			{-default tm -# {Where to write the service tms}}
 		-services		{-default {} -# {Supply a list of services to only build those, default is to build all}}
 
 		-ziplet			{-name output_mode -multi -default ziplet}
@@ -648,21 +695,43 @@ proc build_aws_services args { #<<<
 
 	file mkdir [file join $prefix aws]
 
-	# TODO: lookup partition based on region matching [json get $partition regionRegex] ?
 	set endpoints	[json normalize [readfile $definitions/endpoints.json]]
-	chantricks::with_file h [file join $prefix aws endpoints-0.1.tm] wb {
-		puts $h {
+	json set endpoints partitions [json amap partition [json extract $endpoints partitions] {
+		json set partition regionRegex	[json string [string map {\\w [a-zA-Z0-9_] \\d [0-9] \\- -} [json get $partition regionRegex]]]
+	}]
+
+	set partitions	{{}}
+	json foreach partition [json extract [readfile $definitions/partitions.json] partitions] {
+		json set partitions [json get $partition id] $partition
+	}
+
+	chantricks::with_file h [file join $prefix aws endpoints-$ver.tm] wb {
+		switch -exact -- $output_mode {
+			ziplet {                         set decompress {zlib gunzip}                                }
+			brlet  { package require brotli; set decompress {package require brotli; brotli::decompress} }
+			plain  {                         set decompress {return -level 0}                            }
+			default {error "Mode not supported: \"$output_mode\""}
+		}
+		puts $h [string map [list \
+			%decompress%	$decompress \
+		] {
 			namespace eval ::aws {}
 			apply {{} {
 				variable endpoints
-				set file	[uplevel 1 {info script}]
-				set h		[open $file rb]
+				variable partitions
+				set h		[open [info script] rb]
 				set bytes	[try {read $h} finally {close $h}]
-				set eof		[string first \u1A $bytes]
-				set endpoints	[encoding convertfrom utf-8 [zlib gunzip [string range $bytes $eof+1 end]]]
+				set eof		[string first \x1A $bytes]
+				lassign [encoding convertfrom utf-8 [%decompress% [string range $bytes $eof+1 end]]] \
+					endpoints partitions
 			} ::aws}
+		}]
+		set utf8tail	[encoding convertto utf-8 [list $endpoints $partitions]]
+		switch -exact -- $output_mode {
+			ziplet { puts -nonewline $h \x1A[zlib gzip $utf8tail -level 9] }
+			brlet  { puts -nonewline $h \x1A[brotli::compress -quality 11 $utf8tail] }
+			plain  { puts -nonewline $h \x1A$utf8tail }
 		}
-		puts -nonewline $h \u1A[zlib gzip [encoding convertto utf-8 $endpoints] -level 9]
 	}
 
 	set partition	[json extract $endpoints partitions 0]
@@ -791,7 +860,6 @@ proc build_aws_services args { #<<<
 				#lappend static {_debug {log notice "cx_params: ($cxparams)"}}
 				#lappend static {set endpoint	[endpoint_rules $cxparams]}
 				#lappend static {_debug {log notice "computed endpoint: endpoint_rules($cxparams) -> ($endpoint)"}}
-				# endpoint determination common code >>>
 
 				set sm		{}
 				set o		{}
@@ -958,6 +1026,7 @@ proc build_aws_services args { #<<<
 		}
 
 		set service_code "namespace eval [list ::aws::[json get $service_def metadata service_name]] {$service_code}"
+		unset -nocomplain compressed_size
 		#variable ::aws::[json get $service_def metadata service_name]::def $service_def
 		switch -exact -- $output_mode {
 			ziplet {
@@ -976,7 +1045,7 @@ proc build_aws_services args { #<<<
 			plain {
 			}
 		}
-		puts stderr "[json get $service_def metadata service_name] ([string length $service_code] chars, $compressed_size compressed bytes)"
+		puts stderr "[json get $service_def metadata service_name] ([string length $service_code] chars[if {[info exists compressed_size]} {subst {, $compressed_size compressed bytes}}])"
 		incr total_raw	[string length $service_code]
 		if {[json get $service_def metadata service_name] in {}} {
 			puts stderr [highlight -regexp {^proc (create_bucket|list_buckets|delete_bucket)%.*$} $service_code]
@@ -1021,6 +1090,12 @@ namespace eval ::aws::%service_name% {
 	variable endpoint_params	%endpoint_params%
 	variable responses			{}
 
+				proc ::tcl::mathfunc::track_term {term msg} {
+					set frame	[info frame -1]
+					#puts stderr [string range $frame 0 200]...
+					::aws::helpers::_debug {puts stderr "term ($msg): -> ([string range $term 0 200]), [dict get $frame file]:[dict get $frame line]"}
+					set term
+				}
 	proc endpoint_rules params {%endpoint_rules% $params}
 }
 		}]]

@@ -1,0 +1,82 @@
+if {"::tcltest" ni [namespace children]} {
+	package require tcltest
+	namespace import ::tcltest::*
+}
+
+tcltest::loadTestedCommands
+
+set here	[file dirname [file normalize [info script]]]
+source [file join $here common.tcl]
+#set ::aws::debug 1
+
+try {
+	foreach service [glob -tails -types d -directory [file join $here ../botocore/tests/functional/endpoint-rules] *] {
+		set svc_name	[string map {- _} $service]
+		if {0 && $svc_name ni {
+			s3
+			greengrassv2
+			kinesis
+			s3control
+			codecatalyst
+		}} continue
+		puts stderr "Generating endpoint tests for $svc_name"
+
+		set endpoint_tests_fn	[file join $here ../botocore/tests/functional/endpoint-rules/$service/endpoint-tests-1.json]
+		#puts stderr "Loading endpoint tests: $endpoint_tests_fn"
+		set i	0
+		json foreach testcase [json extract [readfile $endpoint_tests_fn] testCases] {
+			set extra	{}
+			set params	[if {[json exists $testcase params]} {json get $testcase params}]
+			set rules_fns	[glob -types f [file join $here ../botocore/botocore/data/$service/*/endpoint-rule-set-1.json]]
+			switch -exact [llength $rules_fns] {
+				0 {error "Couldn't locate endpoint-rule-set-1.json for \"$service\""}
+				1 {set rules_fn	[lindex $rules_fns 0]}
+				default {
+					#error "Multiple endpoint-rules-set-1.json files for \"$service\":\n\t[join $rules_fns \n\t]"
+					set rules_fn	[lindex [lsort -dictionary -decreasing $rules_fns] 0]
+					#puts stderr "Picked  $rules_fn from\n\t[join $rules_fns \n\t]"
+				}
+			}
+			#puts "loading $rules_fn"
+			set endpoint_rules [readfile $rules_fn]
+			json foreach {param details} [json extract $endpoint_rules parameters] {
+				if {[json exists $details default] && ![dict exists $params $param]} {
+					dict set params $param [json get $details default]
+				}
+			}
+			set body "\npackage require aws::${svc_name}\nset res \[::aws::${svc_name}::endpoint_rules [list $params]\]\n"
+			if {[json exists $testcase expect error]} {
+				lappend extra -returnCodes error -result [json get $testcase expect error]
+				set tail 1
+			} elseif {[json exists $testcase expect endpoint]} {
+				append body "\trltest::compare_json -subset left [list [json extract $testcase expect endpoint]] \$res\n"
+				lappend extra -result match
+				set tail 2
+			}
+			#if {$i ni {41 42}} {incr i; continue}
+
+			#set ::aws::debug	[expr {$svc_name eq "s3control" && $i+1 == 23}]
+
+			test endpoint_rules_${svc_name}-[incr i].$tail "endpoint rules functional testcase $i: [json get $testcase documentation]" -setup {
+				set tracecmd {apply {{cmdstr code res op} {
+					if {[string length $cmdstr] > 150} {set cmdstr "[string range $cmdstr 0 147]..."}
+					if {[string length $res] > 50} {set res "[string range $res 0 47]..."}
+					puts stderr "endpoint_rules leavestep cmdstr: ($cmdstr), op: ($op), code: ($code), res: ($res)"
+				}}}
+				#trace add execution ::aws::${service}::endpoint_rules leavestep $tracecmd
+			} -body {try $body on error {errmsg options} {if 0 {puts stderr [dict get $options -errorinfo]}; return -options $options $errmsg}} -cleanup {
+				#trace remove execution ::aws::${service}::endpoint_rules leavestep $tracecmd
+				unset -nocomplain res tracecmd body
+			} {*}$extra
+		}
+	}
+} on error {errmsg options} {
+	puts stderr "Error autogenerating endpoint rules testcases: [dict get $options -errorinfo]"
+} finally {
+	unset -nocomplain i extra params endpoint_rules body
+}
+
+::tcltest::cleanupTests
+return
+
+# vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4

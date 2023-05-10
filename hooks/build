@@ -1,8 +1,0 @@
-#!/usr/bin/env bash
-
-docker build --target alpine-tcl-stripped        -f $DOCKERFILE_PATH -t alpine-tcl:$DOCKER_TAG-stripped .
-docker build --target m2-stripped                -f $DOCKERFILE_PATH -t m2:$DOCKER_TAG-stripped .
-docker build --target alpine-tcl-lambda-stripped -f $DOCKERFILE_PATH -t $IMAGE_NAME-stripped .
-docker build --target alpine-tcl        -f $DOCKERFILE_PATH -t alpine-tcl:$DOCKER_TAG .
-docker build --target m2                -f $DOCKERFILE_PATH -t m2:$DOCKER_TAG .
-docker build --target alpine-tcl-lambda -f $DOCKERFILE_PATH -t $IMAGE_NAME .

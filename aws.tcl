@@ -2224,24 +2224,47 @@ namespace eval aws {
 
 		#>>>
 		proc aws.partition {service region} { #<<<
-			#puts stderr "aws.partition service: ($service), region: ($region)"
-			#if {$region eq "aws-global"} {set region us-east-1}
-			package require aws::endpoints
-			json foreach partition [json extract $::aws::endpoints partitions] {
-				#puts stderr "Looking in partition ([json get $partition partition]) for ($region)"
-				set re	[string map {\\w [a-zA-Z0-9_] \\d [0-9]} [json get $partition regionRegex]]
-				#puts stderr "regionRegex: ($re): [regexp $re $region]"
-				if {[regexp $re $region] || [json exists $partition services $service endpoints $region]} {
-					json set partition name [json get $partition partition]
-					return $partition
-					#if {[json exists $partition services $service endpoints $region]} {
-					#	return $partition
-					#}
+			variable ::aws::partitions
+			variable ::aws::endpoints
+			upvar 1 p p
+			try {
+				#puts stderr "aws.partition service: ($service), region: ($region)"
+				#if {$region eq "aws-global"} {set region us-east-1}
+				#if {![regexp {^[a-z0-9-]+$} $region]} {return null}
+				try {
+					package require aws::endpoints
+				} on error {errmsg options} {
+					log error "Could not load aws::endpoints: $errmsg"
 				}
+				#puts stderr "partitions: [json length $endpoints partitions]"
+				json foreach partition [json extract $endpoints partitions] {
+					#puts stderr "Looking in partition ([json get $partition partition]) for ($region)"
+					set re	[json get $partition regionRegex]
+					#puts stderr "regionRegex: ($re): [regexp $re $region]"
+					if {[regexp $re $region] || [json exists $partition services $service endpoints $region]} {
+						#json set partition name [json get $partition partition]
+						json foreach {k v} [json extract $partitions [json get $partition partition] outputs] {
+							json set partition $k $v
+						}
+						return $partition
+						#if {[json exists $partition services $service endpoints $region]} {
+						#	return $partition
+						#}
+					}
+				}
+				#puts stderr "Could not find partition for ($region), returning null"
+				return null
+				#error "No partition for region \"$region\""
+			} on error {errmsg options} {
+				log error "aws.partition lookup error: [dict get $options -errorinfo]"
+				return -options $options $errmsg
+			} on return partition_result {
+				# Have to resort to this because the endpoint_rules for different services use different
+				# spellings for the result variable, so we set a fixed name here for our use
+				set p(_partition_result)	$partition_result
+				#_debug {log notice "_partition_result: $p(_partition_result)"}
+				set partition_result
 			}
-			#puts stderr "Could not find partition for ($region), returning null"
-			return null
-			#error "No partition for region \"$region\""
 		}
 
 		#>>>
@@ -2320,6 +2343,7 @@ namespace eval aws {
 
 		#>>>
 		proc _e args { #<<<
+			set frame	[info frame -1]
 			parse_args $args {
 				msg			{-required}
 				istemplate	{-required}
@@ -2328,6 +2352,7 @@ namespace eval aws {
 			if {[info exists lookup]} {
 				set msg	[lindex $lookup $msg]
 			}
+			_debug {log notice "endpoint_rules error leaf: ($msg): [dict get $frame file]:[dict get $frame line]"}
 			if {$istemplate} {
 				throw terr $msg
 			} else {
@@ -2337,6 +2362,7 @@ namespace eval aws {
 
 		#>>>
 		proc _r args { #<<<
+			set frame	[info frame -1]
 			parse_args $args {
 				ep		{-required}
 				lookup	{}
@@ -2345,6 +2371,7 @@ namespace eval aws {
 			if {[info exists lookup]} {
 				set ep	[lindex $lookup $ep]
 			}
+			_debug {log notice "endpoint_rules result leaf: ($ep): [dict get $frame file]:[dict get $frame line]"}
 			return -code return $ep
 		}
 
@@ -2358,9 +2385,7 @@ namespace eval aws {
 		proc _a {var args} { #<<<
 			upvar 1 p p
 			try $args on ok res {
-				if {[json valid $res] && [json isnull $res]} {
-					return 0
-				}
+				#if {[json valid $res] && [json isnull $res]} {return 0}
 				set p($var) $res
 				return 1
 			} on error {errmsg options} {
@@ -2606,8 +2631,17 @@ namespace eval aws {
 			#puts stderr "appending lit: ($lit), processing key ($key)"
 			switch -regexp -matchvar m -- $key {
 				{^(.*?)#(.*)$} {lassign $m - base attr
-					#puts stderr "matched attr syntax: base: ($base), attr: ($attr) ([set -)]"
-					set subst	[json get [dict get $dict $base] $attr]
+					_debug {log notice "matched attr syntax: base: ($base), attr: ($attr) ([set -])"}
+					if {[dict exists $dict $base] && [json exists [dict get $dict $base] $attr]} {
+						set subst	[json get [dict get $dict $base] $attr]
+					} elseif {$base eq "partitionResult"} {
+						package require aws::endpoints
+						variable endpoints
+						# Fall back to the default partition - not sure about this
+						set subst	[json get $endpoints partitions 0 $attr]
+					} else {
+						set subst	null
+					}
 				}
 				{^$} {
 					set subst	{}
@@ -2625,7 +2659,7 @@ namespace eval aws {
 
 	#>>>
 	proc objecttemplate {object dict} { #<<<
-		#puts stderr "objecttemplate, object: ($object), dict keys: ([dict keys $dict])"
+		_debug {log notice "objecttemplate, object: ($object), dict keys: ([dict keys $dict])"}
 		#puts stderr "rep: [tcl::unsupported::representation $object]"
 		#puts stderr "objecttemplate signingRegion: ([json get $object properties authSchemes 0 signingRegion]), rep: [tcl::unsupported::representation [json get $object properties authSchemes 0 signingRegion]]"
 		#puts stderr [json debug $object]
@@ -3114,6 +3148,19 @@ namespace eval aws {
 		#>>>
 	}
 }
+
+namespace eval ::tcl::mathfunc {
+	proc aws_b val {
+		if {[string is boolean -strict $val]} {
+			set val
+		} elseif {[json valid $val]} {
+			json exists $val
+		} else {
+			expr {$val ne ""}
+		}
+	}
+}
+
 
 # Hook into the tclreadline tab completion
 namespace eval ::tclreadline {

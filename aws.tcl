@@ -1255,7 +1255,7 @@ namespace eval aws {
 					}
 				}
 				default {
-					log warning "Built-in not implemented: \"$handler\""
+					#log warning "Built-in not implemented: \"$handler\""
 				}
 			}
 		}

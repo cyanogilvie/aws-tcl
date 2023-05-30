@@ -1578,6 +1578,7 @@ namespace eval aws {
 			-def				{-required}
 			-shape				{-required}
 			-cxnode				{}
+			-locationname		{}
 			-header				{}
 			-headers			{}
 			-val				{}
@@ -1656,12 +1657,16 @@ namespace eval aws {
 			list { #<<<
 				set membershapename	[json get $shape member shape]
 				set location		[json get -default {} $shape member location]
-				set name			[json get -default $membershapename $shape member locationName]
+				if {![info exists locationname]} {
+					set locationname	$membershapename
+				}
+				set name			[json get -default $locationname $shape member locationName]
 				set membershape		[json extract $def shapes $membershapename]
 				_debug { #<<<
 					json unset shape type
 					json unset shape member shape
 					json unset shape member locationName
+					json unset shape flattened
 					json unset shape documentation
 					if {[json length $shape member] == 0} {json unset shape member}
 					if {[json length $shape]} {puts stderr "Unhandled specification in list shape: [json pretty $shape]"}
@@ -1696,12 +1701,16 @@ namespace eval aws {
 							if {[json get -default false $info xmlAttribute]} {
 								lappend mlist	[list $member]	[list -val [domNode $cxnode getAttribute $locationName]
 							} else {
-								set node		[domNode $cxnode selectNodes "$locationName\[1\]"]
-								if {$node eq "" && $toplevel} {
-									set node	[domNode $cxnode selectNodes "/$locationName\[1\]"]
+								if {![json get -default false $def shapes [json get $info shape] flattened]} {
+									set node		[domNode $cxnode selectNodes "$locationName\[1\]"]
+									if {$node eq "" && $toplevel} {
+										set node	[domNode $cxnode selectNodes "/$locationName\[1\]"]
+									}
+								} else {
+									set node	$cxnode
 								}
 								if {$node eq ""} continue
-								lappend cxargs	-cxnode $node
+								lappend cxargs	-cxnode $node -locationname $locationName
 							}
 						}
 
@@ -2352,7 +2361,7 @@ namespace eval aws {
 			if {[info exists lookup]} {
 				set msg	[lindex $lookup $msg]
 			}
-			_debug {log notice "endpoint_rules error leaf: ($msg): [dict get $frame file]:[dict get $frame line]"}
+			#_debug {log notice "endpoint_rules error leaf: ($msg): [dict get $frame file]:[dict get $frame line]"}
 			if {$istemplate} {
 				throw terr $msg
 			} else {
@@ -2371,7 +2380,7 @@ namespace eval aws {
 			if {[info exists lookup]} {
 				set ep	[lindex $lookup $ep]
 			}
-			_debug {log notice "endpoint_rules result leaf: ($ep): [dict get $frame file]:[dict get $frame line]"}
+			#_debug {log notice "endpoint_rules result leaf: ($ep): [dict get $frame file]:[dict get $frame line]"}
 			return -code return $ep
 		}
 

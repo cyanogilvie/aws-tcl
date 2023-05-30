@@ -73,6 +73,12 @@ test s3sigv4-1.3 {get key, all 0x1f < codepoints <= 0xff and \u306f} -constraint
 	unset -nocomplain key c
 } -match glob -returnCodes error -errorCode {AWS NoSuchKey *} -result {AWS: The specified key does not exist.}
 #>>>
+#test s3sigv4-2.1 {list objects} -body { #<<<
+#	expr {
+#		[json length [aws s3 list_objects -region us-east-1 -bucket cyan-test-uploads -max_keys 4] Contents] > 0
+#	}
+#} -result 1
+#>>>
 
 #set aws::debug 1
 #try {

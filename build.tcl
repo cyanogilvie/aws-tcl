@@ -1090,12 +1090,12 @@ namespace eval ::aws::%service_name% {
 	variable endpoint_params	%endpoint_params%
 	variable responses			{}
 
-				proc ::tcl::mathfunc::track_term {term msg} {
-					set frame	[info frame -1]
-					#puts stderr [string range $frame 0 200]...
-					::aws::helpers::_debug {puts stderr "term ($msg): -> ([string range $term 0 200]), [dict get $frame file]:[dict get $frame line]"}
-					set term
-				}
+	#proc ::tcl::mathfunc::track_term {term msg} {
+	#	set frame	[info frame -1]
+	#	#puts stderr [string range $frame 0 200]...
+	#	::aws::helpers::_debug {puts stderr "term ($msg): -> ([string range $term 0 200]), [dict get $frame file]:[dict get $frame line]"}
+	#	set term
+	#}
 	proc endpoint_rules params {%endpoint_rules% $params}
 }
 		}]]

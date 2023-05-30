@@ -1,7 +1,7 @@
 DESTDIR=
 PREFIX=/usr/local
 PACKAGE_NAME=aws
-VER=2.0a5.1
+VER=2.0a6
 MODE=-ziplet
 TCLSH=tclsh
 
@@ -10,6 +10,7 @@ CONTAINER_ENV=-v "`pwd`/here:/here" --network host --ulimit core=-1
 all: tm
 
 tm: tm/aws-$(VER).tm
+	cp api/hmac-0.1.tm tm
 
 tm/aws-$(VER).tm: aws.tcl build.tcl
 	mkdir -p tm/aws
@@ -31,7 +32,6 @@ test: tm
 install: tm
 	mkdir -p $(DESTDIR)$(PREFIX)/lib/tcl8/site-tcl
 	cp -a tm/* $(DESTDIR)$(PREFIX)/lib/tcl8/site-tcl/
-	cp api/hmac-0.1.tm $(DESTDIR)$(PREFIX)/lib/tcl8/site-tcl/
 
 clean:
 	-rm -r tm

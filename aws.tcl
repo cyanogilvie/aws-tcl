@@ -17,7 +17,11 @@ namespace eval aws {
 
 	variable debug			false
 
-	variable default_region	[if {
+	variable default_region	[if {[info exists ::env(AWS_REGION)]} {
+		set ::env(AWS_REGION)
+	} elseif {[info exists ::env(AWS_DEFAULT_REGION)]} {
+		set ::env(AWS_DEFAULT_REGION)
+	} elseif {
 		[info exists ::env(HOME)] &&
 		[file readable [file join $::env(HOME) .aws/config]]
 	} {

@@ -17,8 +17,8 @@ tm/aws-$(VER).tm: aws.tcl build.tcl
 	#mkdir -p tm/aws1
 	#cp api/*.tm tm/
 	#cp api/aws1/*.tm tm/aws1/
-	$(TCLSH) build.tcl -ver $(VER) $(MODE) -definitions botocore/botocore/data -prefix tm
 	cp aws.tcl tm/aws-$(VER).tm
+	$(TCLSH) build.tcl -ver $(VER) $(MODE) -definitions botocore/botocore/data -prefix tm || rm rm/aws-$(VER).tm
 
 test: tm
 #	docker run --rm --name aws-tcl-test \

@@ -814,7 +814,25 @@ proc build_aws_services args { #<<<
 				#puts stderr "[json get $def metadata service_name]: op: ($op) -> cmd: ($cmd), opdef: [json pretty $opdef]"
 
 				unset -nocomplain w
-				set c			{application/x-amz-json-1.1}
+				switch -exact -- [json get -default 1.1 $def metadata jsonVersion] {
+					1.0 {
+						# Copilot hint: perhaps it knows something I don't:
+						#if {[json exists $opdef input]} {
+						#	set w	[json get $opdef input wrapper]
+						#}
+						set c	{application/x-amz-json-1.0}
+					}
+					1.1 {
+						# Copilot hint: perhaps it knows something I don't:
+						#if {[json exists $opdef input]} {
+						#	set w	[json get $opdef input payload]
+						#}
+						set c	{application/x-amz-json-1.1}
+					}
+					default {
+						error "Unknown jsonVersion: [json get $def metadata jsonVersion]"
+					}
+				}
 				set u			{}
 				set hm			{}
 				set q			{}

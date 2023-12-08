@@ -1,7 +1,7 @@
 DESTDIR=
 PREFIX=/usr/local
 PACKAGE_NAME=aws
-VER=2.0a6
+VER=2.0a7
 MODE=-ziplet
 TCLSH=tclsh
 
@@ -14,11 +14,11 @@ tm: tm/aws-$(VER).tm
 
 tm/aws-$(VER).tm: aws.tcl build.tcl
 	mkdir -p tm/aws
-	cp aws.tcl tm/aws-$(VER).tm
 	#mkdir -p tm/aws1
 	#cp api/*.tm tm/
 	#cp api/aws1/*.tm tm/aws1/
 	$(TCLSH) build.tcl -ver $(VER) $(MODE) -definitions botocore/botocore/data -prefix tm
+	cp aws.tcl tm/aws-$(VER).tm
 
 test: tm
 #	docker run --rm --name aws-tcl-test \
@@ -29,6 +29,14 @@ test: tm
 #		/tests/all.tcl $(TESTFLAGS)
 	$(TCLSH) tests/all.tcl $(TESTFLAGS) -load "apply {ver {source tests/load_self.tcl}} $(VER)"
 
+container_test: tm
+	docker run --rm --name aws-tcl-test \
+		-v "`pwd`/tests:/tests" \
+		-v "`pwd`/tm:/tests/tm" \
+		-v "$(HOME)/.aws:/root/.aws" \
+		cyanogilvie/alpine-tcl:v0.9.77-stripped \
+		/tests/all.tcl $(TESTFLAGS)
+
 install: tm
 	mkdir -p $(DESTDIR)$(PREFIX)/lib/tcl8/site-tcl
 	cp -a tm/* $(DESTDIR)$(PREFIX)/lib/tcl8/site-tcl/
@@ -36,4 +44,4 @@ install: tm
 clean:
 	-rm -r tm
 
-.PHONY: clean tm
+.PHONY: clean tm container_test test install all

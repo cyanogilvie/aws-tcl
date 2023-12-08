@@ -1,0 +1,25 @@
+if {[lsearch [namespace children] ::tcltest] == -1} {
+    package require tcltest
+    namespace import ::tcltest::*
+}
+
+tcltest::loadTestedCommands
+package require aws 2
+package require rl_json
+package require rltest
+interp alias {} json {} ::rl_json::json
+
+test dynamodb-list_tables-1.1 {no params} -body { #<<<
+	json exists [aws dynamodb list_tables] TableNames
+} -result 1
+#>>>
+test dynamodb-list_tables-1.2 {limit 10} -body { #<<<
+	json exists [aws dynamodb list_tables -limit 10] TableNames
+} -result 1
+#>>>
+
+# cleanup
+::tcltest::cleanupTests
+return
+
+# vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4

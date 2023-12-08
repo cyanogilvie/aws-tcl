@@ -713,7 +713,7 @@ namespace eval aws {
 							set ts		[clock microseconds]
 							set s		[expr {$ts / 1000000}]
 							set tail	[string trimleft [format %.6f [expr {($ts % 1000000) / 1e6}]] 0]
-							set ts_str	[clock format $s -format "%Y-%m-%dT%H:%M:%S${tail}Z" -timezone :UTC]
+							set ts_str	[clock format $s -format "%Y-%m-%dT%H:%M:%S" -timezone :UTC]${tail}Z
 							switch -exact -- $op {
 								read - write {
 									lassign $args bytes
@@ -1325,6 +1325,12 @@ namespace eval aws {
 		}]
 
 		upvar 1 ei ei  protocol protocol  response_headers response_headers  cxparams cxparams  {*}[concat {*}[lmap uv $upvars {list $uv _a_$uv}]]
+		if {[info exists _a_params]} {
+			dict for {k v} $_a_params {
+				_debug {log notice "unpacking params($k) -> ($v)"}
+				set _a_$k $v
+			}
+		}
 
 		set endpoint_info	[{*}$ei $region]
 		_debug {log notice "endpoint_info:\n\t[join [lmap {k v} $endpoint_info {format {%20s: %s} $k $v}] \n\t]"}
@@ -1365,14 +1371,16 @@ namespace eval aws {
 			lappend query Version [set ${service_ns}::apiVersion]
 		}
 
+		#puts stderr "payload: ($payload)"
 		if {$content_type eq "application/x-www-form-urlencoded; charset=utf-8"} {
 			set body	[join [lmap {k v} $query {
 				format %s=%s [reuri::uri encode query $k] [reuri::uri encode query $v]
 			}] &]
 			set query	{}
 		} elseif {$payload ne ""} {
+			#puts "exists: [info exists _a_$payload]"
 			if {[info exists _a_$payload]} {
-				if {$xml_input eq {}} {
+				if {$xml_input in {{} {Body {} {}}}} {
 					set body	[set _a_$payload]
 				} else {
 					set rest	[lassign $xml_input rootelem xmlns]
@@ -1393,6 +1401,7 @@ namespace eval aws {
 			} else {
 				set body	{}
 			}
+			#puts stderr "body: ($body)"
 		} elseif {$template ne {}} {
 			set bodydoc	[uplevel 1 [list json template $template]]
 			# Strip null object keys and array elements <<<
@@ -2209,6 +2218,9 @@ namespace eval aws {
 			if {![regexp {^arn:([^:]*):([^:]*):([^:]*):([^:]*):(?:([^:/]*)[:/])?(.*)$} $arn - partition service region accountid resource_type tail]} {
 				error "Cannot parse arn: \"$arn\""
 			}
+			#puts stderr "aws.parseArn:\n\t[join [lmap v {partition service region accountid resource_type tail} {
+			#	format "%20s: (%s)" $v [set $v]
+			#}] \n\t]"
 			if {$resource_type ne ""} {
 				set resource_ids	[list $resource_type]
 			} else {
@@ -2291,11 +2303,13 @@ namespace eval aws {
 		#>>>
 		proc isValidHostLabel {str allowdots} { #<<<
 			#puts stderr "isValidHostLabel ($str), $allowdots"
-			if {$allowdots} {
+			set valid [if {$allowdots} {
 				regexp {^[a-zA-Z0-9.-]+$} $str
 			} else {
 				regexp {^[a-zA-Z0-9-]+$} $str
-			}
+			}]
+			#puts stderr "\treturning $valid"
+			set valid
 		}
 
 		#>>>
@@ -2406,7 +2420,7 @@ namespace eval aws {
 	}
 
 	#>>>
-	proc _compile_rest-xml_op {ns cmd args} { #<<< 
+	proc _compile_rest-xml_op {ns cmd args} { #<<<
 		variable ${ns}::service_def
 		variable ${ns}::endpoint_params
 		variable ${ns}::service_name_orig
@@ -2541,6 +2555,7 @@ namespace eval aws {
 		set q			{}
 		set b			{}
 		set x			{}
+		#puts stderr -----------------------------------------------------------------------------------
 		if {[json exists $opdef input]} {
 			aws::build::compile_input \
 				-argname_transform	{} \
@@ -2563,6 +2578,7 @@ namespace eval aws {
 			set x	[aws::build::compile_xml_input \
 				-shapes	[json extract $service_def shapes] \
 				-input	[json extract $opdef input]]
+			#puts stderr "x: ($x)"
 		}
 
 		regsub {^/{Bucket}} [json get $opdef http requestUri] {} requestUri	;# Endpoint rules takes care of this
@@ -2624,7 +2640,7 @@ namespace eval aws {
 				-w			%resultWrapper% \
 				-x			%xml_input% \
 				-handleresp	[list ::aws::_handle_xml_resp $service_def %op%] \
-				-payload	payload 
+				-payload	payload
 		}]
 		proc ${ns}::$cmd args $body
 		#puts stderr "JIT created ${ns}::$cmd:\n$body"

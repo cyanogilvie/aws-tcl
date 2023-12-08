@@ -19,7 +19,7 @@ try {
 			s3control
 			codecatalyst
 		}} continue
-		puts stderr "Generating endpoint tests for $svc_name"
+		#puts stderr "Generating endpoint tests for $svc_name"
 
 		set endpoint_tests_fn	[file join $here ../botocore/tests/functional/endpoint-rules/$service/endpoint-tests-1.json]
 		#puts stderr "Loading endpoint tests: $endpoint_tests_fn"

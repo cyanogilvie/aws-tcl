@@ -17,6 +17,9 @@ namespace eval aws {
 
 	variable debug			false
 
+	# TODO: consult env(AWS_CONFIG_FILE) if present (and expand leading ~) to find the config file, defaulting to ~/.aws/config
+	# TODO: apply other env vars from https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-envvars.html
+
 	variable default_region	[if {[info exists ::env(AWS_REGION)]} {
 		set ::env(AWS_REGION)
 	} elseif {[info exists ::env(AWS_DEFAULT_REGION)]} {
@@ -472,7 +475,9 @@ namespace eval aws {
 
 			set canonical_request	"[string toupper $method]\n$canonical_uri_sig\n$canonical_query_string\n$canonical_headers\n$signed_headers\n$hashed_payload"
 			#log debug "canonical request" {{"creq": "~S:canonical_request"}}
-			#puts stderr "canonical request:\n$canonical_request"
+			_debug {
+				puts stderr "canonical request:\n$canonical_request"
+			}
 			set hashed_canonical_request	[hash $algorithm $canonical_request]
 			set out_creq	$canonical_request
 			# Task1: Compile canonical request >>>
@@ -706,12 +711,9 @@ namespace eval aws {
 			}
 			}
 			#puts stderr "rl_http $method $signed_url -headers [list $signed_headers] -data [list $body]"
-			package require chantricks
-			rl_http instvar h $method $signed_url \
-				-timeout	20 \
-				-keepalive	1 \
-				-headers	$signed_headers \
-				-tapchan	[list ::chantricks::tapchan [list apply {
+			set extra	[if {$::aws::debug} {
+				package require chantricks
+				list -tapchan [list ::chantricks::tapchan [list apply {
 					{name chan op args} {
 						::aws::helpers::_debug {
 							set ts		[clock microseconds]
@@ -732,7 +734,13 @@ namespace eval aws {
 							}
 						}
 					}
-				}] rl_http_$signed_url] \
+				}] rl_http_$signed_url]
+			}]
+			rl_http instvar h $method $signed_url \
+				-timeout	20 \
+				-keepalive	1 \
+				-headers	$signed_headers \
+				{*}$extra \
 				-data		$body
 
 			#puts stderr "rl_http $method $signed_url, headers: ($signed_headers), data: ($body)"

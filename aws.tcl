@@ -784,7 +784,8 @@ namespace eval aws {
 			}
 
 			if {$ratelimit < $maxrate && [clock seconds] - $last_slowdown > 10} {
-				set ratelimit		[expr {min($maxrate, int($ratelimit * 1.1))}]
+				set from			$ratelimit
+				set ratelimit		[expr {min($maxrate, $ratelimit + min(2, $ratelimit * 0.5))}]
 				log notice "aws req ratelimit recovery to $ratelimit"
 				set last_slowdown	[clock seconds]
 			}
@@ -812,11 +813,11 @@ namespace eval aws {
 					}
 				} trap {AWS InternalError} {errmsg options} {
 					continue
-				} trap {AWS ServiceUnavailable} {errmsg options} - trap {AWS SlowDown} {errmsg options} {
-					set ratelimit		[expr {max(1, int($ratelimit * 0.9))}]
+				} trap {AWS ServiceUnavailable} {errmsg options} - trap {AWS SlowDown} {errmsg options} - trap {AWS TooManyRequestsException} {errmsg options} {
+					set ratelimit		[expr {max(1, int($ratelimit * 0.5))}]
 					log notice "aws req got [dict get $options -errorcode], ratelimit now: $ratelimit"
 					set last_slowdown	[clock seconds]
-					after 200
+					after 1000
 					continue
 				}
 			}
@@ -1533,6 +1534,7 @@ namespace eval aws {
 					if {![dict exists [set ${service_ns}::responses] $response]} {
 						error "No response handler defined for ($response):\n\t[join [lmap {k v} [set ${service_ns}::responses] {format {%20s: %s} $k $v}] \n\t]"
 					}
+					#puts "calling _resp_xml with [list $resultWrapper {*}[dict get [set ${service_ns}::responses] $response]]\n$body"
 					_resp_xml $resultWrapper {*}[dict get [set ${service_ns}::responses] $response] $body
 				} else {
 					set body
@@ -2990,7 +2992,7 @@ namespace eval aws {
 									-payload			payload \
 									-shapes				$shapes \
 									-shape				[json get $member_def shape] \
-									-endpoint_params	$endpoint_params \
+									-endpoint_params	{{}} \
 									-builtins			builtins \
 								]
 							}
@@ -3043,7 +3045,7 @@ namespace eval aws {
 						-payload			payload \
 						-shapes				$shapes \
 						-shape				[json get $input type] \
-						-endpoint_params	$endpoint_params \
+						-endpoint_params	{{}} \
 						-builtins			builtins \
 					]
 				}

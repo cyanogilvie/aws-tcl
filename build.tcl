@@ -764,7 +764,16 @@ proc build_aws_services args { #<<<
 		json set service_def metadata service_name_orig	[json string $service_name_orig]
 		json set service_def metadata service_dir		[json string $service_dir]
 		json set service_def metadata latest			[json string $latest]
-		dict lappend by_protocol [json get $service_def metadata protocol] $service_def
+		set protocol	[json get $service_def metadata protocol]
+		if {$service_name eq "sqs"} {
+			# SQS declares itself to use the "query" protocol, but that is a legacy mode, and prefers json
+			# The botocore definitions describe the json shapes, and do not correspond with the query xml responses *shrug*
+			set protocol	json
+			json set service_def metadata protocol $protocol
+			json set service_def metadata targetPrefix AmazonSQS
+			json set service_def metadata jsonVersion 1.0
+		}
+		dict lappend by_protocol $protocol $service_def
 	}
 
 	dict for {protocol services} $by_protocol {

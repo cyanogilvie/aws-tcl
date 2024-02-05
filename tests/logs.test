@@ -1,0 +1,29 @@
+if {[lsearch [namespace children] ::tcltest] == -1} {
+    package require tcltest
+    namespace import ::tcltest::*
+}
+
+tcltest::loadTestedCommands
+package require aws::logs
+package require rl_json
+package require rltest
+interp alias {} json {} ::rl_json::json
+
+test logs-code_gen-1.1 {} -body { #<<<
+	set body		[string map {; \n} [info body ::aws::logs::create_log_stream]]
+	set args_schema	[lindex [split $body \n] 0 2]
+	llength [lsearch -all -inline -index 0 -stride 2 -exact $args_schema "-region"]
+} -cleanup {
+	unset -nocomplain body args_schema
+} -result 2
+#>>>
+test logs-describe_log_groups-1.1 {} -body { #<<<
+	expr {[json length [aws logs describe_log_groups] logGroups] > 0}
+} -result 1
+#>>>
+
+# cleanup
+::tcltest::cleanupTests
+return
+
+# vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4

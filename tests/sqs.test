@@ -1,0 +1,21 @@
+if {[lsearch [namespace children] ::tcltest] == -1} {
+    package require tcltest
+    namespace import ::tcltest::*
+}
+
+tcltest::loadTestedCommands
+package require aws
+package require rl_json
+package require rltest
+interp alias {} json {} ::rl_json::json
+
+test sqs-list_queues-1.1 {} -body { #<<<
+	expr {[json length [aws sqs list_queues] QueueUrls] > 0}
+} -result 1
+#>>>
+
+# cleanup
+::tcltest::cleanupTests
+return
+
+# vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4

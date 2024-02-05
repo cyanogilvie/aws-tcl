@@ -1,7 +1,7 @@
 DESTDIR=
 PREFIX=/usr/local
 PACKAGE_NAME=aws
-VER=2.0a10
+VER=2.0a11
 MODE=-ziplet
 TCLSH=tclsh
 

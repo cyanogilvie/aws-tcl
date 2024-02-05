@@ -7,7 +7,7 @@ package require parse_args
 package require tdom
 package require rl_json
 package require chantricks
-package require reuri 0.10
+package require reuri 0.13.4
 
 namespace eval aws {
 	namespace export *
@@ -58,7 +58,7 @@ namespace eval aws {
 			::aws
 		}
 
-		interp alias {} ::aws::helpers::sigencode {} ::reuri::uri encode awssig
+		interp alias {} ::aws::helpers::sigencode {} ::reuri encode awssig
 
 		variable maxrate		50		;# Hz
 		variable ratelimit		50
@@ -345,7 +345,7 @@ namespace eval aws {
 				set canonical_uri		/
 				set canonical_uri_sig	/
 			} else {
-				set urlv	[split [string trimleft $path /] /]
+				set urlv	[reuri::path get [string trimleft $path /]]
 				if {$sig_service eq "s3"} {
 					set n_urlv	$urlv
 				} else {

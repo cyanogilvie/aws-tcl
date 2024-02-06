@@ -1,7 +1,7 @@
 # AWS signature version 4: https://docs.aws.amazon.com/general/latest/gr/signature-version-4.html
 # All services support version 4, except SimpleDB which requires version 2
 
-package require rl_http 1.14.9
+package require rl_http 1.15.1
 package require uri
 package require parse_args
 package require tdom
@@ -1354,7 +1354,7 @@ namespace eval aws {
 			}]
 			set repe	[reuri::uri encode path $rep]
 			#lappend uri_map_out	"{$pat}" $repe "{$pat+}" [string map {%2F /} $repe]
-			lappend uri_map_out	"{$pat}" $repe "{$pat+}" $rep
+			lappend uri_map_out	"{$pat}" $repe "{$pat+}" [reuri::path join {*}[reuri::path get [string map {+ %2B} $rep]]]
 		}
 		#puts stderr "uri_map_out: ($uri_map_out)"
 
@@ -1871,7 +1871,7 @@ namespace eval aws {
 					-val	[$cx body] \
 				]
 			} else {
-				if {[lindex [dict get [$cx headers] content-type] 0] in {text/xml application/xml}} {
+				if {[dict exists [$cx headers] content-type] && [lindex [dict get [$cx headers] content-type] 0] in {text/xml application/xml}} {
 					set doc		[dom parse -ignorexmlns [$cx body]]
 					_debug {log debug "XML:\n[domDoc $doc asXML]"}
 					lappend cxargs	-cxnode [$doc documentElement]

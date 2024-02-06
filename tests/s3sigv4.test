@@ -11,19 +11,25 @@ interp alias {} json {} ::rl_json::json
 
 tcltest::testConstraint have_s3_bucket [try { #<<<
 	aws::helpers::get_creds
-	set buckets_resp	[aws s3 list_buckets]
-	if {[json exists $buckets_resp Buckets 0]} {
-		json foreach b [json extract $buckets_resp Buckets] {
-			if {[json get $b Name] eq "cyan-archive"} continue
-			set bucket	[json get $b Name]
-			break
+	if {[info exists ::env(BUCKET)]} {
+		set bucket			$::env(BUCKET)
+		set bucketlocation	[aws s3 get_bucket_location -bucket $bucket]
+		set bucket_region	[json get -default {} $bucketlocation LocationConstraint]
+	} else {
+		set buckets_resp	[aws s3 list_buckets]
+		if {[json exists $buckets_resp Buckets 0]} {
+			json foreach b [json extract $buckets_resp Buckets] {
+				if {[json get $b Name] eq "cyan-archive"} continue
+				set bucket	[json get $b Name]
+				break
+			}
 		}
+		#if {[json exists $buckets_resp Buckets 0 Name]} {
+		#	set bucket	[json get $buckets_resp Buckets 0 Name]
+		#}
+		set bucketlocation	[aws s3 get_bucket_location -bucket $bucket]
+		set bucket_region	[json get -default {} $bucketlocation LocationConstraint]
 	}
-	#if {[json exists $buckets_resp Buckets 0 Name]} {
-	#	set bucket	[json get $buckets_resp Buckets 0 Name]
-	#}
-	set bucketlocation	[aws s3 get_bucket_location -bucket $bucket]
-	set bucket_region	[json get -default {} $bucketlocation LocationConstraint]
 	if {$bucket_region eq ""} {set bucket_region us-east-1}
 	#puts stderr "bucket: ($bucket), bucket_region: ($bucket_region), bucketlocation: ($bucketlocation)"
 } trap {AWS NO_CREDENTIALS} {} {
@@ -39,8 +45,7 @@ tcltest::testConstraint have_s3_bucket [try { #<<<
 #>>>
 
 test s3sigv4-1.1 {get key, no encoding} -constraints have_s3_bucket -body { #<<<
-	aws s3 get_object -region aws-global -use_global_endpoint 1 -bucket $bucket -key foo
-} -cleanup {
+	aws s3 get_object -region $bucket_region -bucket $bucket -key foo
 } -match glob -returnCodes error -errorCode {AWS NoSuchKey *} -result {AWS: The specified key does not exist.}
 #>>>
 test s3sigv4-1.2 {get key, no encoding} -constraints have_s3_bucket -body { #<<<
@@ -68,7 +73,7 @@ test s3sigv4-1.3 {get key, all 0x1f < codepoints <= 0xff and \u306f} -constraint
 	}
 	append key \u306f
 } -body {
-	aws s3 get_object -region aws-global -use_global_endpoint 1 -bucket $bucket -key [join [regexp -all -inline {.{80}} $key] /]
+	aws s3 get_object -region $bucket_region -bucket $bucket -key [join [regexp -all -inline {.{80}} $key] /]
 } -cleanup {
 	unset -nocomplain key c
 } -match glob -returnCodes error -errorCode {AWS NoSuchKey *} -result {AWS: The specified key does not exist.}
@@ -78,6 +83,235 @@ test s3sigv4-1.3 {get key, all 0x1f < codepoints <= 0xff and \u306f} -constraint
 #		[json length [aws s3 list_objects -region us-east-1 -bucket cyan-test-uploads -max_keys 4] Contents] > 0
 #	}
 #} -result 1
+#>>>
+
+set legacy_shim {
+	namespace eval ::s3 { # API shim for old hand-written s3 module, on top of aws::s3 2
+		namespace export *
+		namespace ensemble create -prefixes no
+		proc get args { #<<<
+			parse_args::parse_args $args {
+				-bucket				{-required}
+				-response_headers	{-alias}
+				-region				{-default ""}
+				path				{-required}
+			}
+
+			if {$region eq ""} {set region us-east-1}
+
+			set path    [join [lmap e [split $path /] {
+				string map {/ %2f} [reuri decode $e]
+			}] /]
+
+			set res	[aws s3 get_object -region $region -bucket $bucket -key $path -payload bytes]
+			set hdrs	{}
+			json foreach {k v} $res {
+				dict set hdrs [string tolower $k] [list [json get $v]]
+			}
+			set response_headers	$hdrs
+			set bytes
+		}
+
+		#>>>
+		proc upload args { #<<<
+			parse_args::parse_args $args {
+				-region				{-default ""}
+				-bucket				{-required}
+				-path				{-required}
+				-data				{-required}
+				-content_type		{}
+				-max_age			{-default 31536000}
+				-acl				{-enum public-read}
+				-response_headers	{-alias}
+			}
+
+			if {![info exists content_type]} {
+				package require Pixel 3.4.3
+				try {
+					set content_type	[pixel::image_mimetype $data]
+				} trap {PIXEL CORE UNKNOWN_FILETYPE} {errmsg options} {
+					set content_type	application/octet-stream
+				}
+			}
+
+			switch -glob -- $content_type {
+				text/* -
+				application/json -
+				application/javascript {
+					set data	[encoding convertto utf-8 $data]
+				}
+			}
+
+			if {$region eq ""} {set region us-east-1}
+
+			if 0 {
+			set res	[aws s3 put_object \
+				-region			$region \
+				-bucket			$bucket \
+				-key			$path \
+				-content_type	$content_type \
+				-cache_control	max-age=$max_age \
+				-ACL			$acl \
+				-body			$data \
+			]
+
+			set hdrs	{}
+			json foreach {k v} $res {
+				dict set hdrs [string tolower $k] [list [json get $v]]
+			}
+			set response_headers $hdrs
+			} else {
+				set headers		[list Cache-Control max-age=$max_age]
+				if {[info exists acl]} {
+					lappend headers x-amz-acl $acl
+				}
+				# Hack the upload until the put_object generated proc is working
+				# S3 doesn't like + in path elements
+				set path	[join [lmap e [split $path /] {
+					reuri encode path [reuri decode [string map {+ %2B} $e]]
+				}] /]
+				::aws::helpers::_aws_req PUT $bucket.s3.$region.amazonaws.com /$path \
+					-region						$region \
+					-scheme						https \
+					-credential_scope			$region \
+					-disable_double_encoding	1 \
+					-signing_region				$region \
+					-expecting_status			200 \
+					-headers					$headers \
+					-params						{} \
+					-content_type				$content_type \
+					-body						$data \
+					-response_headers			response_headers \
+					-status						status \
+					-sig_service				s3 \
+					-version					s3v4
+			}
+
+			return
+		}
+
+		#>>>
+		proc exists args { #<<<
+			parse_args::parse_args $args {
+				-region				{-default ""}
+				-bucket				{-required}
+				-response_headers	{-alias}
+				path				{-required}
+			}
+
+			if {$region eq ""} {set region us-east-1}
+			try {
+				# Hack the exists until the head_object generated proc is working
+				# S3 doesn't like + in path elements
+				set path	[reuri normalize $path]
+				set path	[join [lmap e [split $path /] {
+					string map {+ %2B} $e
+				}] /]
+				::aws::helpers::_aws_req HEAD $bucket.s3.$region.amazonaws.com /$path \
+					-region						$region \
+					-scheme						https \
+					-credential_scope			$region \
+					-disable_double_encoding	1 \
+					-signing_region				$region \
+					-expecting_status			200 \
+					-response_headers			response_headers \
+					-status						status \
+					-sig_service				s3 \
+					-version					s3v4
+			} on ok {} {
+				return 1
+			} trap {AWS 404} {} - trap {AWS 403} {} {
+				return 0
+			}
+		}
+
+		#>>>
+	}
+}
+
+test s3sigv4-3.1 {path encoding: +} -constraints have_s3_bucket -setup { #<<<
+	eval $legacy_shim
+} -body {
+	set key			foo+bar
+	s3 upload -region $bucket_region -bucket $bucket -path $key -data $key -content_type text/plain
+	set objs		[aws s3 list_objects_v2 -region $bucket_region -bucket $bucket -prefix $key]
+	set get_resp	[aws s3 get_object -region $bucket_region -bucket $bucket -key $key -payload payload]
+	aws s3 delete_object -region $bucket_region -bucket $bucket -key $key
+	list [json get $objs Contents 0 Key] [json get $get_resp ContentLength] $payload
+} -cleanup {
+	namespace delete ::s3
+	unset -nocomplain objs get_resp payload del_resp key
+} -result {foo+bar 7 foo+bar}
+#>>>
+test s3sigv4-3.2 {path encoding: space} -constraints have_s3_bucket -setup { #<<<
+	eval $legacy_shim
+} -body {
+	set key			{foo bar}
+	s3 upload -region $bucket_region -bucket $bucket -path $key -data $key -content_type text/plain
+	set objs		[aws s3 list_objects_v2 -region $bucket_region -bucket $bucket -prefix foo]
+	set get_resp	[aws s3 get_object -region $bucket_region -bucket $bucket -key $key -payload payload]
+	aws s3 delete_object -region $bucket_region -bucket $bucket -key $key
+	list [json get $objs Contents 0 Key] [json get $get_resp ContentLength] $payload
+} -cleanup {
+	namespace delete ::s3
+	unset -nocomplain objs get_resp payload del_resp key
+} -result {{foo bar} 7 {foo bar}}
+#>>>
+test s3sigv4-3.3 {path encoding: /} -constraints {have_s3_bucket knownBug} -setup { #<<<
+	eval $legacy_shim
+} -body {
+	set key			foo%2fbar
+	s3 upload -region $bucket_region -bucket $bucket -path $key -data $key -content_type text/plain
+	set objs		[aws s3 list_objects_v2 -region $bucket_region -bucket $bucket -prefix foo]
+	set get_resp	[aws s3 get_object -region $bucket_region -bucket $bucket -key $key -payload payload]
+	aws s3 delete_object -region $bucket_region -bucket $bucket -key $key
+	list [json get $objs Contents 0 Key] [json get $get_resp ContentLength] $payload
+} -cleanup {
+	namespace delete ::s3
+	unset -nocomplain objs get_resp payload del_resp key
+} -result {foo%2Fbar 11 foo%2Fbar}
+#>>>
+test s3sigv4-3.4 {path encoding: :} -constraints have_s3_bucket -setup { #<<<
+	eval $legacy_shim
+} -body {
+	set key			foo:bar
+	s3 upload -region $bucket_region -bucket $bucket -path $key -data $key -content_type text/plain
+	set objs		[aws s3 list_objects_v2 -region $bucket_region -bucket $bucket -prefix foo]
+	set get_resp	[aws s3 get_object -region $bucket_region -bucket $bucket -key $key -payload payload]
+	aws s3 delete_object -region $bucket_region -bucket $bucket -key $key
+	list [json get $objs Contents 0 Key] [json get $get_resp ContentLength] $payload
+} -cleanup {
+	namespace delete ::s3
+	unset -nocomplain objs get_resp payload del_resp key
+} -result {foo:bar 7 foo:bar}
+#>>>
+test s3sigv4-3.5 {path encoding: ?} -constraints have_s3_bucket -setup { #<<<
+	eval $legacy_shim
+} -body {
+	set key			foo?bar
+	s3 upload -region $bucket_region -bucket $bucket -path $key -data $key -content_type text/plain
+	set objs		[aws s3 list_objects_v2 -region $bucket_region -bucket $bucket -prefix foo]
+	set get_resp	[aws s3 get_object -region $bucket_region -bucket $bucket -key $key -payload payload]
+	aws s3 delete_object -region $bucket_region -bucket $bucket -key $key
+	list [json get $objs Contents 0 Key] [json get $get_resp ContentLength] $payload
+} -cleanup {
+	namespace delete ::s3
+	unset -nocomplain objs get_resp payload del_resp key
+} -result {foo?bar 7 foo?bar}
+#>>>
+test s3sigv4-3.6 {path encoding: \u306f} -constraints have_s3_bucket -setup { #<<<
+	eval $legacy_shim
+} -body {
+	set key			foo\u306fbar
+	s3 upload -region $bucket_region -bucket $bucket -path $key -data $key -content_type {text/plain; charset=utf-8}
+	set objs		[aws s3 list_objects_v2 -region $bucket_region -bucket $bucket -prefix foo]
+	set get_resp	[aws s3 get_object -region $bucket_region -bucket $bucket -key $key -payload payload]
+	aws s3 delete_object -region $bucket_region -bucket $bucket -key $key
+	list [json get $objs Contents 0 Key] [json get $get_resp ContentLength] $payload [string length $payload]
+} -cleanup {
+	namespace delete ::s3
+	unset -nocomplain objs get_resp payload del_resp key
+} -result [list foo\u306fbar [string length [encoding convertto utf-8 foo\u306fbar]] foo\u306fbar 7]
 #>>>
 
 #set aws::debug 1

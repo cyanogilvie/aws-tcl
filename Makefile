@@ -1,7 +1,7 @@
 DESTDIR=
 PREFIX=/usr/local
 PACKAGE_NAME=aws
-VER=2.0a11
+VER=2.0a12
 MODE=-ziplet
 TCLSH=tclsh
 
@@ -28,6 +28,9 @@ test: tm
 #		alpine-tcl:test \
 #		/tests/all.tcl $(TESTFLAGS)
 	$(TCLSH) tests/all.tcl $(TESTFLAGS) -load "apply {ver {source tests/load_self.tcl}} $(VER)"
+
+vim-gdb: tm
+	vim -c 'packadd termdebug' -c 'set mouse=a' -c 'set number' -c 'set foldlevel=100' -c 'Termdebug -ex set\ print\ pretty\ on --args $(TCLSH) tests/all.tcl -singleproc 1 -load apply\ {ver\ {source\ tests/load_self.tcl}}\ $(VER) $(TESTFLAGS)' -c "2windo set nonumber" -c "1windo set nonumber"
 
 container_test: tm
 	docker run --rm --name aws-tcl-test \

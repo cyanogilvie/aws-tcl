@@ -222,7 +222,143 @@ set legacy_shim {
 				return 1
 			} trap {AWS 404} {} - trap {AWS 403} {} {
 				return 0
+			} on error {errmsg options} {
+				puts stderr "Unhandled error [dict get $options -errorcode]: [dict get $options -errorinfo]"
+				return -options $options $errmsg
 			}
+		}
+
+		#>>>
+		proc delete args { #<<<
+			parse_args::parse_args $args {
+				-region		{-default ""}
+				-bucket		{-required}
+				-path		{-required}
+			}
+
+			if {$region eq ""} {set region us-east-1}
+
+			aws s3 delete_object -region $region -bucket $bucket -key $path
+		}
+
+		#>>>
+		proc ls args { #<<<
+			parse_args::parse_args $args {
+				-region				{-default {}}
+				-prefix				{}
+				-bucket				{-required}
+				-delimiter			{}
+				-max_keys			{-# {Defaults to 1000}}
+				-continuation_token	{-default {}}
+				-fetch_owner		{-boolean}
+				-start_after		{}
+				-encoding_type		{-enum url -# {If set to "url", responses are urlencoded (to permit C0 characters)i}}
+			}
+
+			set extra	{}
+			if {$fetch_owner} {
+				lappend extra -fetch_owner
+			}
+			if {[info exists start_after]} {
+				lappend extra -start_after $start_after
+			}
+			if {[info exists encoding_type]} {
+				lappend extra -encoding_type $encoding_type
+			}
+			if {$continuation_token ne {}} {
+				lappend extra -continuation_token $continuation_token
+			}
+			if {[info exists max_keys]} {
+				lappend extra -max_keys $max_keys
+			}
+			if {[info exists delimiter]} {
+				lappend extra -delimiter $delimiter
+			}
+			if {[info exists prefix]} {
+				lappend extra -prefix $prefix
+			}
+			if {$region eq {}} {
+				set region us-east-1
+			}
+
+			set resp	[aws s3 list_objects_v2 \
+				-region				$region \
+				-bucket				$bucket \
+				{*}$extra \
+			]
+
+			set truncated				[json get $resp IsTruncated]
+			set next_continuation_token	[json get -default {} $resp NextContinuationToken]
+			set res	[json template {
+				{
+					"truncated":				"~B:truncated",
+					"next_continuation_token":	"~S:next_continuation_token",
+					"results":					[]
+				}
+			}]
+
+			if {[info exists delimiter]} {
+				json set res commonprefixes {[]}
+			}
+
+			json foreach e [json extract $resp Contents] {
+				json set res results end+1 [json template {
+					{
+						"key":			"~S:Key",
+						"mtime":		"~S:LastModified",
+						"etag":			"~S:ETag",
+						"size":			"~N:Size",
+						"storageclass":	"~S:StorageClass"
+					}
+				} [json get $e]]
+
+				if {$fetch_owner} {
+					json set res results end owner [json template {
+						{
+							"id":			"~S:ID",
+							"displayname":	"~S:DisplayName"
+						}
+					} [json get $e Owner]]
+				}
+			}
+
+			if {[json exists $resp CommonPrefixes]} {
+				json foreach e [json extract $resp CommonPrefixes] {
+					json set res commonprefixes end+1 [json get $e Prefix]
+				}
+			}
+
+			set res
+		}
+
+		#>>>
+		proc copy args { #<<<
+			parse_args::parse_args $args {
+				-bucket			{-required}
+				-path			{-required}
+				-region			{-default ""}
+				-source_bucket	{-# {Defaults to -bucket}}
+				-source			{-required}
+				-max_age		{-default 31536000}
+				-acl			{}
+			}
+
+			if {![info exists source_bucket]} {
+				set source_bucket	$bucket
+			}
+
+			if {$region eq ""} {set region us-east-1}
+			set extra	{}
+			if {[info exists acl]} {
+				lappend extra	-ACL $acl
+			}
+
+			aws s3 copy_object \
+				-region			$region \
+				-bucket			$bucket \
+				-key			$path \
+				-copy_source	$source_bucket/$source \
+				{*}$extra
 		}
 
 		#>>>
@@ -312,6 +448,20 @@ test s3sigv4-3.6 {path encoding: \u306f} -constraints have_s3_bucket -setup { #<
 	namespace delete ::s3
 	unset -nocomplain objs get_resp payload del_resp key
 } -result [list foo\u306fbar [string length [encoding convertto utf-8 foo\u306fbar]] foo\u306fbar 7]
+#>>>
+
+test s3_copy-1.1 {copy object} -constraints have_s3_bucket -setup { #<<<
+	set key	s3_copy-1.1
+	eval $legacy_shim
+} -body {
+	s3 upload -region $bucket_region -bucket $bucket -path $key -data s3_copy-1.1-data -content_type text/plain
+	s3 copy -region $bucket_region -bucket $bucket -path $key-copy -source $key
+	s3 get -region $bucket_region -bucket $bucket $key-copy
+} -cleanup {
+	s3 delete -region $bucket_region -bucket $bucket -path $key
+	s3 delete -region $bucket_region -bucket $bucket -path $key-copy
+	unset key
+} -result s3_copy-1.1-data
 #>>>
 
 #set aws::debug 1

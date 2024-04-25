@@ -1560,6 +1560,7 @@ namespace eval aws {
 			status
 			body
 			headers
+			doc
 		}
 		constructor args { #<<<
 			namespace path [list {*}[namespace path] {*}{
@@ -1577,6 +1578,15 @@ namespace eval aws {
 		}
 
 		#>>>
+		destructor { #<<<
+			if {[info exists doc]} {
+				$doc delete
+				unset doc
+			}
+			if {[self next] ne ""} next
+		}
+
+		#>>>
 		foreach m {status body headers} {method $m {} [list set $m]}
 		method header args { #<<<
 			parse_args $args {
@@ -1589,6 +1599,14 @@ namespace eval aws {
 				exists	{dict exists $headers $name}
 				get		{lindex [dict get $headers $name] 0}
 			}
+		}
+
+		#>>>
+		method xmlroot {} { #<<<
+			if {![info exists doc]} {
+				set doc	[dom parse -ignorexmlns $body]
+			}
+			$doc documentElement
 		}
 
 		#>>>
@@ -1719,7 +1737,8 @@ namespace eval aws {
 					switch -exact -- $location {
 						{} {
 							if {![info exists cxnode]} {
-								error "location dom but no cxnode, member ($member): [json pretty $info]"
+								#error "location dom but no cxnode, member ($member): [json pretty $info]"
+								set cxnode	[$cx xmlroot]
 							}
 							if {[json get -default false $info xmlAttribute]} {
 								lappend mlist	[list $member]	[list -val [domNode $cxnode getAttribute $locationName]

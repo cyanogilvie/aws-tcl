@@ -222,9 +222,6 @@ set legacy_shim {
 				return 1
 			} trap {AWS 404} {} - trap {AWS 403} {} {
 				return 0
-			} on error {errmsg options} {
-				puts stderr "Unhandled error [dict get $options -errorcode]: [dict get $options -errorinfo]"
-				return -options $options $errmsg
 			}
 		}
 
@@ -358,7 +355,10 @@ set legacy_shim {
 				-bucket			$bucket \
 				-key			$path \
 				-copy_source	$source_bucket/$source \
+				-payload		payload \
 				{*}$extra
+
+			set payload
 		}
 
 		#>>>
@@ -455,13 +455,13 @@ test s3_copy-1.1 {copy object} -constraints have_s3_bucket -setup { #<<<
 	eval $legacy_shim
 } -body {
 	s3 upload -region $bucket_region -bucket $bucket -path $key -data s3_copy-1.1-data -content_type text/plain
-	s3 copy -region $bucket_region -bucket $bucket -path $key-copy -source $key
-	s3 get -region $bucket_region -bucket $bucket $key-copy
+	set res	[s3 copy -region $bucket_region -bucket $bucket -path $key-copy -source $key]
+	list [s3 get -region $bucket_region -bucket $bucket $key-copy] [json exists $res ETag] [json exists $res LastModified]
 } -cleanup {
 	s3 delete -region $bucket_region -bucket $bucket -path $key
 	s3 delete -region $bucket_region -bucket $bucket -path $key-copy
-	unset key
-} -result s3_copy-1.1-data
+	unset -nocomplain key res
+} -result {s3_copy-1.1-data 1 1}
 #>>>
 
 #set aws::debug 1

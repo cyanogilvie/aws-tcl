@@ -1641,6 +1641,11 @@ namespace eval aws {
 						error "No source location for response fragment"
 					}
 				}
+				return [switch -exact -- [json get $shape type] {
+					boolean			{json boolean $val}
+					integer - long	{json number $val}
+					default			{json string $val}
+				}]
 			}
 		}
 
@@ -1737,7 +1742,6 @@ namespace eval aws {
 					switch -exact -- $location {
 						{} {
 							if {![info exists cxnode]} {
-								#error "location dom but no cxnode, member ($member): [json pretty $info]"
 								set cxnode	[$cx xmlroot]
 							}
 							if {[json get -default false $info xmlAttribute]} {

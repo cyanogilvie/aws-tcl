@@ -424,7 +424,10 @@ namespace eval aws {
 				lappend out_headers	x-amz-date	[amz-datetime $date]
 			}
 
-			if {$content_type ne ""} {
+			if {
+				"content-type" ni [lmap {k v} $out_headers {string tolower $k}] &&
+				$content_type ne ""
+			} {
 				lappend out_headers content-type $content_type
 			}
 
@@ -1745,7 +1748,7 @@ namespace eval aws {
 								set cxnode	[$cx xmlroot]
 							}
 							if {[json get -default false $info xmlAttribute]} {
-								lappend mlist	[list $member]	[list -val [domNode $cxnode getAttribute $locationName]
+								lappend mlist	[list $member]	[list -val [domNode $cxnode getAttribute $locationName]]
 							} else {
 								if {![json get -default false $def shapes [json get $info shape] flattened]} {
 									set node		[domNode $cxnode selectNodes "$locationName\[1\]"]

@@ -868,25 +868,27 @@ namespace eval aws {
 
 				# Environment variables >>>
 				# User creds: ~/.aws/credentials <<<
-				set credfile	[file join $::env(HOME) .aws/credentials]
-				if {[file readable $credfile]} {
-					package require inifile
-					set ini	[::ini::open $credfile r]
-					if {[info exists ::env(AWS_PROFILE)]} {
-						set section	$::env(AWS_PROFILE)
-					} else {
-						set section	default
-					}
-					try {
-						dict set creds access_key	[::ini::value $ini $section aws_access_key_id]
-						dict set creds secret		[::ini::value $ini $section aws_secret_access_key]
-						dict set creds token		""
-						dict set creds source		user
-						_debug {log debug "Found credentials: user"}
-					} on ok {} {
-						return $creds
-					} finally {
-						::ini::close $ini
+				if {[info exists env(HOME)]} {
+					set credfile	[file join $env(HOME) .aws/credentials]
+					if {[file readable $credfile]} {
+						package require inifile
+						set ini	[::ini::open $credfile r]
+						if {[info exists env(AWS_PROFILE)]} {
+							set section	$env(AWS_PROFILE)
+						} else {
+							set section	default
+						}
+						try {
+							dict set creds access_key	[::ini::value $ini $section aws_access_key_id]
+							dict set creds secret		[::ini::value $ini $section aws_secret_access_key]
+							dict set creds token		""
+							dict set creds source		user
+							_debug {log debug "Found credentials: user"}
+						} on ok {} {
+							return $creds
+						} finally {
+							::ini::close $ini
+						}
 					}
 				}
 

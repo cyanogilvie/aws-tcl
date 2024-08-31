@@ -856,14 +856,19 @@ namespace eval aws {
 					$env(AWS_ACCESS_KEY_ID) ne "" &&
 					[info exists env(AWS_SECRET_ACCESS_KEY)]
 				} {
-					dict set creds access_key		$env(AWS_ACCESS_KEY_ID)
-					dict set creds secret			$env(AWS_SECRET_ACCESS_KEY)
+					# Don't cache the env var creds to $creds - they're cheap enough
+					# to reconstruct each time from the env vars, and there is no
+					# mechanism for expressing credential expiry, so we have to fetch
+					# each time (something may be periodically updating the env with
+					# fresh creds).
+					dict set tmp access_key		$env(AWS_ACCESS_KEY_ID)
+					dict set tmp secret			$env(AWS_SECRET_ACCESS_KEY)
 					if {[info exists env(AWS_SESSION_TOKEN)]} {
-						dict set creds token		$env(AWS_SESSION_TOKEN)
+						dict set tmp token		$env(AWS_SESSION_TOKEN)
 					}
-					dict set creds source			env
+					dict set tmp source			env
 					_debug {log debug "Found credentials: env"}
-					return $creds
+					return $tmp
 				}
 
 				# Environment variables >>>

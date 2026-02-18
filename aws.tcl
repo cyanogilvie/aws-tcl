@@ -936,7 +936,7 @@ namespace eval aws {
 
 			if {
 				![info exists cached_role_creds] ||
-				[json get $cached_role_creds expires_sec] - [clock seconds] < 60
+				[clock seconds] > [json get $cached_role_creds expires_sec] - 60
 			} {
 				#set cached_role_creds	[_metadata meta-data/identity-credentials/ec2/security-credentials/ec2-instance]
 				if {[info exists env(AWS_CONTAINER_CREDENTIALS_RELATIVE_URI)]} {
@@ -1416,7 +1416,7 @@ namespace eval aws {
 							set doc	[$root setAttribute xmlns $xmlns]
 						}
 					} on ok {} {
-						set body	[$root asXML]
+						set body	[encoding convertto utf-8 [$root asXML]]
 					} finally {
 						$doc delete
 					}
@@ -1825,8 +1825,8 @@ namespace eval aws {
 				#>>>
 			}
 			map { #<<<
-				set keyshape	[json extract $shape key shape]
-				set valshape	[json extract $shape value shape]
+				set keyshape	[json extract $def shapes [json get $shape key shape]]
+				set valshape	[json extract $def shapes [json get $shape value shape]]
 
 				set res	{{}}
 				if {[info exists headers]} {

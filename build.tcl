@@ -14,7 +14,7 @@ package require rl_json
 package require parse_args
 package require chantricks
 
-namespace import rl_json::*
+namespace import rl_json::json
 namespace import parse_args::*
 namespace import chantricks::*
 

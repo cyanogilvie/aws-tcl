@@ -1,7 +1,7 @@
 DESTDIR=
 PREFIX=/usr/local
 PACKAGE_NAME=aws
-VER=2.0a18
+VER=2.0a19
 MODE=-ziplet
 TCLSH=tclsh
 
@@ -42,7 +42,9 @@ container_test: tm
 
 install: tm
 	mkdir -p $(DESTDIR)$(PREFIX)/lib/tcl8/site-tcl
+	mkdir -p $(DESTDIR)$(PREFIX)/lib/tcl9/site-tcl
 	cp -a tm/* $(DESTDIR)$(PREFIX)/lib/tcl8/site-tcl/
+	cp -a tm/* $(DESTDIR)$(PREFIX)/lib/tcl9/site-tcl/
 
 clean:
 	-rm -r tm

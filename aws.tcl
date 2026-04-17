@@ -1304,15 +1304,41 @@ namespace eval aws {
 		#   ""                              scalar
 		#   {list <memberName> <flat> <subspec>}
 		#   {struct {memberLoc subspec ...}}
+		#   {map <flat> <key_name> <key_subspec> <val_name> <val_subspec>}
 		#
 		# Values are always native Tcl: scalars are strings, list shapes are Tcl
-		# lists, structure shapes are Tcl dicts.
+		# lists, structure and map shapes are Tcl dicts.
 		upvar 1 $queryvar query
 		if {$spec eq ""} {
 			lappend query $prefix $value
 			return
 		}
+		if {$spec eq "bool"} {
+			# AWS query/ec2 wire format: true / false (not 1 / 0).
+			lappend query $prefix [expr {$value ? "true" : "false"}]
+			return
+		}
+		if {$spec eq "blob"} {
+			# Blobs in body contexts are base64 encoded.
+			lappend query $prefix [binary encode base64 $value]
+			return
+		}
 		switch -exact -- [lindex $spec 0] {
+			timestamp {
+				# Accept ISO 8601 strings or integer seconds. Emit in the
+				# format the shape declared.
+				lassign $spec - fmt
+				set epoch	[if {[string is integer -strict $value]} {
+					set value
+				} else {
+					clock scan $value
+				}]
+				lappend query $prefix [switch -exact -- $fmt {
+					unixTimestamp	{set epoch}
+					rfc822			{clock format $epoch -format {%a, %d %b %Y %H:%M:%S GMT} -timezone :UTC}
+					default			{clock format $epoch -format {%Y-%m-%dT%H:%M:%SZ} -timezone :UTC}
+				}]
+			}
 			list {
 				lassign $spec - member_name flat subspec
 				set base	[expr {$flat ? $prefix : "$prefix.$member_name"}]
@@ -1333,6 +1359,16 @@ namespace eval aws {
 					if {![dict exists $by_key $k]} continue
 					lassign [dict get $by_key $k] loc sub
 					_flatten_query_param query "$prefix.$loc" $v $sub
+				}
+			}
+			map {
+				lassign $spec - flat key_name key_spec val_name val_spec
+				set base	[expr {$flat ? $prefix : "$prefix.entry"}]
+				set i		0
+				dict for {k v} $value {
+					incr i
+					_flatten_query_param query "$base.$i.$key_name" $k $key_spec
+					_flatten_query_param query "$base.$i.$val_name" $v $val_spec
 				}
 			}
 			default {
@@ -3056,15 +3092,35 @@ namespace eval aws {
 		}
 
 		#>>>
-		proc compile_query_spec {shapes shape protocol} { #<<<
+		proc compile_query_spec {shapes shape protocol {member_flattened 0} {seen {}}} { #<<<
 			# Build a minimal spec describing how to flatten a shape into query
 			# params (for the query and ec2 protocols). Returns:
 			#   ""                         scalar value, emitted directly
 			#   {list <memberName> <flat> <subspec>}
 			#   {struct {data_key serialized subspec data_key serialized subspec ...}}
+			#   {map <flat> <key_name> <key_subspec> <val_name> <val_subspec>}
 			# where <flat> is 1 if list items carry no .member. infix, and
 			# data_key is what the caller uses in the Tcl dict / JSON object
 			# (the member's Python name) while serialized is the wire name.
+			# For maps, <key_name>/<val_name> are the serialized names of the
+			# pair (default "key"/"value"; overridden by key.locationName /
+			# value.locationName).
+			#
+			# member_flattened is the `flattened` flag from the parent
+			# structure's member reference (e.g. for "FlattenedListArg":
+			# {"shape":"StringList","flattened":true}, the flag lives on the
+			# member, not on StringList). Shape-level `flattened` is also
+			# honoured.
+			#
+			# seen tracks shape names currently being compiled. Recursive shapes
+			# (e.g. StructArg -> RecursiveArg:StructArg) are allowed to a fixed
+			# depth, after which we truncate to "" (scalar passthrough); the
+			# value at runtime is then emitted opaquely. A depth of 5 covers
+			# all real AWS services we've seen; arbitrary recursion would need
+			# a proper ref/refs-table scheme.
+			set max_recursion	5
+			if {[llength [lsearch -all $seen $shape]] >= $max_recursion} {return ""}
+			lappend seen $shape
 			set def		[json extract $shapes $shape]
 			set type	[resolve_shape_type $shapes $shape]
 			switch -exact -- $type {
@@ -3072,8 +3128,13 @@ namespace eval aws {
 					set member_def	[json extract $def member]
 					set member_shape	[json get $member_def shape]
 					# ec2 lists are always flattened; query lists are flattened
-					# only when the list shape has "flattened":true.
-					set flat	[expr {$protocol eq "ec2" || [json get -default false $def flattened]}]
+					# when either the shape or the member reference has the
+					# flattened flag.
+					set flat	[expr {
+						$protocol eq "ec2" ||
+						$member_flattened ||
+						[json get -default false $def flattened]
+					}]
 					# Element locationName for the .member.N variant of query;
 					# ec2 re-uses the parent prefix so this is unused there.
 					set member_name	[if {[json exists $member_def locationName]} {
@@ -3082,7 +3143,7 @@ namespace eval aws {
 						# botocore default for query: "member"
 						return -level 0 member
 					}]
-					list list $member_name $flat [compile_query_spec $shapes $member_shape $protocol]
+					list list $member_name $flat [compile_query_spec $shapes $member_shape $protocol 0 $seen]
 				}
 				structure {
 					set members	{}
@@ -3099,9 +3160,35 @@ namespace eval aws {
 								set loc	[string toupper $loc 0 0]
 							}
 						}
-						lappend members $cname $loc [compile_query_spec $shapes [json get $mdef shape] $protocol]
+						set child_flat	[json get -default false $mdef flattened]
+						lappend members $cname $loc [compile_query_spec $shapes [json get $mdef shape] $protocol $child_flat $seen]
 					}
 					list struct $members
+				}
+				map {
+					set key_def		[json extract $def key]
+					set val_def		[json extract $def value]
+					set key_name	[json get -default key $key_def locationName]
+					set val_name	[json get -default value $val_def locationName]
+					set flat		[expr {
+						$member_flattened ||
+						[json get -default false $def flattened]
+					}]
+					set key_spec	[compile_query_spec $shapes [json get $key_def shape] $protocol 0 $seen]
+					set val_spec	[compile_query_spec $shapes [json get $val_def shape] $protocol 0 $seen]
+					list map $flat $key_name $key_spec $val_name $val_spec
+				}
+				boolean {
+					return bool
+				}
+				blob {
+					return blob
+				}
+				timestamp {
+					# Query/ec2 default is iso8601. unixTimestamp / rfc822 can
+					# be selected via the shape's timestampFormat attribute.
+					set fmt	[json get -default iso8601 $def timestampFormat]
+					list timestamp $fmt
 				}
 				default {
 					return ""
@@ -3223,7 +3310,8 @@ namespace eval aws {
 							} else {
 								set serialized	$locationName
 							}
-							set spec	[compile_query_spec $shapes [json get $member_def shape] $protocol]
+							set member_flat	[json get -default false $member_def flattened]
+							set spec	[compile_query_spec $shapes [json get $member_def shape] $protocol $member_flat]
 							lappend query_map $serialized $name $spec
 						} else {
 							error "Unhandled protocol: ($protocol)"

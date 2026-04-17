@@ -1,0 +1,234 @@
+# Protocol-vector driven tests.
+#
+# Drives the botocore protocol test suite at botocore/tests/unit/protocols/{input,output}/*.json
+# against our compilation pipeline. Each top-level entry in those files is a
+# synthetic service description (shapes + operation) with a list of cases;
+# each case has input params and an expected serialized HTTP request (for
+# input tests) or canned HTTP response and expected parsed result (output
+# tests).
+#
+# Rather than driving the full build / load / stub-rl_http / sign / send loop,
+# we extract the compilation artefacts (query_map, template_obj) from
+# compile_input directly and reassemble the request the same way the runtime
+# does, skipping the signing and network layers. That is enough to validate
+# serialization is correct byte-for-byte against the reference vectors.
+
+if {[lsearch [namespace children] ::tcltest] == -1} {
+    package require tcltest
+    namespace import ::tcltest::*
+}
+
+tcltest::loadTestedCommands
+package require aws 2
+package require rl_json
+package require rltest
+namespace import rl_json::*
+
+# ------------------------------------------------------------------
+# Helpers
+
+# Given a test-file top-level entry (shapes + metadata + cases), build a
+# dummy "service_def" dict that compile_input understands.
+proc synth_service {entry} { #<<<
+	set metadata	[json extract $entry metadata]
+	# compile_input uses {service_name,service_name_orig,protocol}.
+	set sd	{{}}
+	json set sd metadata $metadata
+	json set sd metadata service_name		[json string testsvc]
+	json set sd metadata service_name_orig	[json string testsvc]
+	json set sd shapes		[json extract $entry shapes]
+	return $sd
+}
+#>>>
+
+# Run compile_input for one case's given op and return {params_spec query_map template_obj body}.
+proc compile_case {entry case} { #<<<
+	set sd			[synth_service $entry]
+	set protocol	[json get $sd metadata protocol]
+	set given		[json extract $case given]
+	set shape_name	[if {[json exists $given input shape]} {json get $given input shape}]
+
+	# match the defaults compile_input starts with
+	set params {}; set cxparams {}; set copy_to_cx {}; set cx_suppress {}
+	set uri_map {}; set query_map {}; set header_map {}; set payload {}
+	set builtins {}
+
+	if {$shape_name eq ""} {
+		return [dict create \
+			params_spec	$params \
+			query_map	$query_map \
+			template_obj	{} \
+			body		{} \
+			protocol	$protocol]
+	}
+	set t [aws::build::compile_input \
+		-protocol			$protocol \
+		-params				params \
+		-cxparams			cxparams \
+		-copy_to_cx			copy_to_cx \
+		-cx_suppress		cx_suppress \
+		-uri_map			uri_map \
+		-query_map			query_map \
+		-header_map			header_map \
+		-payload			payload \
+		-shapes				[json extract $sd shapes] \
+		-shape				$shape_name \
+		-endpoint_params	{{}} \
+		-builtins			builtins]
+
+	return [dict create \
+		params_spec	$params \
+		query_map	$query_map \
+		template_obj	$t \
+		body		$payload \
+		protocol	$protocol]
+}
+#>>>
+
+# Simulate what the operation proc would do at runtime for query/ec2: assemble
+# the URL-encoded body. Returns the body string. param_dict is a Tcl dict
+# keyed by the model's member (camel) name, e.g. {ListArg {a b c}}.
+proc assemble_query_body {compiled op apiVersion param_dict} { #<<<
+	# Map each test param to its arg_name via aws::from_camel, then look up
+	# the query_map entry by arg. Queue pairs into $q and flatten each.
+	set by_arg	{}
+	foreach {name arg spec} [dict get $compiled query_map] {
+		dict set by_arg $arg [list $name $spec]
+	}
+	set q {}
+	lappend q Action $op
+	lappend q Version $apiVersion
+	dict for {camel val} $param_dict {
+		set arg	[aws::from_camel $camel]
+		if {![dict exists $by_arg $arg]} continue
+		lassign [dict get $by_arg $arg] name spec
+		aws::_flatten_query_param q $name $val $spec
+	}
+	set body [join [lmap {k v} $q {format %s=%s $k $v}] &]
+	return $body
+}
+#>>>
+
+# Apply the URL-encoding that reuri awssig does, for comparison against
+# reference bodies that are pre-encoded.
+proc query_encode s { reuri encode awssig $s }
+
+# Extract Action name and apiVersion for a case.
+proc case_op_version {entry case} { #<<<
+	set op_name	[json get $case given name]
+	set apiVersion	[json get $entry metadata apiVersion]
+	return [list $op_name $apiVersion]
+}
+#>>>
+
+# Compare two URL-encoded bodies by unpacking them into dicts (order-
+# independent) then comparing. Key-value pairs are URL-decoded for comparison.
+# Returns "" on match, otherwise a diff description.
+proc diff_query_body {actual expected} { #<<<
+	set a [query_body_to_dict $actual]
+	set e [query_body_to_dict $expected]
+	if {$a eq $e} {return ""}
+	# Produce a diff
+	set only_a {}; set only_e {}; set mismatch {}
+	foreach k [lsort -unique [concat [dict keys $a] [dict keys $e]]] {
+		if {![dict exists $e $k]} {lappend only_a $k=[dict get $a $k]; continue}
+		if {![dict exists $a $k]} {lappend only_e $k=[dict get $e $k]; continue}
+		if {[dict get $a $k] ne [dict get $e $k]} {
+			lappend mismatch "$k: [dict get $a $k] vs [dict get $e $k]"
+		}
+	}
+	set parts {}
+	if {[llength $only_a]} {lappend parts "only-in-actual: [join $only_a {, }]"}
+	if {[llength $only_e]} {lappend parts "only-in-expected: [join $only_e {, }]"}
+	if {[llength $mismatch]} {lappend parts "mismatch: [join $mismatch {, }]"}
+	return [join $parts "; "]
+}
+#>>>
+proc query_body_to_dict body { #<<<
+	set d {}
+	foreach pair [split $body &] {
+		set eq [string first = $pair]
+		if {$eq < 0} {
+			dict set d [reuri decode $pair] {}
+		} else {
+			dict set d [reuri decode [string range $pair 0 $eq-1]] \
+				[reuri decode [string range $pair $eq+1 end]]
+		}
+	}
+	return $d
+}
+#>>>
+
+# ------------------------------------------------------------------
+# Test driver
+
+# Some cases test SDK-level features we don't implement (request compression,
+# idempotency-token auto-fill, empty-list sentinels, host-label URI rewriting).
+# They're excluded by id so they don't pollute the signal.
+set unsupported_cases {
+	SDKAppliedContentEncoding_awsQuery
+	SDKAppendsGzipAndIgnoresHttpProvidedEncoding_awsQuery
+	SDKAppliedContentEncoding_ec2Query
+	SDKAppendsGzipAndIgnoresHttpProvidedEncoding_ec2Query
+	QueryProtocolIdempotencyTokenAutoFill
+	QueryProtocolIdempotencyTokenAutoFillIsSet
+	Ec2ProtocolIdempotencyTokenAutoFill
+	Ec2ProtocolIdempotencyTokenAutoFillIsSet
+	EmptyQueryLists
+	AwsQueryEndpointTraitWithHostLabel
+	AwsEc2EndpointTraitWithHostLabel
+}
+
+# Run all input cases from a protocol vector file.
+proc run_input_file {path} { #<<<
+	global unsupported_cases
+	set entries	[chantricks::readfile $path]
+	set protocol	[file rootname [file tail $path]]
+	json foreach entry $entries {
+		set desc	[json get $entry description]
+		json foreach case [json extract $entry cases] {
+			set case_id	[json get $case id]
+			if {$case_id in $unsupported_cases} continue
+			# Derive a per-case test name
+			set name		protocol-input-$protocol-$case_id
+			set serialized	[json extract $case serialized]
+			set expected_body	[json get -default {} $serialized body]
+			set expected_method	[json get -default POST $serialized method]
+			set expected_uri	[json get -default / $serialized uri]
+			test $name $desc -body {
+				set compiled	[compile_case $entry $case]
+				lassign [case_op_version $entry $case] op_name apiVersion
+				switch -exact -- [json get $entry metadata protocol] {
+					query - ec2 {
+						set pdict	[if {[json exists $case params]} {json get $case params}]
+						set body	[assemble_query_body $compiled $op_name $apiVersion $pdict]
+						set diff	[diff_query_body $body $expected_body]
+						if {$diff ne ""} {error $diff}
+						return "match"
+					}
+					default {
+						return -code break "unsupported protocol"
+					}
+				}
+			} -cleanup {unset -nocomplain compiled op_name apiVersion pdict body diff} -result match
+		}
+	}
+}
+#>>>
+
+# Kick off
+set protocol_dir	[file join [file dirname [info script]] .. botocore tests unit protocols]
+if {[file isdirectory $protocol_dir]} {
+	# Start with query + ec2 only until the harness is fleshed out for the rest.
+	foreach proto {query ec2} {
+		set path	[file join $protocol_dir input $proto.json]
+		if {[file exists $path]} {
+			run_input_file $path
+		}
+	}
+}
+
+::tcltest::cleanupTests
+return
+
+# vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4

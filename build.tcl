@@ -773,6 +773,26 @@ proc build_aws_services args { #<<<
 			json set service_def metadata targetPrefix AmazonSQS
 			json set service_def metadata jsonVersion 1.0
 		}
+		# smithy-rpc-v2-cbor isn't implemented; fall back to any supported
+		# protocol the service lists as an alternative.
+		if {$protocol ni {json rest-json query rest-xml}} {
+			set fallback	{}
+			if {[json exists $service_def metadata protocols]} {
+				json foreach p [json extract $service_def metadata protocols] {
+					set p [json get $p]
+					if {$p in {json rest-json query rest-xml}} {
+						set fallback $p
+						break
+					}
+				}
+			}
+			if {$fallback eq ""} {
+				puts "Skipping $service_name: protocol $protocol not supported and no fallback in [expr {[json exists $service_def metadata protocols] ? [json extract $service_def metadata protocols] : {{}}}]"
+				continue
+			}
+			set protocol	$fallback
+			json set service_def metadata protocol $protocol
+		}
 		dict lappend by_protocol $protocol $service_def
 	}
 

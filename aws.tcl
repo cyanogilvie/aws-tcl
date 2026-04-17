@@ -2351,12 +2351,21 @@ namespace eval aws {
 
 		#>>>
 		proc getAttr {doc key} { #<<<
-			if {[json isnull $doc]} {return null}
-			if {[regexp {^(.*)\[([0-9]+)\]$} $key - base idx]} {
-				#if {![json exists $doc $base $idx]} {return null}
-				json get $doc $base $idx
+			if {$doc eq "" || ([json valid $doc] && [json isnull $doc])} {return null}
+			if {[regexp {^(\w*)\[([0-9]+)\]$} $key - base idx]} {
+				# Matches botocore: an empty base means index directly into the
+				# supplied value (e.g. key "[0]" on a StringArray parameter
+				# passed as a plain Tcl list).
+				if {$base eq ""} {
+					if {[json valid $doc] && [json type $doc] eq "array"} {
+						json get $doc $idx
+					} else {
+						lindex $doc $idx
+					}
+				} else {
+					json get $doc $base $idx
+				}
 			} else {
-				#if {![json exists $doc $key]} {return null}
 				json get $doc $key
 			}
 		}
@@ -2583,9 +2592,10 @@ namespace eval aws {
 				if {0 && [json exists $details documentation]} {
 					lappend settings -# [json get $details documentation]
 				}
-				switch -exact [json get $details type] {
-					String {}
-					Boolean {lappend settings -validate {string is boolean -strict}}
+				switch -exact -- [string tolower [json get $details type]] {
+					string {}
+					boolean {lappend settings -validate {string is boolean -strict}}
+					stringarray {}
 					default {error "Unhandled endpoint rules param type: \"[json get $details type]\""}
 				}
 				lappend argspec $name $settings
@@ -2711,8 +2721,15 @@ namespace eval aws {
 			set path	[string trimright [reuri::uri extract [json get $endpoint url] path {}] /]
 			append path	%requestUri%
 			dict with params {}		;# The unpacked key variables are accessed by the request procs through upvar
+			# Newer endpoint rules omit signingName when it matches the service's
+			# endpointPrefix; fall back to that.
+			set signingName	[if {[json exists $endpoint properties authSchemes 0 signingName]} {
+				json get $endpoint properties authSchemes 0 signingName
+			} else {
+				json get $endpoint _ service
+			}]
 			::aws::_service_req \
-				-s			[json get $endpoint properties authSchemes 0 signingName] \
+				-s			$signingName \
 				-m			%http_method% \
 				-p			$path \
 				-R			%response% \
@@ -3150,9 +3167,10 @@ namespace eval aws {
 					if {0 && [json exists $details documentation]} {
 						lappend settings -# [json get $details documentation]
 					}
-					switch -exact [json get $details type] {
-						String {}
-						Boolean {lappend settings -validate {string is boolean -strict}}
+					switch -exact -- [string tolower [json get $details type]] {
+						string {}
+						boolean {lappend settings -validate {string is boolean -strict}}
+						stringarray {}
 						default {error "Unhandled endpoint rules param type: \"[json get $details type]\""}
 					}
 					lappend params -$name $settings

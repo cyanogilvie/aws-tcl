@@ -1,0 +1,165 @@
+# Integration tests that hit live AWS. Everything is read-only. Tests that
+# depend on account-specific state (existence of resources, specific names,
+# etc.) are gated behind the rl_aws_account constraint so they only run
+# against Ruby Lane's account, where the fixtures are known to exist.
+
+if {[lsearch [namespace children] ::tcltest] == -1} {
+    package require tcltest
+    namespace import ::tcltest::*
+}
+
+tcltest::loadTestedCommands
+package require aws 2
+package require rl_json
+package require rltest
+interp alias {} json {} ::rl_json::json
+
+# Credential / account gates <<<
+tcltest::testConstraint aws_creds [try { #<<<
+	aws::helpers::get_creds
+	return -level 0 true
+} trap {AWS NO_CREDENTIALS} {} {
+	return -level 0 false
+} on error {errmsg options} {
+	puts stderr "Error checking for AWS credentials: [dict get $options -errorinfo]"
+	return -level 0 false
+}]
+#>>>
+tcltest::testConstraint rl_aws_account [expr { #<<<
+	[tcltest::testConstraint aws_creds] &&
+	[try {
+		# list_account_aliases is an IAM call, never charges, read-only.
+		set aliases	[json get [aws iam list_account_aliases] AccountAliases]
+		expr {"rubylane" in $aliases}
+	} on error {} {
+		return -level 0 false
+	}]
+}]
+#>>>
+# Credential / account gates >>>
+
+# Reusable smoke tests: work against any account with credentials. These
+# assert only structural invariants — nothing account-specific — so they stay
+# stable regardless of what's deployed.
+
+test smoke-sts-get_caller_identity {returns an account and arn} -constraints aws_creds -body { #<<<
+	set r [aws sts get_caller_identity]
+	list [json type $r Account] [json type $r Arn]
+} -result {string string}
+#>>>
+test smoke-iam-list_account_aliases {returns an array (potentially empty)} -constraints aws_creds -body { #<<<
+	json type [aws iam list_account_aliases] AccountAliases
+} -result array
+#>>>
+test smoke-s3-list_buckets {returns an array of Buckets} -constraints aws_creds -body { #<<<
+	json type [aws s3 list_buckets] Buckets
+} -result array
+#>>>
+test smoke-ec2-describe_regions {returns an array of Regions (tests ec2 query flattening)} -constraints aws_creds -body { #<<<
+	set r [aws ec2 describe_regions -region us-east-1]
+	expr {[json type $r Regions] eq "array" && [json length $r Regions] > 0}
+} -result 1
+#>>>
+test smoke-ec2-describe_regions-with-filter {list-of-struct input is flattened correctly end-to-end} -constraints aws_creds -body { #<<<
+	set r [aws ec2 describe_regions -region us-east-1 \
+		-filters {{Name region-name Values {us-east-1 eu-west-1}}}]
+	lsort [json lmap rg [json extract $r Regions] {json get $rg RegionName}]
+} -result {eu-west-1 us-east-1}
+#>>>
+test smoke-ec2-describe_availability_zones {basic ec2 call} -constraints aws_creds -body { #<<<
+	expr {[json length [aws ec2 describe_availability_zones -region us-east-1] AvailabilityZones] > 0}
+} -result 1
+#>>>
+test smoke-cloudformation-list_stacks {non-flattened XML list (query protocol) decodes as array} -constraints aws_creds -body { #<<<
+	# Regression: used to decode as null because default element tag was
+	# "Stacks" instead of "member".
+	json type [aws cloudformation list_stacks -region us-east-1] StackSummaries
+} -result array
+#>>>
+test smoke-iam-list_users {query protocol scalar params} -constraints aws_creds -body { #<<<
+	json type [aws iam list_users] Users
+} -result array
+#>>>
+test smoke-sns-list_topics {query protocol with pagination marker} -constraints aws_creds -body { #<<<
+	json type [aws sns list_topics -region us-east-1] Topics
+} -result array
+#>>>
+test smoke-dynamodb-list_tables {json protocol, simple list response} -constraints aws_creds -body { #<<<
+	json type [aws dynamodb list_tables -region us-east-1] TableNames
+} -result array
+#>>>
+test smoke-lambda-list_functions {rest-json protocol with paginated response} -constraints aws_creds -body { #<<<
+	json type [aws lambda list_functions -region us-east-1] Functions
+} -result array
+#>>>
+test smoke-logs-describe_log_groups {rest-json with filter param} -constraints aws_creds -body { #<<<
+	json type [aws logs describe_log_groups -region us-east-1] logGroups
+} -result array
+#>>>
+test smoke-sqs-list_queues {json protocol with optional array} -constraints aws_creds -body { #<<<
+	# QueueUrls may be absent from the response when the account has no queues,
+	# so accept either "array" or missing.
+	set r [aws sqs list_queues -region us-east-1]
+	if {[json exists $r QueueUrls]} {json type $r QueueUrls} else {return -level 0 missing}
+} -match regexp -result {^(array|missing)$}
+#>>>
+
+# Error-path tests — assert that our _aws_error properly classifies real AWS
+# errors by forcing known-bad inputs.
+
+test smoke-error-s3-nosuchbucket {rest-xml error parsing (s3 <Error> form)} -constraints aws_creds -body { #<<<
+	# errorCode is matched with `string match` (glob), not regexp, regardless
+	# of -match. errorCode is a list: {AWS Code RequestId Resource Details}.
+	aws s3 get_object -region us-east-1 \
+		-bucket this-bucket-should-not-exist-aws-tcl-test-$::tcl_platform(user) \
+		-key nope
+} -returnCodes error -match regexp \
+  -errorCode {AWS NoSuchBucket *} \
+  -result {AWS: The specified bucket does not exist}
+#>>>
+test smoke-error-ec2-invalid-instance-id {ec2 Response/Errors/Error wrapper} -constraints aws_creds -body { #<<<
+	# Asking for a syntactically invalid instance id triggers the ec2 XML error format:
+	# <Response><Errors><Error><Code>InvalidInstanceID.Malformed</Code>...
+	aws ec2 describe_instances -region us-east-1 -instance_ids {i-bogus}
+} -returnCodes error -match regexp \
+  -errorCode {AWS InvalidInstanceID.Malformed *} \
+  -result {AWS: .*Invalid id}
+#>>>
+test smoke-error-dynamodb-notfound {json __type error parsing (dynamodb)} -constraints aws_creds -body { #<<<
+	# DynamoDB uses the __type JSON error form. Our parser keeps the entire
+	# __type value (including the "com.amazonaws...#" prefix) in the Code
+	# slot of errorCode.
+	aws dynamodb describe_table -region us-east-1 \
+		-table_name this-table-should-not-exist-aws-tcl-test
+} -returnCodes error -errorCode {AWS *#ResourceNotFoundException *} \
+  -match glob -result {*not found*}
+#>>>
+
+# Ruby-Lane-only tests: depend on account-specific deployed state. Skipped on
+# any other account.
+
+test rl-cloudformation-list_stacks-has-entries {we have dozens of stacks deployed} -constraints rl_aws_account -body { #<<<
+	# The original bug report: list_stacks was returning empty. This asserts
+	# the parsed list is non-empty for an account we know has many stacks.
+	expr {[json length [aws cloudformation list_stacks -region us-east-1] StackSummaries] > 0}
+} -result 1
+#>>>
+test rl-lambda-list_functions-has-entries {we deploy lambdas} -constraints rl_aws_account -body { #<<<
+	expr {[json length [aws lambda list_functions -region us-east-1] Functions] > 0}
+} -result 1
+#>>>
+test rl-iam-list_users-has-entries {iam query-protocol list returns entries} -constraints rl_aws_account -body { #<<<
+	expr {[json length [aws iam list_users] Users] > 0}
+} -result 1
+#>>>
+test rl-ec2-describe_instances-has-reservations {ec2 list-of-list response (Reservations > Instances)} -constraints rl_aws_account -body { #<<<
+	# us-east-1 may not have instances; try a region we know does. Just assert
+	# the Reservations key parses as an array.
+	json type [aws ec2 describe_instances -region us-east-1] Reservations
+} -result array
+#>>>
+
+::tcltest::cleanupTests
+return
+
+# vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4

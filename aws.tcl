@@ -2262,18 +2262,19 @@ namespace eval aws {
 		#>>>
 		proc aws.parseArn arn { #<<<
 			# https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazons3.html
-			if {![regexp {^arn:([^:]*):([^:]*):([^:]*):([^:]*):(?:([^:/]*)[:/])?(.*)$} $arn - partition service region accountid resource_type tail]} {
+			# Matches botocore: split on the first 5 colons into
+			# arn/partition/service/region/account/resource, then split resource
+			# on any : or / (preserving empty components).
+			set parts	[split $arn :]
+			if {[llength $parts] < 6 || [lindex $parts 0] ne "arn"} {
 				error "Cannot parse arn: \"$arn\""
 			}
-			#puts stderr "aws.parseArn:\n\t[join [lmap v {partition service region accountid resource_type tail} {
-			#	format "%20s: (%s)" $v [set $v]
-			#}] \n\t]"
-			if {$resource_type ne ""} {
-				set resource_ids	[list $resource_type]
-			} else {
-				set resource_ids	{}
+			lassign $parts - partition service region accountid
+			set resource	[join [lrange $parts 5 end] :]
+			if {$partition eq "" || $service eq "" || $resource eq ""} {
+				error "Invalid ARN: missing required component"
 			}
-			lappend resource_ids	{*}[split $tail :/]
+			set resource_ids	[split [string map {: /} $resource] /]
 			set resourceId		{[]}
 			foreach resource_id $resource_ids {
 				json set resourceId end+1 [json string $resource_id]
@@ -2305,24 +2306,37 @@ namespace eval aws {
 					log error "Could not load aws::endpoints: $errmsg"
 				}
 				#puts stderr "partitions: [json length $endpoints partitions]"
+				set default_partition	{}
 				json foreach partition [json extract $endpoints partitions] {
 					#puts stderr "Looking in partition ([json get $partition partition]) for ($region)"
+					set pid	[json get $partition partition]
 					set re	[json get $partition regionRegex]
 					#puts stderr "regionRegex: ($re): [regexp $re $region]"
-					if {[regexp $re $region] || [json exists $partition services $service endpoints $region]} {
+					if {
+						[regexp $re $region] ||
+						[json exists $partition services $service endpoints $region] ||
+						[json exists $partitions $pid regions $region]
+					} {
 						#json set partition name [json get $partition partition]
-						json foreach {k v} [json extract $partitions [json get $partition partition] outputs] {
+						json foreach {k v} [json extract $partitions $pid outputs] {
 							json set partition $k $v
 						}
 						return $partition
-						#if {[json exists $partition services $service endpoints $region]} {
-						#	return $partition
-						#}
+					}
+					if {$default_partition eq "" && $pid eq "aws"} {
+						set default_partition $partition
 					}
 				}
-				#puts stderr "Could not find partition for ($region), returning null"
+				# Matches botocore behaviour: fall back to the aws partition when no
+				# regionRegex / regions entry matches. Endpoint rules that validate
+				# the region separately (e.g. isValidHostLabel) rely on this.
+				if {$default_partition ne ""} {
+					json foreach {k v} [json extract $partitions aws outputs] {
+						json set default_partition $k $v
+					}
+					return $default_partition
+				}
 				return null
-				#error "No partition for region \"$region\""
 			} on error {errmsg options} {
 				log error "aws.partition lookup error: [dict get $options -errorinfo]"
 				return -options $options $errmsg
@@ -2369,6 +2383,14 @@ namespace eval aws {
 				dict set parts host		[reuri::uri get $uri host]
 				dict set parts hosttype	[reuri::uri get $uri hosttype]
 				dict set parts path		[reuri::uri extract $uri path {}]
+				# Matches botocore parse_url: reject non-http(s) schemes and URLs
+				# with queries (rule engine treats null result as parse failure).
+				if {[dict get $parts scheme] ni {http https}} {
+					error "parseURL: unsupported scheme"
+				}
+				if {[reuri::uri exists $uri query] && [reuri::uri get $uri query] ne ""} {
+					error "parseURL: query not supported"
+				}
 				if {[reuri::uri exists $uri port]} {
 					dict append parts host :[reuri::uri get $uri port]
 				}
@@ -2399,16 +2421,26 @@ namespace eval aws {
 		}
 
 		#>>>
-		proc substring {str idx len flag} { #<<<
-			# TODO: figure out what boolean $flag means
-			#puts stderr "::aws::_fn::substring str: ($str), idx: ($idx), len: ($len), flag: ($flag)"
-			string range $str $idx [expr {$idx+$len-1}]
+		proc substring {str start stop reverse} { #<<<
+			# Per Smithy rules-engine: start inclusive, stop exclusive. reverse=true
+			# indexes from the end. Returns null on out-of-range / non-ASCII input
+			# (matches botocore; rule engine treats null as parse failure).
+			set len [string length $str]
+			if {$start >= $stop || $len < $stop || ![string is ascii $str]} {
+				return null
+			}
+			if {$reverse} {
+				string range $str [expr {$len-$stop}] [expr {$len-$start-1}]
+			} else {
+				string range $str $start [expr {$stop-1}]
+			}
 		}
 
 		#>>>
 		proc uriEncode str { #<<<
-			package require reuri
-			reuri::uri encode path $str
+			# Per the Smithy rules engine spec: percent-encode everything except
+			# [A-Za-z0-9._~-]. reuri's awssig profile follows the same rule.
+			reuri encode awssig $str
 		}
 
 		#>>>
@@ -2455,7 +2487,12 @@ namespace eval aws {
 		proc _a {var args} { #<<<
 			upvar 1 p p
 			try $args on ok res {
-				#if {[json valid $res] && [json isnull $res]} {return 0}
+				# Match botocore's evaluate_conditions: result of None (null) or
+				# False fails the condition. Empty string is treated as falsy too
+				# since getAttr returns "" for missing dict keys / out-of-range
+				# indices (the rule engine spec says such lookups return null).
+				if {$res eq "" || $res eq "false" || $res eq 0} {return 0}
+				if {[json valid $res] && [json isnull $res]} {return 0}
 				set p($var) $res
 				return 1
 			} on error {errmsg options} {

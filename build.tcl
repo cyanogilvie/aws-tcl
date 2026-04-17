@@ -505,16 +505,16 @@ proc compile_conditions conditions { #<<<
 	} elseif {[llength $cexprs] == 1} {
 		return aws_b([lindex $cexprs 0])
 	} else {
-		if 0 {
+		# Wrap each condition in aws_b so fn calls that return JSON objects
+		# (aws.parseArn, parseURL, etc.) collapse to booleans for && joining.
 		join [lmap e $cexprs {
-			if {![dict exists $cexprmap $e]} {
-				dict set cexprmap $e %[dict size $cexprmap]%
-			} 
-			dict get $cexprmap $e
+			if {[regexp {^(aws_b\(|!\[|!aws_b\(|!\()} $e]} {
+				# Already a boolean expression
+				set e
+			} else {
+				return -level 0 "aws_b($e)"
+			}
 		}] &&
-		} else {
-			join $cexprs &&
-		}
 	}
 }
 
@@ -657,7 +657,7 @@ proc compile_endpoint_rules {definitions service_def} { #<<<
 		if {\[info exists p(Region)\]} {
 			json set r _ region \[json string \$p(Region)\]
 		}
-		if {\[info exists p(_partition_result)\] && \[json exists \$p(_partition_result) services [list $service] \$p(Region) credentialScope\]} {
+		if {\[info exists p(_partition_result)\] && \[info exists p(Region)\] && \[json exists \$p(_partition_result) services [list $service] \$p(Region) credentialScope\]} {
 			json set r _ credentialScope	\[json extract \$p(_partition_result) services [list $service] \$p(Region) credentialScope\]
 		} elseif {\[json exists \$r properties authSchemes 0 signingRegion\]} {
 			json set r _ credentialScope region \[json extract \$r properties authSchemes 0 signingRegion\]

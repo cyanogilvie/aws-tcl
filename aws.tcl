@@ -1302,10 +1302,12 @@ namespace eval aws {
 	# compile_input emits an `if {[info exists X]} {set _tx_X [_tx_FOO $X]}` line
 	# for each member that needs pre-template conversion; the template then
 	# references `~{S,J,N}:_tx_X` rather than the raw arg.
-	proc _apply_tx {kind var} { #<<<
+	proc _apply_tx {kind var args} { #<<<
 		# Called at op-proc start: if $var is set, computes the transformed
 		# value into _tx_$var in the caller's scope. Template substitutions
 		# reference ~{S,J,N}:_tx_$var so missing args still resolve to null.
+		# The rewrite kind takes an extra spec argument that drives a walk
+		# over the user-supplied JSON fragment.
 		upvar 1 $var src _tx_$var dst
 		if {![info exists src]} return
 		set dst [switch -exact -- $kind {
@@ -1314,8 +1316,78 @@ namespace eval aws {
 			ts_epoch	{_tx_ts_epoch $src}
 			ts_iso		{_tx_ts_iso $src}
 			ts_rfc822	{_tx_ts_rfc822 $src}
+			rewrite		{_tx_rewrite $src [lindex $args 0]}
 			default		{error "Unhandled transform kind \"$kind\""}
 		}]
+	}
+	#>>>
+	proc _tx_rewrite {val spec} { #<<<
+		# Walk a user-supplied JSON fragment per the rewriter spec, producing
+		# a transformed JSON fragment suitable for ~J:. Spec forms:
+		#   identity
+		#   blob                          base64-encode a JSON string
+		#   float                         wrap NaN/Infinity as JSON strings
+		#   {ts iso8601|unixTimestamp|rfc822}
+		#   {struct {ckey loc subspec ...}}   object: rename keys, recurse
+		#   {list subspec}                array: recurse into each element
+		#   {map value_subspec}           object used as a map: recurse values
+		# All accepts and all returns are valid JSON fragments.
+		if {$spec eq "" || $spec eq "identity"} {return $val}
+		switch -exact -- [lindex $spec 0] {
+			blob {
+				# val is a JSON string; decode, base64-encode, re-quote.
+				json string [binary encode base64 [json get $val]]
+			}
+			float {
+				set v [json get $val]
+				if {$v in {NaN Infinity -Infinity}} {json string $v} else {set val}
+			}
+			ts {
+				set fmt		[lindex $spec 1]
+				set epoch	[_tx_ts_parse [json get $val]]
+				switch $fmt {
+					unixTimestamp	{json number $epoch}
+					rfc822			{json string [clock format $epoch -format {%a, %d %b %Y %H:%M:%S GMT} -timezone :UTC]}
+					default			{json string [clock format $epoch -format {%Y-%m-%dT%H:%M:%SZ} -timezone :UTC]}
+				}
+			}
+			struct {
+				lassign $spec - members
+				# Build a key→{loc subspec} lookup for fast rename/recurse.
+				set by_key {}
+				foreach {ck lk sub} $members {
+					dict set by_key $ck [list $lk $sub]
+				}
+				set out {{}}
+				json foreach {k v} $val {
+					if {![dict exists $by_key $k]} continue
+					lassign [dict get $by_key $k] loc sub
+					json set out $loc [_tx_rewrite [json extract $val $k] $sub]
+				}
+				set out
+			}
+			list {
+				lassign $spec - sub
+				set out {[]}
+				set i -1
+				json foreach e $val {
+					incr i
+					json set out end+1 [_tx_rewrite [json extract $val $i] $sub]
+				}
+				set out
+			}
+			map {
+				lassign $spec - value_sub
+				set out {{}}
+				json foreach {k v} $val {
+					json set out $k [_tx_rewrite [json extract $val $k] $value_sub]
+				}
+				set out
+			}
+			default {
+				error "Unhandled rewrite spec: [list $spec]"
+			}
+		}
 	}
 	#>>>
 	proc _tx_blob val { #<<<
@@ -3156,6 +3228,70 @@ namespace eval aws {
 		}
 
 		#>>>
+		proc build_rewriter_spec {shapes shape protocol {seen {}}} { #<<<
+			# Walk a shape tree and return a rewriter spec for _tx_rewrite, or
+			# "" when the user's value can pass through unchanged. Used for
+			# members whose value is supplied as a JSON fragment (structures,
+			# lists, maps, unions, documents) — the rewriter walks into the
+			# fragment at runtime to apply per-position transforms such as
+			# blob base64 encoding, jsonName renames, and timestamp
+			# conversions.
+			if {[llength [lsearch -all $seen $shape]] >= 5} {return ""}
+			lappend seen $shape
+			set def		[json extract $shapes $shape]
+			# Document types accept arbitrary JSON and are always pass-through.
+			if {[json get -default false $def document]} {return ""}
+			set type	[resolve_shape_type $shapes $shape]
+			switch -exact -- $type {
+				blob {
+					return blob
+				}
+				timestamp {
+					set fmt	[json get -default "" $def timestampFormat]
+					if {$fmt eq ""} {
+						set fmt	[expr {$protocol in {json rest-json} ? "unixTimestamp" : "iso8601"}]
+					}
+					list ts $fmt
+				}
+				float - double {
+					return float
+				}
+				structure - union {
+					set has_changes	0
+					set members		{}
+					json foreach {ck mdef} [json extract $def members] {
+						if {[json exists $mdef location]} continue ;# header/uri/querystring — not body
+						set loc	[if {[json exists $mdef jsonName]} {
+							json get $mdef jsonName
+						} elseif {[json exists $mdef locationName]} {
+							json get $mdef locationName
+						} else {
+							set ck
+						}]
+						set sub	[build_rewriter_spec $shapes [json get $mdef shape] $protocol $seen]
+						if {$sub ne "" || $loc ne $ck} {set has_changes 1}
+						lappend members $ck $loc $sub
+					}
+					if {!$has_changes} {return ""}
+					list struct $members
+				}
+				list {
+					set sub	[build_rewriter_spec $shapes [json get $def member shape] $protocol $seen]
+					if {$sub eq ""} {return ""}
+					list list $sub
+				}
+				map {
+					set sub	[build_rewriter_spec $shapes [json get $def value shape] $protocol $seen]
+					if {$sub eq ""} {return ""}
+					list map $sub
+				}
+				default {
+					return ""
+				}
+			}
+		}
+
+		#>>>
 		proc compile_query_spec {shapes shape protocol {member_flattened 0} {seen {}}} { #<<<
 			# Build a minimal spec describing how to flatten a shape into query
 			# params (for the query and ec2 protocols). Returns:
@@ -3287,9 +3423,18 @@ namespace eval aws {
 
 			#puts stderr "compile_input, type: [json pretty $input]"
 			switch -- $type {
-				structure {
+				structure - union {
 					# Only unfold the top level structure into params, just take sub-structures as json
 					if {[info exists argname]} {
+						# Nested structure/union: register a rewriter if any
+						# member needs transformation (blob encoding, jsonName
+						# rename, nested timestamp, etc.). Otherwise pass the
+						# user's JSON fragment through untouched.
+						set rspec	[build_rewriter_spec $shapes $shape $protocol]
+						if {$rspec ne ""} {
+							lappend transforms [list rewrite $argname $rspec]
+							return [json string "~J:_tx_$argname"]
+						}
 						return [json string "~J:$argname"]
 					}
 
@@ -3414,11 +3559,16 @@ namespace eval aws {
 				string {
 					set template_obj	[json string "~S:$argname"]
 				}
-				map {
-					set template_obj	[json string "~J:$argname"]
-				}
-				list {
-					set template_obj	[json string "~J:$argname"]
+				map - list {
+					# User value is a JSON fragment. Register a rewriter if the
+					# elements/values need per-position transformation.
+					set rspec	[build_rewriter_spec $shapes $shape $protocol]
+					if {$rspec ne ""} {
+						lappend transforms [list rewrite $argname $rspec]
+						set template_obj	[json string "~J:_tx_$argname"]
+					} else {
+						set template_obj	[json string "~J:$argname"]
+					}
 				}
 				integer -
 				long {

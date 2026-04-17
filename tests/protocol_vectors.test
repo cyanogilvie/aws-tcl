@@ -134,22 +134,36 @@ proc assemble_query_body {compiled op apiVersion param_dict} { #<<<
 # the test vector.
 proc assemble_json_body {compiled param_json} { #<<<
 	set t	[dict get $compiled template_obj]
-	# Map each test param key (camel) to the argname compile_input used
-	# (snake_case via aws::from_camel). Decide value form based on JSON type.
+	# Walk the template to learn the substitution kind per arg (~S, ~N, ~B,
+	# ~J). Composites (object/array values) always need their JSON form so
+	# rewriters and ~J: substitutions see real JSON; scalar substitutions
+	# (~S/~N/~B) want the raw Tcl value.
+	set sub_kinds	[template_sub_kinds $t]
+	# rewrite transforms take a JSON fragment in (and produce one). The
+	# scalar transforms (blob/float/ts_*) take a raw Tcl value. Record which
+	# kind each transformed var uses so the harness picks the right form.
+	set tx_kind	{}
+	foreach tfm [dict get $compiled transforms] {
+		dict set tx_kind [lindex $tfm 1] [lindex $tfm 0]
+	}
 	set args	{}
 	json foreach {camel v} $param_json {
 		set arg	[aws::from_camel $camel]
+		if {[json type $v] eq "null"} continue
 		set jtype	[json type $v]
-		# JSON null ⇔ user didn't pass the arg; leave the var unset so the
-		# template substitutes null and the post-pass strips it.
-		if {$jtype eq "null"} continue
-		# Primitives → scalar Tcl value (rl_json's ~S:/~N:/~B: markers strip
-		# the JSON quotes and produce a literal); composites → raw JSON
-		# fragment (~J: inserts it verbatim).
-		if {$jtype in {string number boolean}} {
-			dict set args $arg [json get $v]
-		} else {
+		set kind	[if {[dict exists $sub_kinds _tx_$arg]} {
+			dict get $sub_kinds _tx_$arg
+		} elseif {[dict exists $sub_kinds $arg]} {
+			dict get $sub_kinds $arg
+		}]
+		set wants_json	[expr {
+			[dict exists $tx_kind $arg] && [dict get $tx_kind $arg] eq "rewrite" ||
+			![dict exists $tx_kind $arg] && ($kind eq "J" || $jtype in {object array})
+		}]
+		if {$wants_json} {
 			dict set args $arg [json extract $v]
+		} else {
+			dict set args $arg [json get $v]
 		}
 	}
 	# Apply per-member transforms that compile_input registered (blob base64,
@@ -157,7 +171,7 @@ proc assemble_json_body {compiled param_json} { #<<<
 	# as static lines in the op body; replicate them here so the harness can
 	# exercise the same code path.
 	foreach tfm [dict get $compiled transforms] {
-		lassign $tfm kind var
+		lassign $tfm kind var spec
 		if {![dict exists $args $var]} continue
 		set src [dict get $args $var]
 		dict set args _tx_$var [switch -exact -- $kind {
@@ -166,6 +180,7 @@ proc assemble_json_body {compiled param_json} { #<<<
 			ts_epoch	{::aws::_tx_ts_epoch $src}
 			ts_iso		{::aws::_tx_ts_iso $src}
 			ts_rfc822	{::aws::_tx_ts_rfc822 $src}
+			rewrite		{::aws::_tx_rewrite $src $spec}
 		}]
 	}
 	set body	[json template $t $args]
@@ -245,6 +260,17 @@ proc json_equal {a b} { #<<<
 # Apply the URL-encoding that reuri awssig does, for comparison against
 # reference bodies that are pre-encoded.
 proc query_encode s { reuri encode awssig $s }
+
+# Scan an rl_json template string for ~X:name substitutions and return a dict
+# {name X name X ...} where X is S, N, B, J, or T.
+proc template_sub_kinds t { #<<<
+	set result	{}
+	foreach {whole kind name} [regexp -all -inline {~([SNBJT]):([A-Za-z_][A-Za-z0-9_]*)} $t] {
+		dict set result $name $kind
+	}
+	set result
+}
+#>>>
 
 # Extract Action name and apiVersion for a case.
 proc case_op_version {entry case} { #<<<

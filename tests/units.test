@@ -1,0 +1,381 @@
+if {[lsearch [namespace children] ::tcltest] == -1} {
+    package require tcltest
+    namespace import ::tcltest::*
+}
+
+tcltest::loadTestedCommands
+package require aws 2
+package require aws::endpoints 2 ;# so aws.partition has its data
+package require rl_json
+package require rltest
+interp alias {} json {} ::rl_json::json
+
+# Rule-engine primitives <<<
+test getAttr-1.1 {simple dict key} -body { #<<<
+	::aws::_fn::getAttr {{"a":"x","b":"y"}} a
+} -result x
+#>>>
+test getAttr-1.2 {missing dict key raises (caller is usually wrapped in _a)} -body { #<<<
+	::aws::_fn::getAttr {{"a":"x"}} b
+} -returnCodes error -match glob -result {*not found*}
+#>>>
+test getAttr-1.3 {json null input returns null} -body { #<<<
+	::aws::_fn::getAttr null a
+} -result null
+#>>>
+test getAttr-1.4 {empty input returns null} -body { #<<<
+	::aws::_fn::getAttr "" a
+} -result null
+#>>>
+test getAttr-2.1 {named index into JSON array} -body { #<<<
+	::aws::_fn::getAttr {{"x":["a","b","c"]}} {x[1]}
+} -result b
+#>>>
+test getAttr-2.2 {out-of-range array index returns empty} -body { #<<<
+	::aws::_fn::getAttr {{"x":["a","b"]}} {x[5]}
+} -result {}
+#>>>
+test getAttr-2.3 {bare index into Tcl list (stringArray param)} -body { #<<<
+	::aws::_fn::getAttr {arn1 arn2 arn3} {[0]}
+} -result arn1
+#>>>
+test getAttr-2.4 {bare index out of range returns empty} -body { #<<<
+	::aws::_fn::getAttr {arn1 arn2} {[5]}
+} -result {}
+#>>>
+
+test isValidHostLabel-1.1 {simple label ok} -body { #<<<
+	::aws::_fn::isValidHostLabel us-east-1 0
+} -result 1
+#>>>
+test isValidHostLabel-1.2 {space in label rejected} -body { #<<<
+	::aws::_fn::isValidHostLabel {us-east 1} 0
+} -result 0
+#>>>
+test isValidHostLabel-1.3 {underscore rejected} -body { #<<<
+	::aws::_fn::isValidHostLabel us_east_1 0
+} -result 0
+#>>>
+test isValidHostLabel-1.4 {dot rejected when allowdots=0} -body { #<<<
+	::aws::_fn::isValidHostLabel foo.bar 0
+} -result 0
+#>>>
+test isValidHostLabel-1.5 {dot accepted when allowdots=1} -body { #<<<
+	::aws::_fn::isValidHostLabel foo.bar 1
+} -result 1
+#>>>
+
+test substring-1.1 {forward slice} -body { #<<<
+	::aws::_fn::substring hello 1 4 0
+} -result ell
+#>>>
+test substring-1.2 {reverse slice: last N chars} -body { #<<<
+	# substring(str, 0, 6, true) on "mybucket--use1-az1--x-s3" -> "--x-s3"
+	::aws::_fn::substring mybucket--use1-az1--x-s3 0 6 1
+} -result --x-s3
+#>>>
+test substring-1.3 {start >= stop returns null} -body { #<<<
+	::aws::_fn::substring hello 3 3 0
+} -result null
+#>>>
+test substring-1.4 {stop > length returns null} -body { #<<<
+	::aws::_fn::substring hi 0 10 0
+} -result null
+#>>>
+test substring-1.5 {non-ascii returns null} -body { #<<<
+	::aws::_fn::substring "foo\u306fbar" 0 3 0
+} -result null
+#>>>
+
+test uriEncode-1.1 {unreserved characters preserved} -body { #<<<
+	::aws::_fn::uriEncode abcXYZ0-9._~-
+} -result abcXYZ0-9._~-
+#>>>
+test uriEncode-1.2 {sub-delims get encoded (per Smithy spec)} -body { #<<<
+	::aws::_fn::uriEncode bucket!
+} -result bucket%21
+#>>>
+test uriEncode-1.3 {space gets encoded} -body { #<<<
+	::aws::_fn::uriEncode "foo bar"
+} -result foo%20bar
+#>>>
+test uriEncode-1.4 {slash gets encoded} -body { #<<<
+	::aws::_fn::uriEncode foo/bar
+} -result foo%2Fbar
+#>>>
+
+test parseURL-1.1 {basic https URL} -body { #<<<
+	set r [::aws::_fn::parseURL https://example.com/path]
+	list [json get $r scheme] [json get $r authority] [json get $r path]
+} -result {https example.com /path}
+#>>>
+test parseURL-1.2 {http URL accepted} -body { #<<<
+	json get [::aws::_fn::parseURL http://example.com/] scheme
+} -result http
+#>>>
+test parseURL-1.3 {non-http(s) scheme rejected} -body { #<<<
+	::aws::_fn::parseURL ftp://example.com/
+} -returnCodes error -match glob -result {*scheme*}
+#>>>
+test parseURL-1.4 {URL with query rejected} -body { #<<<
+	::aws::_fn::parseURL https://example.com/?foo=bar
+} -returnCodes error -match glob -result {*query*}
+#>>>
+test parseURL-1.5 {non-http scheme rejected (fragment in abcde:// variant)} -body { #<<<
+	::aws::_fn::parseURL abcde://nota#url
+} -returnCodes error -match glob -result {*scheme*}
+#>>>
+
+test aws.isVirtualHostableS3Bucket-1.1 {basic bucket name ok} -body { #<<<
+	::aws::_fn::aws.isVirtualHostableS3Bucket mybucket 0
+} -result 1
+#>>>
+test aws.isVirtualHostableS3Bucket-1.2 {dots ok when allowed} -body { #<<<
+	::aws::_fn::aws.isVirtualHostableS3Bucket my.bucket 1
+} -result 1
+#>>>
+test aws.isVirtualHostableS3Bucket-1.3 {dots rejected when disallowed} -body { #<<<
+	::aws::_fn::aws.isVirtualHostableS3Bucket my.bucket 0
+} -result 0
+#>>>
+test aws.isVirtualHostableS3Bucket-1.4 {too short rejected} -body { #<<<
+	::aws::_fn::aws.isVirtualHostableS3Bucket ab 0
+} -result 0
+#>>>
+
+# Rule-engine primitives >>>
+# ARN / partition <<<
+test aws.parseArn-1.1 {standard accesspoint ARN} -body { #<<<
+	set r [::aws::_fn::aws.parseArn arn:aws:s3:us-west-2:123456789012:accesspoint:myendpoint]
+	list [json get $r partition] [json get $r service] [json get $r region] \
+		[json get $r accountId] [json get $r resourceId 0] [json get $r resourceId 1]
+} -result {aws s3 us-west-2 123456789012 accesspoint myendpoint}
+#>>>
+test aws.parseArn-1.2 {resource with slashes splits into resourceId} -body { #<<<
+	set r [::aws::_fn::aws.parseArn arn:aws:s3-outposts:us-east-1:123456789012:outpost/op-0123/accesspoint/reports]
+	json get $r resourceId
+} -result {outpost op-0123 accesspoint reports}
+#>>>
+test aws.parseArn-1.3 {empty components between colons preserved} -body { #<<<
+	set r [::aws::_fn::aws.parseArn arn:aws:s3:us-west-2:123456789012::myname]
+	json get $r resourceId
+} -result {{} myname}
+#>>>
+test aws.parseArn-1.4 {missing partition errors (botocore treats as null)} -body { #<<<
+	::aws::_fn::aws.parseArn "arn::kinesis:us-west-2:123:stream/foo"
+} -returnCodes error -match glob -result {*missing required component*}
+#>>>
+test aws.parseArn-1.5 {not an ARN errors} -body { #<<<
+	::aws::_fn::aws.parseArn notanarn
+} -returnCodes error -match glob -result {*Cannot parse arn*}
+#>>>
+test aws.parseArn-1.6 {too few colons errors} -body { #<<<
+	::aws::_fn::aws.parseArn arn:aws:s3
+} -returnCodes error -match glob -result {*Cannot parse arn*}
+#>>>
+
+test aws.partition-1.1 {matches a known region via regionRegex} -body { #<<<
+	# us-east-1 matches the aws partition regex
+	json get [::aws::_fn::aws.partition s3 us-east-1] name
+} -result aws
+#>>>
+test aws.partition-1.2 {matches aws-global via partitions.json regions dict} -body { #<<<
+	json get [::aws::_fn::aws.partition s3 aws-global] name
+} -result aws
+#>>>
+test aws.partition-1.3 {falls back to aws partition for unknown region} -body { #<<<
+	# Matches botocore: unknown region returns the default (aws) partition
+	# rather than null, so subsequent rules (e.g. isValidHostLabel) run.
+	json get [::aws::_fn::aws.partition s3 {made up region}] name
+} -result aws
+#>>>
+
+# ARN / partition >>>
+# Rule engine helpers <<<
+test _a-1.1 {truthy scalar result assigns and returns 1} -body { #<<<
+	array set p {}
+	::aws::_fn::_a myvar return -level 0 hello
+	list $p(myvar)
+} -cleanup {unset -nocomplain p} -result hello
+#>>>
+test _a-1.2 {empty string result fails the condition} -body { #<<<
+	array set p {}
+	set r [::aws::_fn::_a myvar return -level 0 ""]
+	list $r [info exists p(myvar)]
+} -cleanup {unset -nocomplain p} -result {0 0}
+#>>>
+test _a-1.3 {json null result fails} -body { #<<<
+	array set p {}
+	set r [::aws::_fn::_a myvar return -level 0 null]
+	list $r [info exists p(myvar)]
+} -cleanup {unset -nocomplain p} -result {0 0}
+#>>>
+test _a-1.4 {"false" string result fails} -body { #<<<
+	array set p {}
+	set r [::aws::_fn::_a myvar return -level 0 false]
+	list $r [info exists p(myvar)]
+} -cleanup {unset -nocomplain p} -result {0 0}
+#>>>
+test _a-1.5 {erroring body fails the condition} -body { #<<<
+	array set p {}
+	set r [::aws::_fn::_a myvar error "nope"]
+	list $r [info exists p(myvar)]
+} -cleanup {unset -nocomplain p} -result {0 0}
+#>>>
+test _a-1.6 {json object result assigns} -body { #<<<
+	array set p {}
+	::aws::_fn::_a myvar return -level 0 {{"a":1}}
+	set p(myvar)
+} -cleanup {unset -nocomplain p} -result {{"a":1}}
+#>>>
+
+# Rule engine helpers >>>
+# Query flattening <<<
+test compile_query_spec-1.1 {scalar string} -body { #<<<
+	set shapes {{"S": {"type":"string"}}}
+	::aws::build::compile_query_spec $shapes S ec2
+} -result {}
+#>>>
+test compile_query_spec-1.2 {list of scalars, ec2 flattened} -body { #<<<
+	set shapes {{"L":{"type":"list","member":{"shape":"S"}},"S":{"type":"string"}}}
+	::aws::build::compile_query_spec $shapes L ec2
+} -result {list member 1 {}}
+#>>>
+test compile_query_spec-1.3 {list of scalars, query non-flattened} -body { #<<<
+	set shapes {{"L":{"type":"list","member":{"shape":"S"}},"S":{"type":"string"}}}
+	::aws::build::compile_query_spec $shapes L query
+} -result {list member 0 {}}
+#>>>
+test compile_query_spec-1.4 {struct with ec2 capitalization} -body { #<<<
+	set shapes {
+		{
+			"F": {"type":"structure","members":{
+				"name": {"shape":"S","locationName":"name"},
+				"values": {"shape":"S","locationName":"Value"}
+			}},
+			"S": {"type":"string"}
+		}
+	}
+	::aws::build::compile_query_spec $shapes F ec2
+} -result {struct {name Name {} values Value {}}}
+#>>>
+
+test _flatten_query_param-1.1 {scalar} -body { #<<<
+	set q {}
+	::aws::_flatten_query_param q foo bar {}
+	set q
+} -result {foo bar}
+#>>>
+test _flatten_query_param-1.2 {flat list} -body { #<<<
+	set q {}
+	::aws::_flatten_query_param q Name {alpha beta gamma} {list member 1 {}}
+	set q
+} -result {Name.1 alpha Name.2 beta Name.3 gamma}
+#>>>
+test _flatten_query_param-1.3 {non-flat list uses .member. infix} -body { #<<<
+	set q {}
+	::aws::_flatten_query_param q Name {a b} {list member 0 {}}
+	set q
+} -result {Name.member.1 a Name.member.2 b}
+#>>>
+test _flatten_query_param-1.4 {list of structs} -body { #<<<
+	set q {}
+	set spec {list member 1 {struct {name Name {} value Value {}}}}
+	::aws::_flatten_query_param q Filter \
+		{{name foo value bar} {name baz value qux}} $spec
+	set q
+} -result {Filter.1.Name foo Filter.1.Value bar Filter.2.Name baz Filter.2.Value qux}
+#>>>
+test _flatten_query_param-1.5 {list of structs with list member (filter with multiple values)} -body { #<<<
+	set q {}
+	set spec {list member 1 {struct {name Name {} values Value {list member 1 {}}}}}
+	::aws::_flatten_query_param q Filter \
+		{{name foo values {v1 v2 v3}}} $spec
+	set q
+} -result {Filter.1.Name foo Filter.1.Value.1 v1 Filter.1.Value.2 v2 Filter.1.Value.3 v3}
+#>>>
+
+# Query flattening >>>
+# Error response parsing <<<
+# _aws_error expects a fake "$h" object responding to body / code / headers
+proc make_mock_h {body_val {code_val 400} {headers_val {}}} { #<<<
+	set n [incr ::mock_count]
+	set ns ::mock_h_$n
+	namespace eval $ns [list variable _body $body_val]
+	namespace eval $ns [list variable _code $code_val]
+	namespace eval $ns [list variable _headers $headers_val]
+	namespace eval $ns {
+		proc body {} {variable _body; return $_body}
+		proc code {} {variable _code; return $_code}
+		proc headers {} {variable _headers; return $_headers}
+		namespace export body code headers
+		namespace ensemble create
+	}
+	return $ns
+}
+#>>>
+
+test _aws_error-json-1.1 {JSON error with code/message} -setup { #<<<
+	set h [make_mock_h {{"code":"ValidationException","message":"bad param"}} 400 \
+		{content-type application/x-amz-json-1.1 x-amzn-requestid req-123}]
+} -body {
+	::aws::helpers::_aws_error $h "" ""
+} -returnCodes error -errorCode {AWS ValidationException req-123 {}} -result {bad param}
+#>>>
+test _aws_error-json-1.2 {JSON error with __type (sigv4 style)} -setup { #<<<
+	set h [make_mock_h {{"__type":"ResourceNotFoundException","message":"not found"}} 404 \
+		{x-amzn-requestid req-456}]
+} -body {
+	::aws::helpers::_aws_error $h "" ""
+} -returnCodes error -errorCode {AWS ResourceNotFoundException req-456 {}} -result {not found}
+#>>>
+test _aws_error-json-1.3 {JSON error with x-amzn-errortype header} -setup { #<<<
+	set h [make_mock_h {{"message":"something went wrong"}} 400 \
+		{x-amzn-errortype ThrottlingException x-amzn-requestid req-789}]
+} -body {
+	::aws::helpers::_aws_error $h "" ""
+} -returnCodes error -errorCode {AWS ThrottlingException req-789 {}} -result {something went wrong}
+#>>>
+
+test _aws_error-xml-1.1 {rest-xml / query style Error element} -setup { #<<<
+	set h [make_mock_h {<?xml version="1.0"?>
+<Error>
+	<Code>NoSuchKey</Code>
+	<Message>The specified key does not exist.</Message>
+	<Resource>/bucket/key</Resource>
+	<RequestId>ABC123</RequestId>
+</Error>} 404 {}]
+} -body {
+	::aws::helpers::_aws_error $h "" ""
+} -returnCodes error -match glob -errorCode {AWS NoSuchKey ABC123 /bucket/key *} \
+  -result {AWS: The specified key does not exist.}
+#>>>
+test _aws_error-xml-1.2 {ec2 Response/Errors/Error wrapper} -setup { #<<<
+	set h [make_mock_h {<?xml version="1.0"?>
+<Response>
+	<Errors>
+		<Error>
+			<Code>InvalidInstanceID.Malformed</Code>
+			<Message>Invalid id: "abc"</Message>
+		</Error>
+	</Errors>
+	<RequestID>req-xyz</RequestID>
+</Response>} 400 {}]
+} -body {
+	::aws::helpers::_aws_error $h "" ""
+} -returnCodes error -match glob -errorCode {AWS InvalidInstanceID.Malformed req-xyz * *} \
+  -result {AWS: Invalid id: "abc"}
+#>>>
+test _aws_error-1.3 {empty body uses status code} -setup { #<<<
+	set h [make_mock_h "" 503 {}]
+} -body {
+	::aws::helpers::_aws_error $h "" ""
+} -returnCodes error -errorCode {AWS 503} -result {AWS http code 503}
+#>>>
+# Error response parsing >>>
+
+# cleanup
+::tcltest::cleanupTests
+return
+
+# vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4

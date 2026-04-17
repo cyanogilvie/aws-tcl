@@ -1304,6 +1304,9 @@ namespace eval aws {
 		#   ""                              scalar
 		#   {list <memberName> <flat> <subspec>}
 		#   {struct {memberLoc subspec ...}}
+		#
+		# Values are always native Tcl: scalars are strings, list shapes are Tcl
+		# lists, structure shapes are Tcl dicts.
 		upvar 1 $queryvar query
 		if {$spec eq ""} {
 			lappend query $prefix $value
@@ -1312,33 +1315,21 @@ namespace eval aws {
 		switch -exact -- [lindex $spec 0] {
 			list {
 				lassign $spec - member_name flat subspec
-				# If the list value arrived as JSON, convert it to a Tcl list.
-				if {[json valid $value] && [json type $value] eq "array"} {
-					set items	[json lmap e $value {json extract $e}]
-				} else {
-					set items	$value
-				}
 				set base	[expr {$flat ? $prefix : "$prefix.$member_name"}]
 				set i	0
-				foreach item $items {
+				foreach item $value {
 					incr i
 					_flatten_query_param query "$base.$i" $item $subspec
 				}
 			}
 			struct {
 				lassign $spec - members
-				# Accept either a JSON object or a Tcl dict.
-				if {[json valid $value] && [json type $value] eq "object"} {
-					set pairs	[json lmap {k v} $value {list $k [json extract $v]}]
-				} else {
-					set pairs	$value
-				}
-				# members is a list of {data_key serialized subspec} triples
+				# members is a list of {data_key serialized subspec} triples.
 				set by_key	{}
 				foreach {k loc sub} $members {
 					dict set by_key $k [list $loc $sub]
 				}
-				dict for {k v} $pairs {
+				dict for {k v} $value {
 					if {![dict exists $by_key $k]} continue
 					lassign [dict get $by_key $k] loc sub
 					_flatten_query_param query "$prefix.$loc" $v $sub
@@ -2427,17 +2418,15 @@ namespace eval aws {
 
 		#>>>
 		proc getAttr {doc key} { #<<<
+			# getAttr navigates into rule-engine values. Those are JSON objects
+			# produced by aws.partition / aws.parseArn / parseURL, except for
+			# stringArray params (e.g. dynamodb ResourceArnList) which arrive
+			# as plain Tcl lists — those use the bare-index form "[N]".
 			if {$doc eq "" || ([json valid $doc] && [json isnull $doc])} {return null}
 			if {[regexp {^(\w*)\[([0-9]+)\]$} $key - base idx]} {
-				# Matches botocore: an empty base means index directly into the
-				# supplied value (e.g. key "[0]" on a StringArray parameter
-				# passed as a plain Tcl list).
 				if {$base eq ""} {
-					if {[json valid $doc] && [json type $doc] eq "array"} {
-						json get $doc $idx
-					} else {
-						lindex $doc $idx
-					}
+					# Bare index: stringArray (Tcl list) member access.
+					lindex $doc $idx
 				} else {
 					json get $doc $base $idx
 				}

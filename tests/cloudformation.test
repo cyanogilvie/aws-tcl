@@ -1,0 +1,23 @@
+if {[lsearch [namespace children] ::tcltest] == -1} {
+    package require tcltest
+    namespace import ::tcltest::*
+}
+
+tcltest::loadTestedCommands
+package require aws 2
+package require rl_json
+package require rltest
+interp alias {} json {} ::rl_json::json
+
+test cloudformation-list_stacks-1.1 {non-flattened list is parsed correctly} -body { #<<<
+	# StackSummaries is a non-flattened list wrapped in <member> elements.
+	# Prior to fixing the default element name, this returned null.
+	json type [aws cloudformation list_stacks -region us-east-1] StackSummaries
+} -result array
+#>>>
+
+# cleanup
+::tcltest::cleanupTests
+return
+
+# vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4

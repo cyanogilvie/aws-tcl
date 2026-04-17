@@ -187,12 +187,20 @@ proc compile_xml_transforms args { #<<<
 					-source		{} \
 					-path		$path \
 				]
+				# Non-flattened AWS lists wrap each element in <member> by
+				# default. Flattened lists inline the elements under the list's
+				# own tag (our $source), so the xpath collapses to just
+				# $source.
+				set flat	[json get -default false $rshape flattened]
 				if {[json exists $rshape member locationName]} {
 					set elemname	[json get $rshape member locationName]
+				} elseif {$flat} {
+					set elemname	{}
 				} else {
-					set elemname	$source
+					set elemname	member
 				}
-				lappend fetchlist [list $nextkey [typekey $type] $source/$elemname $subfetchlist $valuetemplate]
+				set xpath	[expr {$elemname eq "" ? $source : "$source/$elemname"}]
+				lappend fetchlist [list $nextkey [typekey $type] $xpath $subfetchlist $valuetemplate]
 
 				set template	"~J:$nextkey"
 			}

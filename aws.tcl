@@ -1782,10 +1782,17 @@ namespace eval aws {
 			list { #<<<
 				set membershapename	[json get $shape member shape]
 				set location		[json get -default {} $shape member location]
-				if {![info exists locationname]} {
-					set locationname	$membershapename
+				# For non-flattened lists the element tag defaults to "member"
+				# (the AWS query protocol convention); flattened lists inline
+				# each element under the parent's locationName.
+				set flat			[json get -default false $shape flattened]
+				if {[json exists $shape member locationName]} {
+					set name	[json get $shape member locationName]
+				} elseif {$flat && [info exists locationname]} {
+					set name	$locationname
+				} else {
+					set name	member
 				}
-				set name			[json get -default $locationname $shape member locationName]
 				set membershape		[json extract $def shapes $membershapename]
 				_debug { #<<<
 					json unset shape type
@@ -2926,12 +2933,21 @@ namespace eval aws {
 							-source		{} \
 							-path		$path \
 						]
+						# Non-flattened AWS lists wrap each element in <member>
+						# by default. Flattened lists inline the elements under
+						# the list's own tag (which is the structure member's
+						# locationName, i.e. our $source), so the xpath collapses
+						# to just the source.
+						set flat	[json get -default false $rshape flattened]
 						if {[json exists $rshape member locationName]} {
 							set elemname	[json get $rshape member locationName]
+						} elseif {$flat} {
+							set elemname	{}
 						} else {
-							set elemname	$source
+							set elemname	member
 						}
-						lappend fetchlist [list $nextkey [typekey $type] $source/$elemname $subfetchlist $valuetemplate]
+						set xpath	[expr {$elemname eq "" ? $source : "$source/$elemname"}]
+						lappend fetchlist [list $nextkey [typekey $type] $xpath $subfetchlist $valuetemplate]
 
 						set template	"~J:$nextkey"
 					}

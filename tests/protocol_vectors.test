@@ -109,6 +109,72 @@ proc assemble_query_body {compiled op apiVersion param_dict} { #<<<
 }
 #>>>
 
+# For json/rest-json: apply the template with params-as-snake_case, then
+# strip null leaves (mirrors what _service_req does at runtime).
+# param_json is a JSON object (not a Tcl dict) since it comes straight from
+# the test vector.
+proc assemble_json_body {compiled param_json} { #<<<
+	set t	[dict get $compiled template_obj]
+	# Map each test param key (camel) to the argname compile_input used
+	# (snake_case via aws::from_camel). Decide value form based on JSON type.
+	set args	{}
+	json foreach {camel v} $param_json {
+		set arg	[aws::from_camel $camel]
+		# Primitives → scalar Tcl value (rl_json's ~S:/~N:/~B: markers strip
+		# the JSON quotes and produce a literal); composites → raw JSON
+		# fragment (~J: inserts it verbatim).
+		set jtype	[json type $v]
+		if {$jtype in {string number boolean}} {
+			dict set args $arg [json get $v]
+		} else {
+			dict set args $arg [json extract $v]
+		}
+	}
+	set body	[json template $t $args]
+	# Strip null leaves — AWS rejects some nulls, and the test vectors expect
+	# omitted absent members (not explicit nulls).
+	set paths	{{}}
+	while {[llength $paths]} {
+		set paths	[lassign $paths thispath]
+		switch -exact -- [json type $body {*}$thispath] {
+			object {
+				json foreach {k v} [json extract $body {*}$thispath] {
+					if {[json exists $v]} {
+						lappend paths	[list {*}$thispath $k]
+					} else {
+						json unset body {*}$thispath $k
+					}
+				}
+			}
+			array {
+				for {set i [json length [json extract $body {*}$thispath]]} {$i >= 0} {incr i -1} {
+					if {[json exists $body {*}$thispath $i]} {
+						lappend paths	[list {*}$thispath $i]
+					} else {
+						json unset body {*}$thispath $i
+					}
+				}
+			}
+		}
+	}
+	return $body
+}
+#>>>
+
+# Compare two JSON bodies by canonical form (key order, whitespace).
+# An empty expected body means "no body" — satisfied by empty or {}.
+proc diff_json_body {actual expected} { #<<<
+	if {$expected eq ""} {
+		if {$actual eq "" || [json normalize $actual] eq "{}"} {return ""}
+		return "expected no body, got $actual"
+	}
+	set a [json normalize $actual]
+	set e [json normalize $expected]
+	if {$a eq $e} {return ""}
+	return "actual=$a expected=$e"
+}
+#>>>
+
 # Apply the URL-encoding that reuri awssig does, for comparison against
 # reference bodies that are pre-encoded.
 proc query_encode s { reuri encode awssig $s }
@@ -170,13 +236,29 @@ set unsupported_cases {
 	SDKAppendsGzipAndIgnoresHttpProvidedEncoding_awsQuery
 	SDKAppliedContentEncoding_ec2Query
 	SDKAppendsGzipAndIgnoresHttpProvidedEncoding_ec2Query
+	SDKAppliedContentEncoding_awsJson1_1
+	SDKAppendsGzipAndIgnoresHttpProvidedEncoding_awsJson1_1
+	SDKAppliedContentEncoding_restJson1
+	SDKAppendsGzipAndIgnoresHttpProvidedEncoding_restJson1
+	SDKAppendedGzipAfterProvidedEncoding_restJson1
+	SDKAppliedContentEncoding_awsJson1_0
+	SDKAppendsGzipAndIgnoresHttpProvidedEncoding_awsJson1_0
 	QueryProtocolIdempotencyTokenAutoFill
 	QueryProtocolIdempotencyTokenAutoFillIsSet
 	Ec2ProtocolIdempotencyTokenAutoFill
 	Ec2ProtocolIdempotencyTokenAutoFillIsSet
+	AwsJson11ProtocolIdempotencyTokenAutoFill
+	AwsJson11ProtocolIdempotencyTokenAutoFillIsSet
+	AwsJson10ProtocolIdempotencyTokenAutoFill
+	AwsJson10ProtocolIdempotencyTokenAutoFillIsSet
+	RestJsonIdempotencyTokenAutoFill
+	RestJsonIdempotencyTokenAutoFillIsSet
 	EmptyQueryLists
 	AwsQueryEndpointTraitWithHostLabel
 	AwsEc2EndpointTraitWithHostLabel
+	AwsJson11EndpointTraitWithHostLabel
+	AwsJson10EndpointTraitWithHostLabel
+	RestJsonEndpointTraitWithHostLabel
 }
 
 # Run all input cases from a protocol vector file.
@@ -206,6 +288,21 @@ proc run_input_file {path} { #<<<
 						if {$diff ne ""} {error $diff}
 						return "match"
 					}
+					json - rest-json - json_1_0 {
+						# An operation with no input shape has an empty body.
+						if {[dict get $compiled template_obj] eq ""} {
+							if {$expected_body ne "" && $expected_body ne "{}"} {
+								error "actual={} expected=$expected_body"
+							}
+							return "match"
+						}
+						set pdict	[if {[json exists $case params]} {json extract $case params}]
+						if {$pdict eq ""} {set pdict {{}}}
+						set body	[assemble_json_body $compiled $pdict]
+						set diff	[diff_json_body $body $expected_body]
+						if {$diff ne ""} {error $diff}
+						return "match"
+					}
 					default {
 						return -code break "unsupported protocol"
 					}
@@ -219,8 +316,7 @@ proc run_input_file {path} { #<<<
 # Kick off
 set protocol_dir	[file join [file dirname [info script]] .. botocore tests unit protocols]
 if {[file isdirectory $protocol_dir]} {
-	# Start with query + ec2 only until the harness is fleshed out for the rest.
-	foreach proto {query ec2} {
+	foreach proto {query ec2 json json_1_0 rest-json} {
 		set path	[file join $protocol_dir input $proto.json]
 		if {[file exists $path]} {
 			run_input_file $path

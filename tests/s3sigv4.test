@@ -48,24 +48,6 @@ test s3sigv4-1.1 {get key, no encoding} -constraints have_s3_bucket -body { #<<<
 	aws s3 get_object -region $bucket_region -bucket $bucket -key foo
 } -match glob -returnCodes error -errorCode {AWS NoSuchKey *} -result {AWS: The specified key does not exist.}
 #>>>
-test s3sigv4-1.2 {get key, no encoding} -constraints have_s3_bucket -body { #<<<
-	#aws s3 get_object -region aws-global -use_global_endpoint 1 -bucket $bucket -key foo\u306f
-	list [rltest compare_json [aws s3 get_object -region $bucket_region -bucket $bucket -key foo\u306f -payload payload] [json template {
-		{
-			"AcceptRanges":			"bytes",
-			"LastModified":			"?G:*",
-			"ContentLength":		3,
-			"ETag":					"?G:*",
-			"ContentType":			"binary/octet-stream",
-			"ServerSideEncryption":	"AES256",
-			"Metadata":				{}
-		}
-	}]] $payload
-} -cleanup {
-	unset -nocomplain payload
-} -result {match bar}
-# -match glob -returnCodes error -errorCode {AWS NoSuchKey *} -result {AWS: The specified key does not exist.}
-#>>>
 test s3sigv4-1.3 {get key, all 0x1f < codepoints <= 0xff and \u306f} -constraints have_s3_bucket -setup { #<<<
 	set key	{}
 	for {set c 0x20} {$c <= 0xff} {incr c} {

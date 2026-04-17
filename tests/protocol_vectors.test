@@ -41,7 +41,8 @@ proc synth_service {entry} { #<<<
 }
 #>>>
 
-# Run compile_input for one case's given op and return {params_spec query_map template_obj body}.
+# Run compile_input for one case's given op and return {params_spec query_map
+# template_obj transforms body}.
 proc compile_case {entry case} { #<<<
 	set sd			[synth_service $entry]
 	set protocol	[json get $sd metadata protocol]
@@ -51,14 +52,16 @@ proc compile_case {entry case} { #<<<
 	# match the defaults compile_input starts with
 	set params {}; set cxparams {}; set copy_to_cx {}; set cx_suppress {}
 	set uri_map {}; set query_map {}; set header_map {}; set payload {}
-	set builtins {}
+	set builtins {}; set transforms {}
 
 	if {$shape_name eq ""} {
 		return [dict create \
 			params_spec	$params \
 			query_map	$query_map \
 			template_obj	{} \
+			transforms	$transforms \
 			body		{} \
+			payload_type	{} \
 			protocol	$protocol]
 	}
 	set t [aws::build::compile_input \
@@ -74,13 +77,29 @@ proc compile_case {entry case} { #<<<
 		-shapes				[json extract $sd shapes] \
 		-shape				$shape_name \
 		-endpoint_params	{{}} \
-		-builtins			builtins]
+		-builtins			builtins \
+		-transforms			transforms]
+
+	# If there's a payload member, find its shape type. We need this to decide
+	# whether the body is raw bytes (string/blob) or JSON (document/structure).
+	set payload_type	""
+	if {$payload ne "" && [json exists $sd shapes $shape_name payload]} {
+		set pname	[json get $sd shapes $shape_name payload]
+		set pshape	[json get $sd shapes $shape_name members $pname shape]
+		set payload_type	[json get $sd shapes $pshape type]
+		# Document types look like structures but have the "document" trait.
+		if {$payload_type eq "structure" && [json get -default false $sd shapes $pshape document]} {
+			set payload_type	document
+		}
+	}
 
 	return [dict create \
 		params_spec	$params \
 		query_map	$query_map \
 		template_obj	$t \
+		transforms	$transforms \
 		body		$payload \
+		payload_type	$payload_type \
 		protocol	$protocol]
 }
 #>>>
@@ -120,15 +139,34 @@ proc assemble_json_body {compiled param_json} { #<<<
 	set args	{}
 	json foreach {camel v} $param_json {
 		set arg	[aws::from_camel $camel]
+		set jtype	[json type $v]
+		# JSON null ⇔ user didn't pass the arg; leave the var unset so the
+		# template substitutes null and the post-pass strips it.
+		if {$jtype eq "null"} continue
 		# Primitives → scalar Tcl value (rl_json's ~S:/~N:/~B: markers strip
 		# the JSON quotes and produce a literal); composites → raw JSON
 		# fragment (~J: inserts it verbatim).
-		set jtype	[json type $v]
 		if {$jtype in {string number boolean}} {
 			dict set args $arg [json get $v]
 		} else {
 			dict set args $arg [json extract $v]
 		}
+	}
+	# Apply per-member transforms that compile_input registered (blob base64,
+	# NaN/Infinity float, timestamp-as-epoch). At runtime these are emitted
+	# as static lines in the op body; replicate them here so the harness can
+	# exercise the same code path.
+	foreach tfm [dict get $compiled transforms] {
+		lassign $tfm kind var
+		if {![dict exists $args $var]} continue
+		set src [dict get $args $var]
+		dict set args _tx_$var [switch -exact -- $kind {
+			blob		{::aws::_tx_blob $src}
+			float		{::aws::_tx_float $src}
+			ts_epoch	{::aws::_tx_ts_epoch $src}
+			ts_iso		{::aws::_tx_ts_iso $src}
+			ts_rfc822	{::aws::_tx_ts_rfc822 $src}
+		}]
 	}
 	set body	[json template $t $args]
 	# Strip null leaves — AWS rejects some nulls, and the test vectors expect
@@ -161,17 +199,46 @@ proc assemble_json_body {compiled param_json} { #<<<
 }
 #>>>
 
-# Compare two JSON bodies by canonical form (key order, whitespace).
-# An empty expected body means "no body" — satisfied by empty or {}.
+# Compare two JSON bodies for semantic equality (keys in objects are unordered,
+# array element order is preserved). An empty or {} expected body means "no
+# meaningful body".
 proc diff_json_body {actual expected} { #<<<
-	if {$expected eq ""} {
-		if {$actual eq "" || [json normalize $actual] eq "{}"} {return ""}
-		return "expected no body, got $actual"
+	# Both "no body" forms normalise to {} for this comparison.
+	set exp_empty	[expr {$expected eq "" || $expected eq "\{\}"}]
+	set act_empty	[expr {$actual eq "" || ($actual ne "" && [json valid $actual] && [json normalize $actual] eq "{}")}]
+	if {$exp_empty && $act_empty} {return ""}
+	if {$exp_empty} {return "expected no body, got $actual"}
+	if {$act_empty} {return "expected $expected, got no body"}
+	if {[json_equal $actual $expected]} {return ""}
+	return "actual=[json normalize $actual] expected=[json normalize $expected]"
+}
+#>>>
+# Recursive equality that ignores object key order.
+proc json_equal {a b} { #<<<
+	set ta [json type $a]
+	set tb [json type $b]
+	if {$ta ne $tb} {return 0}
+	switch -exact -- $ta {
+		object {
+			set ka [lsort [json keys $a]]
+			set kb [lsort [json keys $b]]
+			if {$ka ne $kb} {return 0}
+			foreach k $ka {
+				if {![json_equal [json extract $a $k] [json extract $b $k]]} {return 0}
+			}
+			return 1
+		}
+		array {
+			if {[json length $a] != [json length $b]} {return 0}
+			for {set i 0} {$i < [json length $a]} {incr i} {
+				if {![json_equal [json extract $a $i] [json extract $b $i]]} {return 0}
+			}
+			return 1
+		}
+		default {
+			expr {[json normalize $a] eq [json normalize $b]}
+		}
 	}
-	set a [json normalize $actual]
-	set e [json normalize $expected]
-	if {$a eq $e} {return ""}
-	return "actual=$a expected=$e"
 }
 #>>>
 
@@ -291,13 +358,48 @@ proc run_input_file {path} { #<<<
 					json - rest-json - json_1_0 {
 						# An operation with no input shape has an empty body.
 						if {[dict get $compiled template_obj] eq ""} {
-							if {$expected_body ne "" && $expected_body ne "{}"} {
-								error "actual={} expected=$expected_body"
-							}
+							set diff [diff_json_body "" $expected_body]
+							if {$diff ne ""} {error $diff}
 							return "match"
 						}
 						set pdict	[if {[json exists $case params]} {json extract $case params}]
 						if {$pdict eq ""} {set pdict {{}}}
+						# payload trait: compile_input reports the payload
+						# member's arg name via the body field. If set, the
+						# body IS that member's value rather than the wrapping
+						# structure.
+						set payload_arg	[dict get $compiled body]
+						if {$payload_arg ne ""} {
+							# Locate the matching camel name in pdict.
+							set match_camel	""
+							json foreach {k _} $pdict {
+								if {[aws::from_camel $k] eq $payload_arg} {
+									set match_camel	$k
+									break
+								}
+							}
+							if {$match_camel eq ""} {
+								set diff [diff_json_body "" $expected_body]
+								if {$diff ne ""} {error $diff}
+								return "match"
+							}
+							set pv	[json extract $pdict $match_camel]
+							# How the body compares depends on the payload
+							# shape. Structure/document → JSON; string/blob/
+							# enum → raw bytes.
+							set ptype [dict get $compiled payload_type]
+							if {$ptype in {structure document}} {
+								set diff [diff_json_body $pv $expected_body]
+								if {$diff ne ""} {error $diff}
+								return "match"
+							}
+							# Primitive payload: compare raw.
+							set raw	[json get $pv]
+							if {$raw ne $expected_body} {
+								error "actual=$raw expected=$expected_body"
+							}
+							return "match"
+						}
 						set body	[assemble_json_body $compiled $pdict]
 						set diff	[diff_json_body $body $expected_body]
 						if {$diff ne ""} {error $diff}

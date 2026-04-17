@@ -880,6 +880,7 @@ proc build_aws_services args { #<<<
 				}
 
 				set b			{}
+				set transforms	{}
 				if {[json exists $opdef input]} {
 					set t	[aws::build::compile_input \
 						-protocol			$protocol \
@@ -895,9 +896,18 @@ proc build_aws_services args { #<<<
 						-shape				[json get $opdef input shape] \
 						-endpoint_params	$endpoint_params \
 						-builtins			builtins \
+						-transforms			transforms \
 					]
 				} else {
 					set t	{}
+				}
+
+				# Per-member body-value transforms (blob base64, float NaN
+				# handling, timestamp-as-epoch for json/rest-json). Each
+				# becomes a set-if-exists line run before the template.
+				foreach tfm $transforms {
+					lassign $tfm kind var
+					lappend static [list ::aws::_apply_tx $kind $var]
 				}
 
 				if {[llength $builtins]} {

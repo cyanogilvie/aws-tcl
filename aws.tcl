@@ -1298,6 +1298,61 @@ namespace eval aws {
 	}
 
 	#>>>
+	# Per-shape body-value transforms applied before json template substitution.
+	# compile_input emits an `if {[info exists X]} {set _tx_X [_tx_FOO $X]}` line
+	# for each member that needs pre-template conversion; the template then
+	# references `~{S,J,N}:_tx_X` rather than the raw arg.
+	proc _apply_tx {kind var} { #<<<
+		# Called at op-proc start: if $var is set, computes the transformed
+		# value into _tx_$var in the caller's scope. Template substitutions
+		# reference ~{S,J,N}:_tx_$var so missing args still resolve to null.
+		upvar 1 $var src _tx_$var dst
+		if {![info exists src]} return
+		set dst [switch -exact -- $kind {
+			blob		{_tx_blob $src}
+			float		{_tx_float $src}
+			ts_epoch	{_tx_ts_epoch $src}
+			ts_iso		{_tx_ts_iso $src}
+			ts_rfc822	{_tx_ts_rfc822 $src}
+			default		{error "Unhandled transform kind \"$kind\""}
+		}]
+	}
+	#>>>
+	proc _tx_blob val { #<<<
+		# JSON body blobs are base64 strings.
+		binary encode base64 $val
+	}
+	#>>>
+	proc _tx_float val { #<<<
+		# AWS JSON protocols serialize non-finite floats as strings.
+		if {$val in {NaN Infinity -Infinity}} {
+			json string $val
+		} else {
+			set val
+		}
+	}
+	#>>>
+	proc _tx_ts_epoch val { #<<<
+		# Convert the user's value (ISO 8601 or epoch integer) to an epoch
+		# integer suitable for a JSON number. Used for json / rest-json where
+		# the default timestampFormat is unixTimestamp.
+		_tx_ts_parse $val
+	}
+	#>>>
+	proc _tx_ts_iso val { #<<<
+		clock format [_tx_ts_parse $val] -format {%Y-%m-%dT%H:%M:%SZ} -timezone :UTC
+	}
+	#>>>
+	proc _tx_ts_rfc822 val { #<<<
+		clock format [_tx_ts_parse $val] -format {%a, %d %b %Y %H:%M:%S GMT} -timezone :UTC
+	}
+	#>>>
+	proc _tx_ts_parse val { #<<<
+		# Accept an epoch integer or an ISO 8601 string, return epoch seconds.
+		if {[string is integer -strict $val]} {return $val}
+		clock scan $val -format {%Y-%m-%dT%H:%M:%SZ} -timezone :UTC
+	}
+	#>>>
 	proc _flatten_query_param {queryvar prefix value spec} { #<<<
 		# Serialize $value into $queryvar as query-string pairs, honouring the
 		# shape spec produced by aws::build::compile_query_spec. Spec forms:
@@ -2267,8 +2322,17 @@ namespace eval aws {
 	}
 
 	#>>>
-	proc from_camel str { # UseFIPS -> use_fips, WriteGetObjectResult -> write_get_object_result <<<
-		join [lmap {- caps title} [regexp -all -inline {([A-Z]+(?=[A-Z]|$))|([A-Za-z][a-z]+)} $str] {
+	proc from_camel str { # UseFIPS -> use_FIPS, WriteGetObjectResult -> write_get_object_result, S3Bucket -> s3_bucket, fooEnum1 -> foo_enum1 <<<
+		# Two cases:
+		#   - An all-caps run, optionally followed by digits, as long as the
+		#     next char is caps (so the digits are part of an acronym like S3)
+		#     or end of string. Example: "UseFIPS" -> "use" + "FIPS".
+		#   - A normal word: a letter followed by 1+ lowercase and optional
+		#     trailing digits. Example: "fooEnum1" -> "foo" + "Enum1".
+		# Acronym runs keep their original case; normal words lowercase.
+		join [lmap {- caps title} [regexp -all -inline \
+			{([A-Z]+\d*(?=[A-Z]|$))|([A-Za-z][a-z]+\d*)} $str] \
+		{
 			if {$title ne {}} {
 				string tolower $title
 			} else {
@@ -3214,6 +3278,7 @@ namespace eval aws {
 				-shape				{-required}
 				-endpoint_params	{-required}
 				-builtins			{-alias}
+				-transforms			{-alias}
 			}
 
 			#puts stderr "compile_input, argname: ([if {[info exists argname]} {set argname}]), shape: ($shape)"
@@ -3296,6 +3361,7 @@ namespace eval aws {
 									-shape				[json get $member_def shape] \
 									-endpoint_params	{{}} \
 									-builtins			builtins \
+									-transforms			transforms \
 								]
 							}
 						} elseif {$protocol in {query ec2}} {
@@ -3318,7 +3384,32 @@ namespace eval aws {
 						}
 					}
 				}
-				timestamp -
+				timestamp {
+					# Resolve the wire format: explicit shape-level
+					# timestampFormat wins; otherwise json/rest-json default to
+					# unixTimestamp, rest-xml/query/ec2 default to iso8601.
+					set fmt	[json get -default "" $input timestampFormat]
+					if {$fmt eq ""} {
+						set fmt	[expr {$protocol in {json rest-json} ? "unixTimestamp" : "iso8601"}]
+					}
+					switch -exact -- $fmt {
+						unixTimestamp {
+							lappend transforms [list ts_epoch $argname]
+							set template_obj	[json string "~N:_tx_$argname"]
+						}
+						iso8601 {
+							lappend transforms [list ts_iso $argname]
+							set template_obj	[json string "~S:_tx_$argname"]
+						}
+						rfc822 {
+							lappend transforms [list ts_rfc822 $argname]
+							set template_obj	[json string "~S:_tx_$argname"]
+						}
+						default {
+							set template_obj	[json string "~S:$argname"]
+						}
+					}
+				}
 				character -
 				string {
 					set template_obj	[json string "~S:$argname"]
@@ -3330,16 +3421,22 @@ namespace eval aws {
 					set template_obj	[json string "~J:$argname"]
 				}
 				integer -
-				long -
+				long {
+					set template_obj	[json string "~N:$argname"]
+				}
 				float -
 				double {
-					set template_obj	[json string "~N:$argname"]
+					# JSON bodies need NaN/Infinity wrapped as strings; normal
+					# numeric values pass through.
+					lappend transforms [list float $argname]
+					set template_obj	[json string "~J:_tx_$argname"]
 				}
 				boolean {
 					set template_obj	[json string "~B:$argname"]
 				}
 				blob {
-					set template_obj	[json string "~S:$argname"]
+					lappend transforms [list blob $argname]
+					set template_obj	[json string "~S:_tx_$argname"]
 				}
 				default {
 					error "Unhandled type \"[json get $input type]\""
@@ -3362,6 +3459,7 @@ namespace eval aws {
 						-shape				[json get $input type] \
 						-endpoint_params	{{}} \
 						-builtins			builtins \
+						-transforms			transforms \
 					]
 				}
 			}

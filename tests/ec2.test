@@ -1,0 +1,35 @@
+if {[lsearch [namespace children] ::tcltest] == -1} {
+    package require tcltest
+    namespace import ::tcltest::*
+}
+
+tcltest::loadTestedCommands
+package require aws 2
+package require rl_json
+package require rltest
+interp alias {} json {} ::rl_json::json
+
+test ec2-describe_regions-1.1 {scalar params} -body { #<<<
+	json exists [aws ec2 describe_regions -region us-east-1] Regions
+} -result 1
+#>>>
+test ec2-describe_regions-1.2 {list input: -region_names flattens to RegionName.N} -body { #<<<
+	set r [aws ec2 describe_regions -region us-east-1 -region_names {us-east-1 us-west-2}]
+	lsort [json lmap rg [json extract $r Regions] {json get $rg RegionName}]
+} -result {us-east-1 us-west-2}
+#>>>
+test ec2-describe_regions-1.3 {list-of-struct input: -filters flattens correctly} -body { #<<<
+	set r [aws ec2 describe_regions -region us-east-1 -filters {{Name region-name Values {us-east-1 eu-west-1}}}]
+	lsort [json lmap rg [json extract $r Regions] {json get $rg RegionName}]
+} -result {eu-west-1 us-east-1}
+#>>>
+test ec2-describe_availability_zones-1.1 {basic call} -body { #<<<
+	json exists [aws ec2 describe_availability_zones -region us-east-1] AvailabilityZones
+} -result 1
+#>>>
+
+# cleanup
+::tcltest::cleanupTests
+return
+
+# vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4

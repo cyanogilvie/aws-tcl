@@ -742,6 +742,7 @@ proc build_aws_services args { #<<<
 		rest-json	{}
 		query		{}
 		rest-xml	{}
+		ec2			{}
 	}
 	foreach service_dir [glob -type d -tails -directory $definitions *] {
 		set latest	[lindex [lsort -dictionary -decreasing [glob -type d -tails -directory [file join $definitions $service_dir] *]] 0]
@@ -775,12 +776,12 @@ proc build_aws_services args { #<<<
 		}
 		# smithy-rpc-v2-cbor isn't implemented; fall back to any supported
 		# protocol the service lists as an alternative.
-		if {$protocol ni {json rest-json query rest-xml}} {
+		if {$protocol ni {json rest-json query rest-xml ec2}} {
 			set fallback	{}
 			if {[json exists $service_def metadata protocols]} {
 				json foreach p [json extract $service_def metadata protocols] {
 					set p [json get $p]
-					if {$p in {json rest-json query rest-xml}} {
+					if {$p in {json rest-json query rest-xml ec2}} {
 						set fallback $p
 						break
 					}
@@ -806,7 +807,7 @@ proc build_aws_services args { #<<<
 	}
 
 	set total_raw			0
-	foreach service_def [list {*}[dict get $by_protocol json] {*}[dict get $by_protocol rest-json] {*}[dict get $by_protocol query]] { #<<<
+	foreach service_def [list {*}[dict get $by_protocol json] {*}[dict get $by_protocol rest-json] {*}[dict get $by_protocol query] {*}[dict get $by_protocol ec2]] { #<<<
 		set def			$service_def
 
 		#puts "creating ::aws::[json get $service_def metadata service_name]"
@@ -865,8 +866,8 @@ proc build_aws_services args { #<<<
 				set u			{}
 				set hm			{}
 				set q			{}
-				if {$protocol eq "query"} {
-					lappend q		Action _a
+				if {$protocol in {query ec2}} {
+					lappend q		Action _a {}
 					lappend static	[list set _a $op]
 				}
 
@@ -917,7 +918,7 @@ proc build_aws_services args { #<<<
 						set errors	{}
 					}
 
-					if {$protocol in {query rest-xml}} {
+					if {$protocol in {query ec2 rest-xml}} {
 						if {[json exists $opdef output resultWrapper]} {
 							set resultWrapper	[json get $opdef output resultWrapper]
 						} else {
@@ -996,7 +997,7 @@ proc build_aws_services args { #<<<
 				set m		[json get $opdef http method]
 				set p		[json get $opdef http requestUri]
 
-				if {$protocol eq "query" && $m eq "POST"} {
+				if {$protocol in {query ec2} && $m eq "POST"} {
 					set c	{application/x-www-form-urlencoded; charset=utf-8}
 					set t	{}
 				}
@@ -1066,7 +1067,7 @@ proc build_aws_services args { #<<<
 			append service_code "variable responses {\n[join [lmap {k v} $responses {format "%s\t%s" [list $k] [list $v]}] \n]\n}" \n
 		}
 		if {
-			[json get $service_def metadata protocol] eq "query" &&
+			[json get $service_def metadata protocol] in {query ec2} &&
 			[json exists $service_def metadata apiVersion]
 		} {
 			append service_code "variable apiVersion [list [json get $service_def metadata apiVersion]]" \n

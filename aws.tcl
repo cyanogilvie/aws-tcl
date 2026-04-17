@@ -566,7 +566,20 @@ namespace eval aws {
 					}
 					$doc documentElement root
 					#log notice "AWS error:\n[$root asXML -indent 4]"
-					if {[$root nodeName] eq "Error"} {
+					# EC2 wraps errors as <Response><Errors><Error>...</Error></Errors><RequestID>...</RequestID></Response>
+					if {[$root nodeName] eq "Response" && [$root selectNodes {string(Errors/Error/Code)}] ne ""} {
+						set err		[lindex [$root selectNodes Errors/Error] 0]
+						set details	{}
+						foreach node [$err childNodes] {
+							lappend details [$node nodeName] [$node text]
+						}
+						throw [list AWS \
+							[$err selectNodes string(Code)] \
+							[$root selectNodes string(RequestID)] \
+							"" \
+							$details \
+						] "AWS: [$err selectNodes string(Message)]"
+					} elseif {[$root nodeName] eq "Error"} {
 						set details	{}
 						foreach node [$root childNodes] {
 							lappend details [$node nodeName] [$node text]
@@ -1285,6 +1298,59 @@ namespace eval aws {
 	}
 
 	#>>>
+	proc _flatten_query_param {queryvar prefix value spec} { #<<<
+		# Serialize $value into $queryvar as query-string pairs, honouring the
+		# shape spec produced by aws::build::compile_query_spec. Spec forms:
+		#   ""                              scalar
+		#   {list <memberName> <flat> <subspec>}
+		#   {struct {memberLoc subspec ...}}
+		upvar 1 $queryvar query
+		if {$spec eq ""} {
+			lappend query $prefix $value
+			return
+		}
+		switch -exact -- [lindex $spec 0] {
+			list {
+				lassign $spec - member_name flat subspec
+				# If the list value arrived as JSON, convert it to a Tcl list.
+				if {[json valid $value] && [json type $value] eq "array"} {
+					set items	[json lmap e $value {json extract $e}]
+				} else {
+					set items	$value
+				}
+				set base	[expr {$flat ? $prefix : "$prefix.$member_name"}]
+				set i	0
+				foreach item $items {
+					incr i
+					_flatten_query_param query "$base.$i" $item $subspec
+				}
+			}
+			struct {
+				lassign $spec - members
+				# Accept either a JSON object or a Tcl dict.
+				if {[json valid $value] && [json type $value] eq "object"} {
+					set pairs	[json lmap {k v} $value {list $k [json extract $v]}]
+				} else {
+					set pairs	$value
+				}
+				# members is a list of {data_key serialized subspec} triples
+				set by_key	{}
+				foreach {k loc sub} $members {
+					dict set by_key $k [list $loc $sub]
+				}
+				dict for {k v} $pairs {
+					if {![dict exists $by_key $k]} continue
+					lassign [dict get $by_key $k] loc sub
+					_flatten_query_param query "$prefix.$loc" $v $sub
+				}
+			}
+			default {
+				error "Unhandled query spec: [list $spec]"
+			}
+		}
+	}
+
+	#>>>
 	proc _service_req args { #<<<
 		parse_args $args {
 			-b			{-default {} -name payload}
@@ -1382,14 +1448,17 @@ namespace eval aws {
 		}
 
 		set query	{}
-		foreach {name arg} $query_map {
+		# query_map is a flat list of triples {prefix argname spec}, where spec
+		# is empty for scalars or {list <name> <flat> <subspec>} /
+		# {struct <members>} for shapes that need flattening (ec2 / query).
+		foreach {name arg spec} $query_map {
 			if {[info exists _a_$arg]} {
-				lappend query $name [set _a_$arg]
+				_flatten_query_param query $name [set _a_$arg] $spec
 			}
 		}
 		#puts stderr "query_map ($query_map), query: ($query)"
 
-		if {$protocol eq "query" && [info exists ${service_ns}::apiVersion]} {
+		if {$protocol in {query ec2} && [info exists ${service_ns}::apiVersion]} {
 			# Inject the Version param
 			lappend query Version [set ${service_ns}::apiVersion]
 		}
@@ -1527,7 +1596,7 @@ namespace eval aws {
 				}
 			}
 			try {
-				if {$protocol in {query rest-xml} && $body ne ""} {
+				if {$protocol in {query ec2 rest-xml} && $body ne ""} {
 					# TODO: check content-type xml?
 					package require tdom
 					# Strip the xmlns
@@ -2982,6 +3051,60 @@ namespace eval aws {
 		}
 
 		#>>>
+		proc compile_query_spec {shapes shape protocol} { #<<<
+			# Build a minimal spec describing how to flatten a shape into query
+			# params (for the query and ec2 protocols). Returns:
+			#   ""                         scalar value, emitted directly
+			#   {list <memberName> <flat> <subspec>}
+			#   {struct {data_key serialized subspec data_key serialized subspec ...}}
+			# where <flat> is 1 if list items carry no .member. infix, and
+			# data_key is what the caller uses in the Tcl dict / JSON object
+			# (the member's Python name) while serialized is the wire name.
+			set def		[json extract $shapes $shape]
+			set type	[resolve_shape_type $shapes $shape]
+			switch -exact -- $type {
+				list {
+					set member_def	[json extract $def member]
+					set member_shape	[json get $member_def shape]
+					# ec2 lists are always flattened; query lists are flattened
+					# only when the list shape has "flattened":true.
+					set flat	[expr {$protocol eq "ec2" || [json get -default false $def flattened]}]
+					# Element locationName for the .member.N variant of query;
+					# ec2 re-uses the parent prefix so this is unused there.
+					set member_name	[if {[json exists $member_def locationName]} {
+						json get $member_def locationName
+					} else {
+						# botocore default for query: "member"
+						return -level 0 member
+					}]
+					list list $member_name $flat [compile_query_spec $shapes $member_shape $protocol]
+				}
+				structure {
+					set members	{}
+					json foreach {cname mdef} [json extract $def members] {
+						set loc	[if {[json exists $mdef locationName]} {
+							json get $mdef locationName
+						} else {
+							set cname
+						}]
+						if {$protocol eq "ec2"} {
+							if {[json exists $mdef queryName]} {
+								set loc	[json get $mdef queryName]
+							} else {
+								set loc	[string toupper $loc 0 0]
+							}
+						}
+						lappend members $cname $loc [compile_query_spec $shapes [json get $mdef shape] $protocol]
+					}
+					list struct $members
+				}
+				default {
+					return ""
+				}
+			}
+		}
+
+		#>>>
 		proc compile_input args { #<<<
 			parse_args $args {
 				-argname			{}
@@ -3048,7 +3171,7 @@ namespace eval aws {
 									lappend uri_map	$locationName $name
 								}
 								querystring {
-									lappend query_map	$locationName $name
+									lappend query_map	$locationName $name {}
 								}
 								headers {
 									lappend header_map	$locationName* $name
@@ -3083,8 +3206,20 @@ namespace eval aws {
 									-builtins			builtins \
 								]
 							}
-						} elseif {$protocol eq "query"} {
-							lappend query_map $locationName $name
+						} elseif {$protocol in {query ec2}} {
+							# ec2 protocol capitalizes the first letter of the
+							# serialized name (queryName overrides this entirely).
+							if {$protocol eq "ec2"} {
+								if {[json exists $member_def queryName]} {
+									set serialized	[json get $member_def queryName]
+								} else {
+									set serialized	[string toupper $locationName 0 0]
+								}
+							} else {
+								set serialized	$locationName
+							}
+							set spec	[compile_query_spec $shapes [json get $member_def shape] $protocol]
+							lappend query_map $serialized $name $spec
 						} else {
 							error "Unhandled protocol: ($protocol)"
 						}

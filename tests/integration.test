@@ -45,7 +45,7 @@ tcltest::testConstraint rl_aws_account [expr { #<<<
 test smoke-sts-get_caller_identity {returns an account and arn} -constraints aws_creds -body { #<<<
 	set r [aws sts get_caller_identity]
 	list [json type $r Account] [json type $r Arn]
-} -result {string string}
+} -cleanup {unset -nocomplain r} -result {string string}
 #>>>
 test smoke-iam-list_account_aliases {returns an array (potentially empty)} -constraints aws_creds -body { #<<<
 	json type [aws iam list_account_aliases] AccountAliases
@@ -58,13 +58,13 @@ test smoke-s3-list_buckets {returns an array of Buckets} -constraints aws_creds 
 test smoke-ec2-describe_regions {returns an array of Regions (tests ec2 query flattening)} -constraints aws_creds -body { #<<<
 	set r [aws ec2 describe_regions -region us-east-1]
 	expr {[json type $r Regions] eq "array" && [json length $r Regions] > 0}
-} -result 1
+} -cleanup {unset -nocomplain r} -result 1
 #>>>
 test smoke-ec2-describe_regions-with-filter {list-of-struct input is flattened correctly end-to-end} -constraints aws_creds -body { #<<<
 	set r [aws ec2 describe_regions -region us-east-1 \
 		-filters {{Name region-name Values {us-east-1 eu-west-1}}}]
 	lsort [json lmap rg [json extract $r Regions] {json get $rg RegionName}]
-} -result {eu-west-1 us-east-1}
+} -cleanup {unset -nocomplain r} -result {eu-west-1 us-east-1}
 #>>>
 test smoke-ec2-describe_availability_zones {basic ec2 call} -constraints aws_creds -body { #<<<
 	expr {[json length [aws ec2 describe_availability_zones -region us-east-1] AvailabilityZones] > 0}
@@ -101,7 +101,7 @@ test smoke-sqs-list_queues {json protocol with optional array} -constraints aws_
 	# so accept either "array" or missing.
 	set r [aws sqs list_queues -region us-east-1]
 	if {[json exists $r QueueUrls]} {json type $r QueueUrls} else {return -level 0 missing}
-} -match regexp -result {^(array|missing)$}
+} -cleanup {unset -nocomplain r} -match regexp -result {^(array|missing)$}
 #>>>
 
 # Error-path tests — assert that our _aws_error properly classifies real AWS

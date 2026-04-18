@@ -1,0 +1,274 @@
+if {[lsearch [namespace children] ::tcltest] == -1} {
+	package require tcltest
+	namespace import ::tcltest::*
+}
+
+tcltest::loadTestedCommands
+package require aws 2
+package require rltest
+package require rl_json
+interp alias {} json {} ::rl_json::json
+
+# Tests for the retry/backoff loop in ::aws::helpers::_aws_req.
+#
+# ::test_retry::setup installs a programmable mock in place of
+# ::aws::helpers::_req and saves/overrides the helpers-level tunables
+# so backoff is fast. ::test_retry::cleanup unwinds both. Each test's
+# -cleanup explicitly unsets its own body locals and then invokes
+# ::test_retry::cleanup — no per-test state leaks into the interp.
+
+namespace eval ::test_retry {
+	variable call_log {}
+	variable script  {}
+	variable saved   {}
+
+	# Programmable mock of ::aws::helpers::_req. $script is a list of
+	# entries consumed one per call:
+	#   {ok body status headers}       — return $body with the given status
+	#   {err aws-code msg {headers {}}}— throw an AWS error with that code
+	#   {err-raw code msg}             — throw a non-AWS errorcode (simulates
+	#                                    a socket error / rl_http failure)
+	proc mock_req_install {} {
+		rename ::aws::helpers::_req ::aws::helpers::_req_orig
+		proc ::aws::helpers::_req {method endpoint path args} {
+			variable ::test_retry::script
+			variable ::test_retry::call_log
+			parse_args::parse_args $args {
+				-scheme                      {-default http}
+				-headers                     {-default {}}
+				-params                      {-default {}}
+				-content_type                {-default {}}
+				-body                        {-default {}}
+				-xml_ns                      {-default {}}
+				-response_headers            {-alias}
+				-status                      {-alias}
+				-sig_service                 {-default {}}
+				-version                     {-default v4}
+				-region                      {-required}
+				-credential_scope            {-default ""}
+				-disable_double_encoding     {-default 0}
+				-signing_region              {-default {}}
+				-expecting_status            {-default 200}
+				-timeout                     {-default {}}
+				-connect_timeout             {-default {}}
+				-read_timeout                {-default {}}
+				-max_keepalive_age           {-default {}}
+				-max_keepalive_count         {-default {}}
+			}
+			lappend ::test_retry::call_log [list $method $path]
+			if {[llength $::test_retry::script] == 0} {
+				error "mock_req: script exhausted at call [llength $::test_retry::call_log]"
+			}
+			set step [lindex $::test_retry::script 0]
+			set ::test_retry::script [lrange $::test_retry::script 1 end]
+			switch -- [lindex $step 0] {
+				ok {
+					lassign $step _ body st hdrs
+					if {$hdrs ne ""} {set response_headers $hdrs}
+					set status $st
+					return $body
+				}
+				err {
+					lassign $step _ code msg hdrs
+					if {$hdrs ne ""} {set response_headers $hdrs}
+					throw [list AWS $code req-id] $msg
+				}
+				err-raw {
+					lassign $step _ code msg
+					throw [list $code] $msg
+				}
+				default {
+					error "mock_req: bad script step: $step"
+				}
+			}
+		}
+	}
+
+	proc mock_req_uninstall {} {
+		if {[info commands ::aws::helpers::_req_orig] ne ""} {
+			rename ::aws::helpers::_req ""
+			rename ::aws::helpers::_req_orig ::aws::helpers::_req
+		}
+	}
+
+	proc setup {} {
+		variable saved
+		variable call_log {}
+		variable script   {}
+		set saved [dict create \
+			_backoff_base	$::aws::helpers::_backoff_base \
+			_backoff_cap	$::aws::helpers::_backoff_cap \
+			retry_mode		$::aws::helpers::retry_mode]
+		set ::aws::helpers::_backoff_base 0.001
+		set ::aws::helpers::_backoff_cap  0.01
+		# Skip per-service send pacing so timing is determined only by
+		# backoff. "legacy" mode short-circuits _rate_before_send.
+		set ::aws::helpers::retry_mode    legacy
+		mock_req_install
+	}
+
+	proc cleanup {} {
+		variable saved
+		variable call_log
+		variable script
+		mock_req_uninstall
+		if {[dict exists $saved _backoff_base]} {
+			set ::aws::helpers::_backoff_base [dict get $saved _backoff_base]
+			set ::aws::helpers::_backoff_cap  [dict get $saved _backoff_cap]
+			set ::aws::helpers::retry_mode    [dict get $saved retry_mode]
+		}
+		set saved     {}
+		set call_log  {}
+		set script    {}
+	}
+
+	# Convenience wrapper used by test bodies.
+	proc do_req args {
+		set args_with_defaults [linsert $args 0 -region us-east-1 -sig_service test]
+		::aws::helpers::_aws_req POST example.com / {*}$args_with_defaults
+	}
+}
+
+set retry_setup   ::test_retry::setup
+
+test retry-1.1 {retries on ServiceUnavailable then succeeds} -setup $retry_setup -body { #<<<
+	set ::test_retry::script {
+		{err ServiceUnavailable {server hiccup}}
+		{err ServiceUnavailable {still hiccup}}
+		{ok  {{"ok":1}} 200 {}}
+	}
+	set res [::test_retry::do_req -retries 5]
+	list attempts [llength $::test_retry::call_log] res $res
+} -cleanup {
+	unset -nocomplain res
+	::test_retry::cleanup
+} -result {attempts 3 res {{"ok":1}}}
+#>>>
+test retry-1.2 {retries on 429-as-throttle} -setup $retry_setup -body { #<<<
+	# AWS error code will be bare numeric code 429 when body can't be parsed
+	set ::test_retry::script {
+		{err 429 {too many}}
+		{ok  {} 200 {}}
+	}
+	::test_retry::do_req -retries 5
+	llength $::test_retry::call_log
+} -cleanup {::test_retry::cleanup} -result 2
+#>>>
+test retry-1.3 {retries on all throttling error codes} -setup $retry_setup -body { #<<<
+	foreach code {
+		Throttling ThrottlingException ThrottledException
+		RequestThrottledException TooManyRequestsException
+		SlowDown ProvisionedThroughputExceededException
+	} {
+		set ::test_retry::call_log {}
+		set ::test_retry::script [list \
+			[list err $code "throttle"] \
+			[list ok {} 200 {}]]
+		::test_retry::do_req -retries 5
+		if {[llength $::test_retry::call_log] != 2} {
+			return "code $code: expected 2 attempts, got [llength $::test_retry::call_log]"
+		}
+	}
+	return ok
+} -cleanup {
+	unset -nocomplain code
+	::test_retry::cleanup
+} -result ok
+#>>>
+test retry-1.4 {retries on transient error codes} -setup $retry_setup -body { #<<<
+	foreach code {
+		InternalError InternalServerError ServiceUnavailable
+		RequestTimeout RequestTimeoutException BadGateway GatewayTimeout
+	} {
+		set ::test_retry::call_log {}
+		set ::test_retry::script [list \
+			[list err $code "oops"] \
+			[list ok {} 200 {}]]
+		::test_retry::do_req -retries 5
+		if {[llength $::test_retry::call_log] != 2} {
+			return "code $code: expected 2 attempts, got [llength $::test_retry::call_log]"
+		}
+	}
+	return ok
+} -cleanup {
+	unset -nocomplain code
+	::test_retry::cleanup
+} -result ok
+#>>>
+test retry-1.5 {does NOT retry on non-retryable error} -setup $retry_setup -body { #<<<
+	set ::test_retry::script {
+		{err ValidationException {bad param}}
+	}
+	set rc [catch {::test_retry::do_req -retries 5} res ei]
+	list rc $rc attempts [llength $::test_retry::call_log] code [lindex [dict get $ei -errorcode] 1]
+} -cleanup {
+	unset -nocomplain rc res ei
+	::test_retry::cleanup
+} -result {rc 1 attempts 1 code ValidationException}
+#>>>
+test retry-1.6 {retries on socket / non-AWS errorcode as transient} -setup $retry_setup -body { #<<<
+	set ::test_retry::script {
+		{err-raw POSIX {connection refused}}
+		{err-raw POSIX {connection refused}}
+		{ok      {} 200 {}}
+	}
+	::test_retry::do_req -retries 5
+	llength $::test_retry::call_log
+} -cleanup {::test_retry::cleanup} -result 3
+#>>>
+test retry-1.7 {gives up after max attempts and surfaces last error} -setup $retry_setup -body { #<<<
+	set ::test_retry::script {
+		{err Throttling a}
+		{err Throttling b}
+		{err Throttling c}
+	}
+	set rc [catch {::test_retry::do_req -retries 3} res ei]
+	list rc $rc attempts [llength $::test_retry::call_log] \
+		code [lindex [dict get $ei -errorcode] 1]
+} -cleanup {
+	unset -nocomplain rc res ei
+	::test_retry::cleanup
+} -result {rc 1 attempts 3 code Throttling}
+#>>>
+test retry-1.8 {honors Retry-After delay from response headers} -setup $retry_setup -body { #<<<
+	# Mock returns error with Retry-After:0 header — zero delay so the
+	# sleep path is exercised without slowing the test.
+	set ::test_retry::script {
+		{err Throttling wait {retry-after 0}}
+		{ok  {} 200 {}}
+	}
+	set t0 [clock milliseconds]
+	::test_retry::do_req -retries 5
+	set elapsed [expr {[clock milliseconds] - $t0}]
+	# Elapsed should be very small because Retry-After:0 ⇒ no sleep
+	expr {[llength $::test_retry::call_log] == 2 && $elapsed < 200}
+} -cleanup {
+	unset -nocomplain t0 elapsed
+	::test_retry::cleanup
+} -result 1
+#>>>
+test retry-1.9 {exhausts retries → throws original error not TOO_MANY_ERRORS} -setup $retry_setup -body { #<<<
+	# Older version threw {AWS TOO_MANY_ERRORS} swallowing the real
+	# cause; new version returns the last -errorcode intact.
+	set ::test_retry::script {
+		{err SlowDown full}
+		{err SlowDown full}
+		{err SlowDown full}
+	}
+	set rc [catch {::test_retry::do_req -retries 3} res ei]
+	list rc $rc code [lindex [dict get $ei -errorcode] 1]
+} -cleanup {
+	unset -nocomplain rc res ei
+	::test_retry::cleanup
+} -result {rc 1 code SlowDown}
+#>>>
+
+# File-level teardown: drop the ::test_retry namespace and the only
+# global we created outside it.
+unset -nocomplain retry_setup
+namespace delete ::test_retry
+
+::tcltest::cleanupTests
+return
+
+# vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4

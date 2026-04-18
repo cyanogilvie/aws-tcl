@@ -37,7 +37,7 @@ make fixtures
 Override stack name or region via environment:
 
 ```sh
-AWS_TCL_TEST_STACK=my-aws-tcl-test AWS_REGION=eu-west-1 make fixtures
+AWSTCL_TEST_STACK=my-aws-tcl-test AWS_REGION=eu-west-1 make fixtures
 ```
 
 The tests read the same env vars via `tests/fixtures.tcl`.

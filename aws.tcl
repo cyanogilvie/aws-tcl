@@ -1,7 +1,9 @@
 # AWS signature version 4: https://docs.aws.amazon.com/general/latest/gr/signature-version-4.html
 # All services support version 4, except SimpleDB which requires version 2
 
-package require rl_http 1.15.1
+package require rl_http 1.22
+package require Thread
+package require tomcrypt
 package require uri
 package require parse_args
 package require tdom
@@ -72,9 +74,102 @@ namespace eval aws {
 
 		interp alias {} ::aws::helpers::sigencode {} ::reuri encode awssig
 
-		variable maxrate		50		;# Hz
-		variable ratelimit		50
-		variable last_slowdown	0
+		# Retry / rate-limit configuration
+		#
+		# Rate-limit state is kept in process-scoped tsv arrays because
+		# rl_http's keepalive pool also crosses interp/thread boundaries:
+		# a SlowDown observed on a socket that later gets pulled by
+		# another interp must influence sends from that interp too. See
+		# tsv keys:
+		#   aws_tcl_rate       - per-service {max_rate next_send last_throttle}
+		#   aws_tcl_rate_cfg   - shared config (retry mode, max attempts)
+		# All rate-limit reads/writes are serialized via tsv::lock on
+		# aws_tcl_rate.
+		variable retry_mode		[if {[info exists ::env(AWS_RETRY_MODE)]} {
+			# legacy / standard / adaptive — matches AWS SDK v2/v3 terminology
+			set ::env(AWS_RETRY_MODE)
+		} else { return -level 0 standard }]
+		variable max_attempts	[if {[info exists ::env(AWS_MAX_ATTEMPTS)]} {
+			set ::env(AWS_MAX_ATTEMPTS)
+		} else { return -level 0 3 }]
+
+		# Retry classifier tables (merged from botocore _retry.json per-service
+		# policies plus the SDK-wide transient set). Membership in either
+		# table means the error is retryable; the distinction (throttle vs
+		# transient) drives backoff behavior and rate-limit adjustment.
+		variable _throttle_codes {
+			Throttling ThrottlingException ThrottledException
+			RequestThrottledException RequestThrottled
+			TooManyRequestsException ProvisionedThroughputExceededException
+			TransactionInProgressException RequestLimitExceeded
+			BandwidthLimitExceeded LimitExceededException
+			SlowDown PriorRequestNotComplete EC2ThrottledException
+		}
+		variable _transient_codes {
+			InternalError InternalFailure InternalServerError
+			InternalServerException ServiceUnavailable BadGateway
+			GatewayTimeout RequestTimeout RequestTimeoutException
+			IDPCommunicationError RequestTimeTooSkewed
+		}
+		# HTTP statuses that are always retryable regardless of parsed body
+		variable _retry_statuses {408 425 429 500 502 503 504 509}
+
+		# HTTP transport defaults. Three budgets, matching the shape
+		# of botocore / Java SDK v2 defaults and exposed by rl_http 1.22:
+		#
+		#   request_timeout : overall request budget (rl_http -timeout).
+		#     Matters for thread-exhaustion containment: bounds the
+		#     worst-case time this proc can hold a thread when a remote
+		#     endpoint gets wedged. 60s matches botocore defaults-mode
+		#     standard (read_timeout=60s) and the AWS CLI's default.
+		#   connect_timeout : cap on DNS+TCP+TLS handshake (rl_http
+		#     -connect_timeout). 5s: halfway between Java v2's 2s and
+		#     botocore's 60s; tolerates cross-region TCP handshake
+		#     latency without masking a dead IP.
+		#   read_timeout : cap on each inter-readable-chunk wait
+		#     (rl_http -read_timeout). Resets on each chunk, so this
+		#     is "max silent gap" during the body stream. 30s matches
+		#     Java SDK v2.
+		#
+		# request_timeout is the hard ceiling. connect_timeout and
+		# read_timeout can only shorten it, not extend, so raising
+		# request_timeout for a streaming Lambda invoke (e.g. 900s)
+		# while keeping read_timeout=30s is the canonical pattern:
+		# 15-minute function, fail if 30s elapse between chunks.
+		variable request_timeout		[if {[info exists ::env(AWSTCL_REQUEST_TIMEOUT)]} {
+			set ::env(AWSTCL_REQUEST_TIMEOUT)
+		} else { return -level 0 60 }]
+		variable connect_timeout		[if {[info exists ::env(AWSTCL_CONNECT_TIMEOUT)]} {
+			set ::env(AWSTCL_CONNECT_TIMEOUT)
+		} else { return -level 0 5 }]
+		variable read_timeout			[if {[info exists ::env(AWSTCL_READ_TIMEOUT)]} {
+			set ::env(AWSTCL_READ_TIMEOUT)
+		} else { return -level 0 30 }]
+		# -max_keepalive_age bounds how long a pooled keepalive
+		# connection may live in the parking tsv before being forced
+		# to reconnect. Setting a cap here (rather than rl_http's
+		# default of no limit) matters for S3/DynamoDB scaling: those
+		# services scale via new partitions and fronting IPs, and a
+		# stubbornly reused connection sticks to stale capacity even
+		# after the service has scaled up to absorb the caller's
+		# load. 60s matches the Java SDK v2 connectionMaxIdleTime
+		# and lets the resolve-cache TTL (also 60s in rl_http) and
+		# the S3 scale-up interval align.
+		variable max_keepalive_age		[if {[info exists ::env(AWSTCL_MAX_KEEPALIVE_AGE)]} {
+			set ::env(AWSTCL_MAX_KEEPALIVE_AGE)
+		} else { return -level 0 60 }]
+		variable max_keepalive_count	-1
+		# Upper bound on exponential backoff (seconds). Matches botocore.
+		variable _backoff_cap		20.0
+		variable _backoff_base		0.5
+		# Per-service rate-limit bucket bootstrap state
+		variable _max_send_rate		50.0
+		# Minimum floor for the adaptive send-rate cap (Hz)
+		variable _min_send_rate		0.5
+
+		if {[llength [tsv::names aws_tcl_rate]] == 0} {
+			# No-op: tsv::names is cheap; ensures the array exists lazily
+		}
 
 		proc _cache {cachekey script} { #<<<
 			variable cache
@@ -93,20 +188,187 @@ namespace eval aws {
 
 		#>>>
 
-		# Ensure that $script is run no more often than $hz / sec
-		proc ratelimit {hz script} { #<<<
-			variable _ratelimit_previous_script
-			set delay	[expr {entier(ceil(1000000.0/$hz))}]
-			if {[info exists _ratelimit_previous_script] && [dict exists $_ratelimit_previous_script $script]} {
-				set remaining	[expr {$delay - ([clock microseconds] - [dict get $_ratelimit_previous_script $script])}]
-				if {$remaining > 0} {
-					after [expr {$remaining / 1000}]
+		# Sleep for $ms milliseconds without entering a nested event
+		# loop. Two paths:
+		#   1. Coroutine: schedule a wakeup with after, yield. On
+		#      coroutine teardown the after is cancelled via a trace.
+		#   2. Plain script: block the thread on a per-thread
+		#      cond+mutex using thread::cond wait's built-in timeout.
+		#      The cond is private to this thread so nobody else can
+		#      notify it; the wait returns purely via the timeout.
+		#      No vwait, so no re-entrant event processing.
+		#
+		# Callers that need the event loop to keep servicing other
+		# work during the delay should use a coroutine (e.g. via
+		# aio::coro_sleep at the outer level).
+		proc _sleep_ms ms { #<<<
+			if {$ms <= 0} return
+			if {[info coroutine] ne ""} {
+				set aid [after $ms [info coroutine]]
+				set cleanup [list apply {{id old new op} {
+					after cancel $id
+				}} $aid]
+				trace add command [info coroutine] delete $cleanup
+				try {
+					yield
+				} finally {
+					trace remove command [info coroutine] delete $cleanup
 				}
+				return
 			}
-			dict set _ratelimit_previous_script $script	[clock microseconds]
-			catch {uplevel 1 $script} res options
-			dict incr options -level 1
-			return -options $options $res
+			variable _sleep_mutex
+			variable _sleep_cond
+			if {![info exists _sleep_mutex]} {
+				set _sleep_mutex	[thread::mutex create]
+				set _sleep_cond		[thread::cond  create]
+			}
+			thread::mutex lock $_sleep_mutex
+			try {
+				thread::cond wait $_sleep_cond $_sleep_mutex $ms
+			} finally {
+				thread::mutex unlock $_sleep_mutex
+			}
+		}
+
+		#>>>
+		# UUIDv4 suitable for idempotency tokens. Random bytes come from
+		# libtomcrypt's CSPRNG; version (4) and variant (10xx) nibbles
+		# are set per RFC 4122.
+		proc _uuid4 {} { #<<<
+			set bytes	[::tomcrypt::rng_bytes 16]
+			binary scan $bytes cu16 b
+			lset b 6	[expr {([lindex $b 6] & 0x0f) | 0x40}]
+			lset b 8	[expr {([lindex $b 8] & 0x3f) | 0x80}]
+			set hex	[binary encode hex [binary format c16 $b]]
+			return	[string range $hex 0 7]-[string range $hex 8 11]-[string range $hex 12 15]-[string range $hex 16 19]-[string range $hex 20 31]
+		}
+
+		#>>>
+		# Exponential backoff with full jitter. attempt is 1-based.
+		#   delay = rand(0, 1) * min(base * 2^(attempt-1), cap)
+		# Matches botocore ExponentialBackoff and the AWS SDK v2/v3
+		# "standard" retry mode. Returns delay in milliseconds.
+		proc _backoff_ms {attempt {base {}} {cap {}}} { #<<<
+			variable _backoff_cap
+			variable _backoff_base
+			if {$base eq ""} {set base $_backoff_base}
+			if {$cap  eq ""} {set cap  $_backoff_cap}
+			set ceiling	[expr {min($base * (2.0 ** ($attempt - 1)), $cap)}]
+			expr {entier(rand() * $ceiling * 1000)}
+		}
+
+		#>>>
+		# Parse a Retry-After response header. Supports the delay-seconds
+		# form (integer) and HTTP-date form; returns delay in ms, or ""
+		# if the header is absent / unparseable. Non-negative only.
+		proc _retry_after_ms headers { #<<<
+			if {![dict exists $headers retry-after]} return
+			set v	[string trim [dict get $headers retry-after]]
+			if {$v eq ""} return
+			if {[string is integer -strict $v]} {
+				if {$v < 0} return
+				return [expr {$v * 1000}]
+			}
+			# HTTP-date (RFC 7231). clock scan handles most forms.
+			if {[catch {clock scan $v -format "%a, %d %b %Y %H:%M:%S %Z"} t]} return
+			set delta	[expr {$t - [clock seconds]}]
+			if {$delta < 0} return
+			expr {$delta * 1000}
+		}
+
+		#>>>
+		# Classify a caught error. Returns one of:
+		#   {throttle <code>}  — server told us to slow down
+		#   {transient <code>} — server hiccup or connection error, retry
+		#   {clockskew <code>} — signing clock skew, retry after resync
+		#   {none <code>}      — not retryable
+		# $options is the dict from `on error` / `trap`.
+		proc _classify_error options { #<<<
+			variable _throttle_codes
+			variable _transient_codes
+			variable _retry_statuses
+
+			set ec		[dict get $options -errorcode]
+			if {[lindex $ec 0] ne "AWS"} {
+				# rl_http / socket / DNS / TLS errors — treat as transient
+				return [list transient [lindex $ec 0]]
+			}
+			set code	[lindex $ec 1]
+			if {$code eq "RequestTimeTooSkewed"} {
+				return [list clockskew $code]
+			}
+			if {$code in $_throttle_codes} {
+				return [list throttle $code]
+			}
+			if {$code in $_transient_codes} {
+				return [list transient $code]
+			}
+			if {[string is integer -strict $code] && $code in $_retry_statuses} {
+				return [expr {$code == 429 ? "throttle $code" : "transient $code"}]
+			}
+			return [list none $code]
+		}
+
+		#>>>
+		# Per-service rate-limit bucket. Keyed by a stable service id
+		# (signingName if available, else host). State is a three-list
+		# {max_rate next_send last_throttle}:
+		#   max_rate        : current cap in Hz
+		#   next_send       : earliest clock microseconds we may send
+		#   last_throttle   : clock seconds of last observed throttle
+		proc _rate_before_send key { #<<<
+			variable _max_send_rate
+			variable _min_send_rate
+			variable retry_mode
+			if {$retry_mode eq "legacy"} return	;# legacy mode = no send pacing
+
+			set now_us	[clock microseconds]
+			tsv::lock aws_tcl_rate {
+				if {[tsv::exists aws_tcl_rate $key]} {
+					lassign [tsv::get aws_tcl_rate $key] max_rate next_send last_throttle
+					# In standard mode we still recover (grow) the rate after
+					# a quiet period. Adaptive mode uses a stricter pacing.
+					if {$max_rate < $_max_send_rate && [clock seconds] - $last_throttle > 10} {
+						set max_rate	[expr {min($_max_send_rate, $max_rate + max(1.0, $max_rate * 0.5))}]
+					}
+				} else {
+					set max_rate		$_max_send_rate
+					set next_send		0
+					set last_throttle	0
+				}
+				set wait_us		[expr {$next_send - $now_us}]
+				set interval_us	[expr {entier(1.0e6 / $max_rate)}]
+				set new_next	[expr {max($now_us, $next_send) + $interval_us}]
+				tsv::set aws_tcl_rate $key [list $max_rate $new_next $last_throttle]
+			}
+			if {$wait_us > 0} {
+				_sleep_ms [expr {$wait_us / 1000 + 1}]
+			}
+		}
+
+		#>>>
+		proc _rate_after_throttle key { #<<<
+			variable _min_send_rate
+			tsv::lock aws_tcl_rate {
+				if {[tsv::exists aws_tcl_rate $key]} {
+					lassign [tsv::get aws_tcl_rate $key] max_rate next_send _
+				} else {
+					variable _max_send_rate
+					set max_rate	$_max_send_rate
+					set next_send	0
+				}
+				set max_rate	[expr {max($_min_send_rate, $max_rate * 0.5)}]
+				tsv::set aws_tcl_rate $key [list $max_rate $next_send [clock seconds]]
+			}
+		}
+
+		#>>>
+		# Stable per-service key for the rate-limit bucket. Uses the
+		# signing name + region; either may be empty for metadata endpoints.
+		proc _rate_key {sig_service region} { #<<<
+			if {$sig_service eq ""} {set sig_service -}
+			if {$region eq ""} {set region -}
+			return $sig_service:$region
 		}
 
 		#>>>
@@ -667,6 +929,28 @@ namespace eval aws {
 				-disable_double_encoding	{-default 0}
 				-signing_region				{-default {}}
 				-expecting_status			{-default 200}
+				-timeout					{-default {}}
+				-connect_timeout			{-default {}}
+				-read_timeout				{-default {}}
+				-max_keepalive_age			{-default {}}
+				-max_keepalive_count		{-default {}}
+			}
+			# Resolve transport defaults from the helpers-level config
+			# vars (overridable via env — see variable declarations).
+			if {$timeout eq ""} {
+				set timeout				[set ::aws::helpers::request_timeout]
+			}
+			if {$connect_timeout eq ""} {
+				set connect_timeout		[set ::aws::helpers::connect_timeout]
+			}
+			if {$read_timeout eq ""} {
+				set read_timeout		[set ::aws::helpers::read_timeout]
+			}
+			if {$max_keepalive_age eq ""} {
+				set max_keepalive_age	[set ::aws::helpers::max_keepalive_age]
+			}
+			if {$max_keepalive_count eq ""} {
+				set max_keepalive_count	[set ::aws::helpers::max_keepalive_count]
 			}
 			if {[reuri::uri exists $path query]} {
 				set q		[reuri::uri extract $path query]
@@ -779,11 +1063,15 @@ namespace eval aws {
 				}] rl_http_$signed_url]
 			}]
 			rl_http instvar h $method $signed_url \
-				-timeout	20 \
-				-keepalive	1 \
-				-headers	$signed_headers \
+				-timeout				$timeout \
+				-connect_timeout		$connect_timeout \
+				-read_timeout			$read_timeout \
+				-keepalive				1 \
+				-max_keepalive_age		$max_keepalive_age \
+				-max_keepalive_count	$max_keepalive_count \
+				-headers				$signed_headers \
 				{*}$extra \
-				-data		$body
+				-data					$body
 
 			#puts stderr "rl_http $method $signed_url, headers: ($signed_headers), data: ($body)"
 			#puts stderr "got [$h code] headers: ([$h headers])\n[$h body]"
@@ -802,9 +1090,8 @@ namespace eval aws {
 
 		#>>>
 		proc _aws_req {method endpoint path args} { #<<<
-			variable ratelimit
-			variable last_slowdown
-			variable maxrate
+			variable max_attempts
+			variable retry_mode
 
 			parse_args::parse_args $args {
 				-scheme						{-default http}
@@ -817,53 +1104,82 @@ namespace eval aws {
 				-status						{-alias}
 				-sig_service				{-default {}}
 				-version					{-enum {v4 v2 s3 s3v4} -default v4 -# {AWS signature version}}
-				-retries					{-default 3}
+				-retries					{-default {}}
 				-region						{-required}
 				-credential_scope			{-default ""}
 				-disable_double_encoding	{-default 0}
 				-signing_region				{-default {}}
 				-expecting_status			{-default 200}
+				-timeout					{-default {}}
+				-connect_timeout			{-default {}}
+				-read_timeout				{-default {}}
+				-max_keepalive_age			{-default {}}
+				-max_keepalive_count		{-default {}}
 			}
+			# -retries stays for backward compat; if unspecified we use the
+			# configured default (AWS_MAX_ATTEMPTS / the variable).
+			if {$retries eq ""} {set retries $max_attempts}
+			set rate_key	[_rate_key $sig_service $region]
 
-			if {$ratelimit < $maxrate && [clock seconds] - $last_slowdown > 10} {
-				set from			$ratelimit
-				set ratelimit		[expr {min($maxrate, $ratelimit + min(2, $ratelimit * 0.5))}]
-				log notice "aws req ratelimit recovery to $ratelimit"
-				set last_slowdown	[clock seconds]
-			}
-
-			for {set try 0} {$try < $retries} {incr try} {
+			for {set try 1} {$try <= $retries} {incr try} {
+				_rate_before_send $rate_key
 				try {
-					ratelimit $ratelimit {
-						return [_req $method $endpoint $path \
-							-region						$region \
-							-credential_scope			$credential_scope \
-							-disable_double_encoding	$disable_double_encoding \
-							-signing_region				$signing_region \
-							-expecting_status			$expecting_status \
-							-headers					$headers \
-							-params						$params \
-							-content_type				$content_type \
-							-body						$body \
-							-response_headers			response_headers \
-							-status						status \
-							-scheme						$scheme \
-							-xml_ns						$xml_ns \
-							-sig_service				$sig_service \
-							-version					$version \
-						]
+					return [_req $method $endpoint $path \
+						-region						$region \
+						-credential_scope			$credential_scope \
+						-disable_double_encoding	$disable_double_encoding \
+						-signing_region				$signing_region \
+						-expecting_status			$expecting_status \
+						-headers					$headers \
+						-params						$params \
+						-content_type				$content_type \
+						-body						$body \
+						-response_headers			response_headers \
+						-status						status \
+						-scheme						$scheme \
+						-xml_ns						$xml_ns \
+						-sig_service				$sig_service \
+						-version					$version \
+						-timeout					$timeout \
+						-connect_timeout			$connect_timeout \
+						-read_timeout				$read_timeout \
+						-max_keepalive_age			$max_keepalive_age \
+						-max_keepalive_count		$max_keepalive_count \
+					]
+				} on error {errmsg options} {
+					lassign [_classify_error $options] kind code
+					if {$kind eq "none" || $try >= $retries} {
+						return -options $options $errmsg
 					}
-				} trap {AWS InternalError} {errmsg options} {
-					continue
-				} trap {AWS ServiceUnavailable} {errmsg options} - trap {AWS SlowDown} {errmsg options} - trap {AWS TooManyRequestsException} {errmsg options} {
-					set ratelimit		[expr {max(1, int($ratelimit * 0.5))}]
-					log notice "aws req got [dict get $options -errorcode], ratelimit now: $ratelimit"
-					set last_slowdown	[clock seconds]
-					after 1000
+
+					# Honour Retry-After when provided, else full-jitter
+					# exponential backoff capped at _backoff_cap seconds.
+					set retry_after_ms	""
+					if {[info exists response_headers]} {
+						set retry_after_ms	[_retry_after_ms $response_headers]
+					}
+					set delay_ms	[expr {
+						$retry_after_ms ne "" ? $retry_after_ms : [_backoff_ms $try]
+					}]
+
+					if {$kind eq "throttle"} {
+						_rate_after_throttle $rate_key
+						log notice "aws req got throttle ($code), backoff ${delay_ms}ms (attempt $try/$retries)"
+					} elseif {$kind eq "clockskew"} {
+						# TODO: resync the signing clock. For now fall
+						# through to the transient path — a short wait
+						# and retry will often fix transient skew.
+						log notice "aws req got RequestTimeTooSkewed, backoff ${delay_ms}ms (attempt $try/$retries)"
+					} else {
+						log notice "aws req transient error ($code), backoff ${delay_ms}ms (attempt $try/$retries)"
+					}
+					_sleep_ms $delay_ms
 					continue
 				}
 			}
 
+			# Unreachable — the final attempt's error is returned via
+			# `return -options` above. Guard against logic bugs.
 			throw {AWS TOO_MANY_ERRORS} "Too many errors, ran out of patience retrying"
 		}
 
@@ -1324,6 +1640,20 @@ namespace eval aws {
 	}
 
 	#>>>
+	# Auto-populate an idempotency-token member. Called from generated
+	# op code before _service_req when the input shape has a member with
+	# idempotencyToken:true: if the caller didn't supply a value, we
+	# insert a freshly generated UUIDv4 so that a retry of the request
+	# (either by this SDK or an application-level retry) is deduped by
+	# the service. No-op if the caller provided their own token.
+	proc _auto_idempotency_token var { #<<<
+		upvar 1 $var v
+		if {![info exists v]} {
+			set v	[::aws::helpers::_uuid4]
+		}
+	}
+
+	#>>>
 	# Per-shape body-value transforms applied before json template substitution.
 	# compile_input emits an `if {[info exists X]} {set _tx_X [_tx_FOO $X]}` line
 	# for each member that needs pre-template conversion; the template then
@@ -1737,7 +2067,12 @@ namespace eval aws {
 				-headers					$headers \
 				-expecting_status			$expected_status \
 				-response_headers			response_headers \
-				-status						status
+				-status						status \
+				{*}[if {[info exists _a_timeout]             && $_a_timeout             ne ""} {list -timeout             $_a_timeout}] \
+				{*}[if {[info exists _a_connect_timeout]     && $_a_connect_timeout     ne ""} {list -connect_timeout     $_a_connect_timeout}] \
+				{*}[if {[info exists _a_read_timeout]        && $_a_read_timeout        ne ""} {list -read_timeout        $_a_read_timeout}] \
+				{*}[if {[info exists _a_max_keepalive_age]   && $_a_max_keepalive_age   ne ""} {list -max_keepalive_age   $_a_max_keepalive_age}] \
+				{*}[if {[info exists _a_max_keepalive_count] && $_a_max_keepalive_count ne ""} {list -max_keepalive_count $_a_max_keepalive_count}]
 		} on ok body {
 			if {[info exists handleresp]} {
 				resp_cx instvar cx -status $status -headers $response_headers -body $body
@@ -2413,7 +2748,7 @@ namespace eval aws {
 	#>>>
 	proc _reconstruct {custom_maps in} { #<<<
 		string map [list \
-			%p		" args \{parse_args \$args \{-requestid -alias -response_headers -alias " \
+			%p		" args \{parse_args \$args \{-requestid -alias -response_headers -alias -timeout \{-default \{\}\} -connect_timeout \{-default \{\}\} -read_timeout \{-default \{\}\} -max_keepalive_age \{-default \{\}\} -max_keepalive_count \{-default \{\}\} " \
 			%r		";_service_req -r \$region " \
 			{*}$custom_maps \
 		] $in
@@ -2867,6 +3202,14 @@ namespace eval aws {
 		}
 		# Add the endpoint context input params to argspec and input wiring >>>
 
+		# Transport-level knobs accepted by every rest-xml op. They're
+		# forwarded through the $params dict into _service_req.
+		lappend argspec -timeout             [list -name timeout             -default {}]
+		lappend argspec -connect_timeout     [list -name connect_timeout     -default {}]
+		lappend argspec -read_timeout        [list -name read_timeout        -default {}]
+		lappend argspec -max_keepalive_age   [list -name max_keepalive_age   -default {}]
+		lappend argspec -max_keepalive_count [list -name max_keepalive_count -default {}]
+
 		# If the response specifies a payload, wire up the -payload alias in argspec <<<
 		set post_parse_args	{}
 		if {[json exists $opdef output]} {
@@ -2878,11 +3221,29 @@ namespace eval aws {
 		}
 		# If the response specifies a payload, wire up the -payload alias in argspec >>>
 
+		# Auto-populate idempotency tokens. For rest-xml the input args
+		# land in the $params dict keyed by the PascalCase member name,
+		# so we inject a dict-set-if-missing after parse_args.
+		set idempotency_tokens	{}
+		if {[json exists $opdef input shape]} {
+			set _ishape	[json get $opdef input shape]
+			if {[json exists $service_def shapes $_ishape members]} {
+				json foreach {_mname _mdef} [json extract $service_def shapes $_ishape members] {
+					if {[json exists $_mdef idempotencyToken] && [json get $_mdef idempotencyToken]} {
+						lappend idempotency_tokens $_mname
+					}
+				}
+			}
+		}
+
 		set body	""
 		append body	{variable service_def} \n
 		append body	[list set cxparams	$cxparams] \n
 		append body	"parse_args \$args [list $argspec] params\n"
 		append body $post_parse_args
+		foreach _tok $idempotency_tokens {
+			append body "if {!\[dict exists \$params [list $_tok]\]} {dict set params [list $_tok] \[::aws::helpers::_uuid4\]}\n"
+		}
 		#append body {puts stderr "cxparams: ($cxparams)"} \n
 		if {[llength $copy_to_cx] > 0} {
 			append body "foreach {in_param cx_param} [list $copy_to_cx] " {{

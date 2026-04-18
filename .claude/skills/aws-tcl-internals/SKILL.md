@@ -25,6 +25,7 @@ matching the task:
 | `response-parsing.md` | fixing response decoding; handling a new response shape type; changing error classification |
 | `rule-engine.md` | endpoint_rules bugs; adding rule-engine fn helpers |
 | `pagination.md` | understanding or extending `aws foreach` / `aws lmap` and the paginator metadata |
+| `retry.md` | retry classifier, backoff, per-service rate-limit state, idempotency-token auto-fill |
 | `testing.md` | writing new tests; understanding the test harness; the fixture stack; tcltest gotchas |
 | `cbor.md` | implementing smithy-rpc-v2-cbor (planned, not implemented) |
 

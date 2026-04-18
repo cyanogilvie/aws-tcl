@@ -381,6 +381,251 @@ test _aws_error-1.3 {empty body uses status code} -setup { #<<<
 #>>>
 # Error response parsing >>>
 
+# Retry classifier + backoff + idempotency tokens <<<
+test classify-1.1 {throttling error codes are retryable as throttle} -body { #<<<
+	set kinds {}
+	foreach code {
+		Throttling ThrottlingException ThrottledException
+		RequestThrottledException TooManyRequestsException
+		ProvisionedThroughputExceededException RequestLimitExceeded
+		SlowDown PriorRequestNotComplete EC2ThrottledException
+		LimitExceededException BandwidthLimitExceeded
+		TransactionInProgressException RequestThrottled
+	} {
+		lappend kinds [lindex [::aws::helpers::_classify_error \
+			[dict create -errorcode [list AWS $code rq]]] 0]
+	}
+	lsort -unique $kinds
+} -cleanup {unset -nocomplain kinds code} -result throttle
+#>>>
+test classify-1.2 {transient error codes are retryable as transient} -body { #<<<
+	set kinds {}
+	foreach code {
+		InternalError InternalServerError InternalServerException
+		ServiceUnavailable RequestTimeout RequestTimeoutException
+		IDPCommunicationError InternalFailure BadGateway GatewayTimeout
+	} {
+		lappend kinds [lindex [::aws::helpers::_classify_error \
+			[dict create -errorcode [list AWS $code rq]]] 0]
+	}
+	lsort -unique $kinds
+} -cleanup {unset -nocomplain kinds code} -result transient
+#>>>
+test classify-1.3 {429 body-less status becomes throttle} -body { #<<<
+	::aws::helpers::_classify_error [dict create -errorcode {AWS 429}]
+} -result {throttle 429}
+#>>>
+test classify-1.4 {5xx body-less statuses are transient} -body { #<<<
+	lmap c {500 502 503 504 509} {
+		lindex [::aws::helpers::_classify_error \
+			[dict create -errorcode [list AWS $c]]] 0
+	}
+} -cleanup {unset -nocomplain c} -result {transient transient transient transient transient}
+#>>>
+test classify-1.5 {RequestTimeTooSkewed becomes clockskew} -body { #<<<
+	::aws::helpers::_classify_error [dict create -errorcode {AWS RequestTimeTooSkewed req}]
+} -result {clockskew RequestTimeTooSkewed}
+#>>>
+test classify-1.6 {ValidationException is not retryable} -body { #<<<
+	::aws::helpers::_classify_error [dict create -errorcode {AWS ValidationException req}]
+} -result {none ValidationException}
+#>>>
+test classify-1.7 {non-AWS (socket/DNS/TLS) errors are transient} -body { #<<<
+	lmap ec {
+		{POSIX ECONNREFUSED {connection refused}}
+		{POSIX ETIMEDOUT {timed out}}
+		{NONE}
+		{CHAN-ERROR write-error}
+	} {
+		lindex [::aws::helpers::_classify_error [dict create -errorcode $ec]] 0
+	}
+} -cleanup {unset -nocomplain ec} -result {transient transient transient transient}
+#>>>
+
+test backoff-1.1 {exponential with jitter — bounded by cap} -body { #<<<
+	# 500 samples; none should exceed base*2^(attempt-1) capped at 20s
+	foreach {attempt max_expect_ms} {1 500 2 1000 3 2000 4 4000 5 8000 8 20000} {
+		for {set i 0} {$i < 200} {incr i} {
+			set v [::aws::helpers::_backoff_ms $attempt]
+			if {$v < 0 || $v > $max_expect_ms} {
+				return "attempt=$attempt delay=${v}ms exceeds bound ${max_expect_ms}"
+			}
+		}
+	}
+	return ok
+} -cleanup {unset -nocomplain attempt max_expect_ms i v} -result ok
+#>>>
+test backoff-1.2 {cap dominates at high attempts} -body { #<<<
+	# attempt 20 — 0.5*2^19 = 262144s, should cap at 20000ms
+	set max 0
+	for {set i 0} {$i < 300} {incr i} {
+		set v [::aws::helpers::_backoff_ms 20]
+		if {$v > $max} {set max $v}
+	}
+	expr {$max <= 20000}
+} -cleanup {unset -nocomplain max i v} -result 1
+#>>>
+
+test retry_after-1.1 {integer seconds} -body { #<<<
+	::aws::helpers::_retry_after_ms {retry-after 7}
+} -result 7000
+#>>>
+test retry_after-1.2 {missing header returns empty} -body { #<<<
+	::aws::helpers::_retry_after_ms {content-type foo}
+} -result {}
+#>>>
+test retry_after-1.3 {bogus value returns empty} -body { #<<<
+	::aws::helpers::_retry_after_ms {retry-after garbage}
+} -result {}
+#>>>
+test retry_after-1.4 {negative integer returns empty (no retry earlier than now)} -body { #<<<
+	::aws::helpers::_retry_after_ms {retry-after -5}
+} -result {}
+#>>>
+test retry_after-1.5 {HTTP-date 5s in the future} -body { #<<<
+	set when [clock format [expr {[clock seconds] + 5}] \
+		-format "%a, %d %b %Y %H:%M:%S GMT" -timezone :UTC]
+	set v [::aws::helpers::_retry_after_ms [list retry-after $when]]
+	# clock arithmetic can slip a second either way
+	expr {$v >= 3000 && $v <= 6000}
+} -cleanup {unset -nocomplain when v} -result 1
+#>>>
+
+test uuid4-1.1 {format matches RFC 4122 v4} -body { #<<<
+	set u [::aws::helpers::_uuid4]
+	regexp {^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$} $u
+} -cleanup {unset -nocomplain u} -result 1
+#>>>
+test uuid4-1.2 {uniqueness over 1000 draws} -body { #<<<
+	set s {}
+	for {set i 0} {$i < 1000} {incr i} {lappend s [::aws::helpers::_uuid4]}
+	expr {[llength [lsort -unique $s]] == 1000}
+} -cleanup {unset -nocomplain s i} -result 1
+#>>>
+
+test auto_token-1.1 {auto-fills missing token} -body { #<<<
+	apply {{} {
+		# x not set — auto_idempotency_token should fill it
+		::aws::_auto_idempotency_token x
+		set ::__tok_holder $x
+	}}
+	expr {[regexp {^[0-9a-f-]{36}$} $::__tok_holder]}
+} -cleanup {unset -nocomplain ::__tok_holder} -result 1
+#>>>
+test auto_token-1.2 {preserves caller's value} -body { #<<<
+	apply {{} {
+		set tok fixed-value
+		::aws::_auto_idempotency_token tok
+		set ::__tok_holder $tok
+	}}
+	set ::__tok_holder
+} -cleanup {unset -nocomplain ::__tok_holder} -result fixed-value
+#>>>
+
+test auto_token_injection-1.1 {ec2 RunInstances injects auto-token call} -setup { #<<<
+	package require aws::ec2
+} -body {
+	string match "*_auto_idempotency_token client_token*" \
+		[info body ::aws::ec2::run_instances]
+} -result 1
+#>>>
+test auto_token_injection-1.2 {ec2 DescribeInstances (no token member) has no injection} -setup { #<<<
+	package require aws::ec2
+} -body {
+	string match "*_auto_idempotency_token*" \
+		[info body ::aws::ec2::describe_instances]
+} -result 0
+#>>>
+
+test sleep_ms-1.1 {plain-script sleep blocks for ≥ requested ms without pumping events} -body { #<<<
+	# If _sleep_ms accidentally vwait'd, the scheduled 'after 0' event
+	# below would fire during the sleep, setting $fired. We want it
+	# to stay 0 because the thread must block entirely. The after
+	# handler's update comes in -cleanup so it can't leak either.
+	set fired 0
+	after 0 [list set fired 1]
+	set t0 [clock milliseconds]
+	::aws::helpers::_sleep_ms 120
+	set elapsed [expr {[clock milliseconds] - $t0}]
+	list fired_during_sleep $fired blocked [expr {$elapsed >= 100 && $elapsed < 500}]
+} -cleanup {
+	update
+	unset -nocomplain fired t0 elapsed
+} -result {fired_during_sleep 0 blocked 1}
+#>>>
+test sleep_ms-1.2 {coroutine-mode sleep yields (does not block the thread)} -body { #<<<
+	# The coroutine's lifetime escapes -body (yields, resumes via
+	# event loop), so we name it and clean it up explicitly.
+	set started 0
+	set done    0
+	coroutine ::_sleep_ms_coro apply {{startedvar donevar} {
+		upvar #0 $startedvar started $donevar done
+		set started 1
+		::aws::helpers::_sleep_ms 80
+		set done 1
+	}} started done
+	set yielded_quickly $started
+	set fuse [after 1000 [list set done timeout]]
+	vwait done
+	after cancel $fuse
+	list yielded_quickly $yielded_quickly done $done
+} -cleanup {
+	unset -nocomplain started done yielded_quickly fuse
+	if {[info commands ::_sleep_ms_coro] ne ""} {rename ::_sleep_ms_coro {}}
+} -result {yielded_quickly 1 done 1}
+#>>>
+
+test transport_config-1.1 {request_timeout default is 60s} -body { #<<<
+	set ::aws::helpers::request_timeout
+} -result 60
+#>>>
+test transport_config-1.2 {max_keepalive_age default is 60s} -body { #<<<
+	set ::aws::helpers::max_keepalive_age
+} -result 60
+#>>>
+test transport_config-1.3 {every generated op accepts -timeout} -setup { #<<<
+	package require aws::ec2
+	package require aws::sts
+} -body {
+	lmap body [list \
+		[info body ::aws::ec2::describe_instances] \
+		[info body ::aws::sts::get_caller_identity]] {
+		string match {*-timeout*} $body
+	}
+} -cleanup {unset -nocomplain body} -result {1 1}
+#>>>
+test transport_config-1.4 {every generated op accepts -max_keepalive_age / -count} -setup { #<<<
+	package require aws::sts
+} -body {
+	set body [info body ::aws::sts::get_caller_identity]
+	list \
+		has_age    [string match {*-max_keepalive_age*}   $body] \
+		has_count  [string match {*-max_keepalive_count*} $body]
+} -cleanup {unset -nocomplain body} -result {has_age 1 has_count 1}
+#>>>
+test transport_config-1.5 {connect_timeout default is 5s} -body { #<<<
+	set ::aws::helpers::connect_timeout
+} -result 5
+#>>>
+test transport_config-1.6 {read_timeout default is 30s} -body { #<<<
+	set ::aws::helpers::read_timeout
+} -result 30
+#>>>
+test transport_config-1.7 {every generated op accepts -connect_timeout / -read_timeout} -setup { #<<<
+	package require aws::sts
+	package require aws::ec2
+} -body {
+	set sts_body [info body ::aws::sts::get_caller_identity]
+	set ec2_body [info body ::aws::ec2::describe_instances]
+	list \
+		sts_ct  [string match {*-connect_timeout*} $sts_body] \
+		sts_rt  [string match {*-read_timeout*}    $sts_body] \
+		ec2_ct  [string match {*-connect_timeout*} $ec2_body] \
+		ec2_rt  [string match {*-read_timeout*}    $ec2_body]
+} -cleanup {unset -nocomplain sts_body ec2_body} -result {sts_ct 1 sts_rt 1 ec2_ct 1 ec2_rt 1}
+#>>>
+# Retry classifier + backoff + idempotency tokens >>>
+
 # cleanup
 ::tcltest::cleanupTests
 return

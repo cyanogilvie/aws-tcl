@@ -6,7 +6,7 @@
 #   - tests/fixtures/empty_bucket.tcl
 #
 # Exposes:
-#   [fixture_stack_name]          - resolved stack name (env AWS_TCL_TEST_STACK or "aws-tcl-test")
+#   [fixture_stack_name]          - resolved stack name (env AWSTCL_TEST_STACK or "aws-tcl-test")
 #   [fixture_stack_region]        - resolved region (env AWS_REGION or "us-east-1")
 #   [fixture_stack_output <key>]  - read a stack output value, cached per-process
 #   [fixture_stack_ready]         - true iff stack exists and is in a complete state
@@ -25,8 +25,8 @@ namespace eval ::fixture {
 	variable _status_cache
 
 	proc stack_name {} {
-		if {[info exists ::env(AWS_TCL_TEST_STACK)] && $::env(AWS_TCL_TEST_STACK) ne ""} {
-			return $::env(AWS_TCL_TEST_STACK)
+		if {[info exists ::env(AWSTCL_TEST_STACK)] && $::env(AWSTCL_TEST_STACK) ne ""} {
+			return $::env(AWSTCL_TEST_STACK)
 		}
 		return aws-tcl-test
 	}

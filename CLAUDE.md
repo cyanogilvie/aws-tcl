@@ -21,6 +21,7 @@ Key pages to start with:
 - `response-parsing.md` — success and error response decoding
 - `rule-engine.md` — endpoint-rules compilation and the runtime helpers
 - `pagination.md` — aws foreach / aws lmap, driven by paginators-1.json
+- `retry.md` — retry classifier, backoff, per-service rate-limit state (tsv-backed), idempotency-token auto-fill
 - `testing.md` — test file layout, constraints, the fixture stack
 
 Forward-looking (not yet implemented):
@@ -56,7 +57,10 @@ that memory first.
   rule-engine changes break these loudly
 - `tests/protocol_vectors.test` — 236 serialization cases from
   botocore; the best smoke for serialization work
-- `tests/units.test` — 61 unit tests of primitives
+- `tests/units.test` — primitives + retry classifier / backoff /
+  Retry-After / UUIDv4 / idempotency-token auto-fill
+- `tests/retry.test` — `_aws_req` retry loop end-to-end with a
+  programmable mock `_req`
 - `tests/pagination.test` — 30 unit + fixture-stack tests of
   `aws foreach` / `aws lmap`
 - `tests/integration.test` — live-AWS tests gated by credentials /
@@ -65,5 +69,9 @@ that memory first.
   through `aws s3 put_object` now; no more workaround)
 
 Green baseline: `make test` passes whole suite in one process
-(14245 / 14251 at time of writing; remaining skips are constraint-
+(14283 / 14289 at time of writing; remaining skips are constraint-
 gated: rl_aws_account + a handful of known-bug sentinels).
+
+Requires rl_http ≥ 1.22 (for `-connect_timeout` / `-read_timeout`).
+In a dev setup where rl_http isn't system-installed, point make/tests
+at the dev build via `AWSTCL_EXTRA_TM_PATH=/path/to/rl_http/tm`.

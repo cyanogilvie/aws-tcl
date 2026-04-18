@@ -32,7 +32,8 @@ Rebuild before testing after any aws.tcl / build.tcl change.
 
 | File | Kind | Notes |
 |---|---|---|
-| `units.test` | offline unit tests | 61 tests of primitives — getAttr, substring, parseArn, partition, _a, flatten, error parsers |
+| `units.test` | offline unit tests | primitives — getAttr, substring, parseArn, partition, _a, flatten, error parsers, retry classifier, backoff, Retry-After parser, UUIDv4, idempotency auto-fill |
+| `retry.test` | offline unit tests | 9 end-to-end tests of `_aws_req`'s retry loop with a programmable mock `_req` — all throttle/transient codes, socket errors, exhaustion, Retry-After |
 | `endpoint_rules.test` | offline, from fixtures | 13882 tests from botocore/tests/functional/endpoint-rules |
 | `protocol_vectors.test` | offline, from fixtures | 236 serialization tests driven by botocore/tests/unit/protocols/input/*.json (query/ec2/json/json_1_0/rest-json) |
 | `pagination.test` | mixed | 23 offline unit tests of `aws foreach` / `aws lmap` against a fake service; 6 live tests gated by `aws_tcl_fixtures`; 1 legacy rl_aws_account test |

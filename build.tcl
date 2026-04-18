@@ -1,4 +1,11 @@
 tcl::tm::path add [file join [file dirname [file normalize [info script]]] tm]
+# Optional extra .tm search paths for dev setups where a dependency
+# (e.g. rl_http, rl_json) isn't system-installed. Colon-separated.
+if {[info exists ::env(AWSTCL_EXTRA_TM_PATH)]} {
+	foreach p [split $::env(AWSTCL_EXTRA_TM_PATH) :] {
+		if {$p ne ""} {tcl::tm::path add $p}
+	}
+}
 set aws_ver	[package require aws 2]
 
 package require rl_json
@@ -992,6 +999,24 @@ proc build_aws_services args { #<<<
 					]
 				} else {
 					set t	{}
+				}
+
+				# Auto-populate idempotency tokens (members with
+				# "idempotencyToken": true on the top-level input
+				# shape). Runs after parse_args so the user's value
+				# takes precedence. A freshly generated UUIDv4 is used
+				# if the caller didn't supply one, matching what the
+				# AWS SDK v2/v3 do so that an SDK-level retry is
+				# deduped by the service.
+				if {[json exists $opdef input shape]} {
+					set _ishape	[json get $opdef input shape]
+					if {[json exists $def shapes $_ishape members]} {
+						json foreach {_mname _mdef} [json extract $def shapes $_ishape members] {
+							if {[json exists $_mdef idempotencyToken] && [json get $_mdef idempotencyToken]} {
+								lappend static [list ::aws::_auto_idempotency_token [aws from_camel $_mname]]
+							}
+						}
+					}
 				}
 
 				# Per-member body-value transforms (blob base64, float NaN

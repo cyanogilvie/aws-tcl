@@ -3175,8 +3175,8 @@ namespace eval aws {
 				lassign $container this_itype cpath
 				if {[info exists type] && $type ne $this_itype} continue
 				if {[info exists itemtype]} {set _itemtype_out $this_itype}
-				if {![rl_json::json exists $res {*}$cpath]} continue
-				rl_json::json foreach item [rl_json::json extract $res {*}$cpath] {
+				if {![json exists $res {*}$cpath]} continue
+				json foreach item [json extract $res {*}$cpath] {
 					try {
 						uplevel 1 $body
 					} on break {} {
@@ -3202,15 +3202,15 @@ namespace eval aws {
 
 			# Termination:
 			# 1. Explicit more_results flag present and false → done.
-			if {$more_results ne "" && [rl_json::json exists $res $more_results]} {
-				if {![string is true -strict [rl_json::json get $res $more_results]]} break
+			if {$more_results ne "" && [json exists $res $more_results]} {
+				if {![string is true -strict [json get $res $more_results]]} break
 			}
 			# 2. No (or empty) continuation tokens → done.
 			set next_page_args	{}
 			set any_token		0
 			foreach in_name $input_tokens out_name $output_tokens {
-				if {![rl_json::json exists $res $out_name]} continue
-				set tok	[rl_json::json get $res $out_name]
+				if {![json exists $res $out_name]} continue
+				set tok	[json get $res $out_name]
 				if {$tok eq "" || $tok eq "null"} continue
 				lappend next_page_args -[from_camel $in_name] $tok
 				incr any_token

@@ -1,5 +1,3 @@
-package forget aws
-catch {namespace delete ::aws}
 tcltest::loadTestedCommands
 package require aws
 package require rl_json

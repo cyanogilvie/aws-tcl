@@ -22,7 +22,7 @@ tcltest::loadTestedCommands
 package require aws 2
 package require rl_json
 package require rltest
-namespace import rl_json::*
+if {[llength [info commands json]] == 0} {namespace import rl_json::*}
 
 # ------------------------------------------------------------------
 # Helpers

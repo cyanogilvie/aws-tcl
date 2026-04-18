@@ -73,6 +73,10 @@ in aws.tcl. It sniffs the body shape:
      in the standard rest-xml/query form.
    - `<Error><Code>...</Code><Message>...</Message>...</Error>` → standard
      rest-xml / query, errorCode `{AWS <Code> <RequestId> <Resource> <details>}`.
+   - `<ErrorResponse><Error>...</Error><RequestId>...</RequestId></ErrorResponse>`
+     → cloudformation / query wrapper, errorCode
+     `{AWS <Code> <RequestId> "" <details>}`. Unwraps `Error` the same
+     way as the top-level `<Error>` case.
    - Anything else → log + throw generic.
 
 The `details` tail is a key-value list of every child node under the

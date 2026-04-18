@@ -590,6 +590,20 @@ namespace eval aws {
 							[$root selectNodes string(Resource)] \
 							$details \
 						] "AWS: [$root selectNodes string(Message)]"
+					} elseif {[$root nodeName] eq "ErrorResponse" && [$root selectNodes {string(Error/Code)}] ne ""} {
+						# CloudFormation / query protocol wraps errors as
+						# <ErrorResponse><Error>...</Error><RequestId>...</RequestId></ErrorResponse>
+						set err		[lindex [$root selectNodes Error] 0]
+						set details	{}
+						foreach node [$err childNodes] {
+							lappend details [$node nodeName] [$node text]
+						}
+						throw [list AWS \
+							[$err selectNodes string(Code)] \
+							[$root selectNodes string(RequestId)] \
+							"" \
+							$details \
+						] "AWS: [$err selectNodes string(Message)]"
 					} else {
 						log error "Error parsing AWS error response:\n[$h body]"
 						throw [list AWS [$h code]] "Error parsing [$h code] error response from AWS"
@@ -3615,7 +3629,16 @@ namespace eval aws {
 			}
 
 			if {[json exists $input payload]} {
-				set payload	[aws from_camel [json get $input payload]]
+				# Honour argname_transform so the payload var name matches the
+				# parse_args -name the enclosing op proc uses. Without this the
+				# rest-xml lazy-compile path (which passes -argname_transform {})
+				# ends up with parse_args binding PascalCase (Body) while payload
+				# is snake_case (body), and _service_req can't find the content.
+				set payload	[if {$argname_transform eq ""} {
+					json get $input payload
+				} else {
+					{*}$argname_transform [json get $input payload]
+				}]
 			}
 
 			# Add the endpoint context input params to argspec and input wiring <<<

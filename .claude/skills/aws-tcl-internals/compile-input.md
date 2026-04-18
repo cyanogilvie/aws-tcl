@@ -72,6 +72,15 @@ names via `aws::from_camel`. The rest-xml lazy-compile path passes
 this is a deliberate difference because the rest-xml path handles
 member mapping differently at runtime.
 
+**Every name derivation inside `compile_input` must honour
+`argname_transform`**, including the `payload` lookup at the top of
+the proc (`set payload [... [json get $input payload]]`). A bug where
+`payload` unconditionally called `aws from_camel` silently broke
+rest-xml body uploads (PascalCase `Body` parse_args local vs.
+snake-case `body` passed as `-b` to `_service_req`), producing empty
+bodies and `"You must provide the Content-Length HTTP header."`
+errors from S3. Fixed in `aws.tcl:3786`.
+
 ## aws::from_camel — digit-sensitive
 
 The function preserves the case of acronym runs and lowercases only

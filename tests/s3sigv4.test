@@ -126,47 +126,19 @@ set legacy_shim {
 
 			if {$region eq ""} {set region us-east-1}
 
-			if 0 {
 			set res	[aws s3 put_object \
 				-region			$region \
 				-bucket			$bucket \
 				-key			$path \
 				-content_type	$content_type \
 				-cache_control	max-age=$max_age \
-				-ACL			$acl \
 				-body			$data \
+				{*}[if {[info exists acl]} {list -ACL $acl}] \
 			]
 
-			set hdrs	{}
+			set response_headers	{}
 			json foreach {k v} $res {
-				dict set hdrs [string tolower $k] [list [json get $v]]
-			}
-			set response_headers $hdrs
-			} else {
-				set headers		[list Cache-Control max-age=$max_age]
-				if {[info exists acl]} {
-					lappend headers x-amz-acl $acl
-				}
-				# Hack the upload until the put_object generated proc is working
-				# S3 doesn't like + in path elements
-				set path	[join [lmap e [split $path /] {
-					reuri encode path [reuri decode [string map {+ %2B} $e]]
-				}] /]
-				::aws::helpers::_aws_req PUT $bucket.s3.$region.amazonaws.com /$path \
-					-region						$region \
-					-scheme						https \
-					-credential_scope			$region \
-					-disable_double_encoding	1 \
-					-signing_region				$region \
-					-expecting_status			200 \
-					-headers					$headers \
-					-params						{} \
-					-content_type				$content_type \
-					-body						$data \
-					-response_headers			response_headers \
-					-status						status \
-					-sig_service				s3 \
-					-version					s3v4
+				dict set response_headers [string tolower $k] [list [json get $v]]
 			}
 
 			return

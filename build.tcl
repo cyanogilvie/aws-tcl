@@ -1,12 +1,3 @@
-# TODO:
-# - Wire up XML response error handling
-# - EC2 protocol (and service)
-# - Implement paginators
-# - Clean up this horrible mess
-
-#if {[file exists /here/api]} {
-#	tcl::tm::path add /here/api
-#}
 tcl::tm::path add [file join [file dirname [file normalize [info script]]] tm]
 set aws_ver	[package require aws 2]
 
@@ -689,6 +680,104 @@ proc compile_endpoint_rules {definitions service_def} { #<<<
 #>>>
 # Endpoint rules compilation >>>
 
+# Paginator metadata compilation <<<
+proc _normalize_token_list j { #<<<
+	if {[json type $j] eq "array"} {
+		return [json get $j]
+	}
+	list [json get $j]
+}
+
+#>>>
+proc compile_paginators {definitions service_def} { #<<<
+	# Parses paginators-1.json for the service and produces a Tcl dict
+	# keyed by snake_case op name:
+	#   <op> -> {
+	#       input_tokens        <list of token-field names>
+	#       output_tokens       <list, parallel to input_tokens>
+	#       limit_key           <field or "">
+	#       more_results        <field or "">
+	#       non_aggregate_keys  <list>
+	#       item_containers     <list of {itemtype {pathseg ...}}>
+	#   }
+	# Category-3 scalar leaks (Count/ScannedCount in dynamodb Query etc.)
+	# are dropped at build time — item_containers only lists result_keys
+	# that resolve to a list shape. Ops that end up with zero
+	# item_containers are skipped entirely.
+	set service_dir	[json get $service_def metadata service_dir]
+	set latest		[json get $service_def metadata latest]
+	set fn			[file join $definitions $service_dir $latest paginators-1.json]
+	if {![file exists $fn]} {return {}}
+	set pag_json	[readfile $fn]
+	if {![json exists $pag_json pagination]} {return {}}
+
+	set result	{}
+	json foreach {op spec} [json extract $pag_json pagination] {
+		if {![json exists $service_def operations $op output shape]} continue
+		set output_shape	[json get $service_def operations $op output shape]
+
+		set input_tokens	[_normalize_token_list [json extract $spec input_token]]
+		set output_tokens	[_normalize_token_list [json extract $spec output_token]]
+
+		set limit_key		[if {[json exists $spec limit_key]}  {json get $spec limit_key}]
+		set more_results	[if {[json exists $spec more_results]} {json get $spec more_results}]
+
+		set non_aggregate_keys	{}
+		if {[json exists $spec non_aggregate_keys]} {
+			json foreach k [json extract $spec non_aggregate_keys] {
+				lappend non_aggregate_keys [json get $k]
+			}
+		}
+
+		# Normalize result_key to a list, then resolve each against the shape tree.
+		set result_keys	{}
+		set rk_val		[json extract $spec result_key]
+		if {[json type $rk_val] eq "array"} {
+			json foreach k $rk_val {lappend result_keys [json get $k]}
+		} else {
+			lappend result_keys [json get $rk_val]
+		}
+
+		set item_containers	{}
+		foreach rk $result_keys {
+			set path	[split $rk .]
+			set shape	$output_shape
+			set bad		0
+			foreach seg $path {
+				if {![json exists $service_def shapes $shape members $seg shape]} {
+					set bad 1
+					break
+				}
+				set shape	[json get $service_def shapes $shape members $seg shape]
+			}
+			if {$bad} continue
+			if {![json exists $service_def shapes $shape type]} continue
+			if {[json get $service_def shapes $shape type] ne "list"} continue
+			if {![json exists $service_def shapes $shape member shape]} continue
+			set item_shape	[json get $service_def shapes $shape member shape]
+			lappend item_containers [list $item_shape $path]
+		}
+		if {[llength $item_containers] == 0} continue
+
+		# Key by PascalCase op name (matches paginators-1.json native form).
+		# The dispatcher does `to_camel $command` once to find the entry, so
+		# both user-facing snake variants (list_objects_v2 / list_objects_V2)
+		# resolve correctly.
+		dict set result $op [dict create \
+			input_tokens		$input_tokens \
+			output_tokens		$output_tokens \
+			limit_key			$limit_key \
+			more_results		$more_results \
+			non_aggregate_keys	$non_aggregate_keys \
+			item_containers		$item_containers \
+		]
+	}
+	set result
+}
+
+#>>>
+# Paginator metadata compilation >>>
+
 proc build_aws_services args { #<<<
 	parse_args $args {
 		-ver			{-required}
@@ -827,6 +916,9 @@ proc build_aws_services args { #<<<
 		append service_code "proc endpoint_rules params {$endpoint_rules \$params}" \n
 		append service_code [list variable protocol $protocol] \n
 		append service_code	{variable ei ::aws::_eir} \n
+
+		set paginators	[compile_paginators $definitions $service_def]
+		append service_code [list variable paginators $paginators] \n
 
 		set responses	{}
 		set exceptions	{}
@@ -1133,6 +1225,8 @@ proc build_aws_services args { #<<<
 
 		lassign [compile_endpoint_rules $definitions $service_def] endpoint_rules endpoint_params
 
+		set paginators	[compile_paginators $definitions $service_def]
+
 		#puts stderr "endpoint_params: [json pretty $endpoint_params]"
 		#if {[json get $service_def metadata service_name] eq "s3"} {
 		#	puts stderr "endpoint_rules: $endpoint_rules"
@@ -1145,6 +1239,7 @@ proc build_aws_services args { #<<<
 			%endpoint_params%	[list [json normalize $endpoint_params]] \
 			%service_def%		[list $service_def] \
 			%endpoint_rules%	$endpoint_rules \
+			%paginators%		[list $paginators] \
 		] {
 namespace eval ::aws::%service_name% {
 	namespace path {::parse_args ::rl_json ::aws ::aws::helpers}
@@ -1154,6 +1249,7 @@ namespace eval ::aws::%service_name% {
 	variable protocol			%protocol%
 	variable service_name_orig	%service_name_orig%
 	variable endpoint_params	%endpoint_params%
+	variable paginators			%paginators%
 	variable responses			{}
 
 	#proc ::tcl::mathfunc::track_term {term msg} {
@@ -1201,100 +1297,5 @@ namespace eval ::aws::%service_name% {
 #>>>
 
 build_aws_services {*}$argv
-
-if 1 return
-
-
-set test_services	{}
-#lappend test_services lambda
-#lappend test_services ecr
-lappend test_services secretsmanager
-#lappend test_services appconfig
-#lappend test_services dynamodb
-#lappend test_services sqs
-#lappend test_services	s3
-
-foreach service $test_services {
-	puts stderr "source $service: [timerate {
-		source [file join $prefix aws/$service-$aws_ver.tm]
-	} 1 1]"
-}
-if {"ecr" in $test_services} {
-	puts stderr "first:  [timerate {aws ecr describe_repositories} 1 1]"
-	puts stderr "second: [timerate {aws ecr describe_repositories} 1 1]"
-}
-if {"lambda" in $test_services} {
-	puts stderr "list-functions: [json pretty [aws lambda list_functions -function_version ALL]]"
-	puts stderr "get-function: [json pretty [aws lambda get_function -function_name veryLayeredTcl]]"
-	puts stderr "functions:\n\t[join [json lmap f [json extract [aws lambda list_functions] Functions] {json get $f FunctionName}] \n\t]"
-	#       veryLayeredTcl
-	#       testTclLambda
-	#       Test_Lambda_1
-	#       layeredTcl
-	set payload [aws lambda invoke \
-		-function_name		veryLayeredTcl \
-		-log_type			Tail \
-		-status_code		status \
-		-function_error		err \
-		-log_result			log \
-		-executed_version	exec_ver \
-		-requestid			requestid \
-		-payload [encoding convertto utf-8 [json template {
-			{
-				"hello": "worldはfoo"
-			}
-		}]] \
-	]
-	foreach v {status err log exec_ver payload requestid} {
-		if {[info exists $v]} {
-			if {$v eq "log"} {
-				set val	\n[encoding convertfrom utf-8 [binary decode base64 [set $v]]]
-			} else {
-				set val	[set $v]
-			}
-			puts [format {%20s: %s} $v $val]
-		}
-	}
-}
-
-if {"secretsmanager" in $test_services} {
-	puts stderr "secretsmanager get_random_password: ([aws secretsmanager get_random_password -exclude_punctuation])"
-}
-foreach service $test_services {
-	puts "$service:\n\t[join [lmap e [lsort -dictionary [info commands ::aws::${service}::*]] {namespace tail $e}] \n\t]"
-}
-
-if {"sqs" in $test_services} {
-	puts stderr "sqs list_queues: [set res [aws sqs list_queues -region af-south-1 -queue_name_prefix Test]]"
-	puts stderr [json pretty $res]
-	if 0 {
-	puts stderr "nodename: [[xml root $res] nodeName]"
-	#[xml root $res] removeAttribute xmlns
-	xml with res {
-		puts stderr "res: $res ([$res asXML])"
-		$res removeAttribute xmlns
-		puts stderr "res after: $res ([$res asXML])"
-	}
-	puts stderr "outer, res exists: [info exists res]"
-	#puts stderr "outer: $res"
-	#[xml root $res] removeAttribute xmlns
-	#set res	[[xml root $res] asXML]
-	puts stderr "get queues: [timerate {
-		puts stderr "queues:\n\t[join [lmap node [xml get $res /*/ListQueuesResult/QueueUrl] {format %s(%s) $node [$node text]}] \n\t]"
-	} 1 1]"
-	#puts stderr "res: ($res)"
-	puts stderr "lmap queues:\n\t[join [xml lmap n $res /*/ListQueuesResult/QueueUrl {$n text}] \n\t]"
-	}
-}
-
-if {"s3" in $test_services} {
-	puts "s3 create_bucket: [aws s3 create_bucket -region af-south-1 -bucket aws-tcl-test -create_bucket_configuration [json template {
-		{
-			"LocationConstraint": "af-south-1"
-		}
-	}]]"
-	puts "s3 list_buckets: [json pretty [aws s3 list_buckets -region af-south-1]]"
-	puts "s3 delete_bucket: [aws s3 delete_bucket -region af-south-1 -bucket aws-tcl-test]"
-}
 
 # vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4

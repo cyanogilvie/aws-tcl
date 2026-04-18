@@ -1,171 +1,188 @@
-# Pagination (planned, not yet implemented)
+# Pagination
 
-AWS list/describe ops commonly return partial results with a
-continuation token. Callers typically want one of three ergonomics:
+`aws foreach` and `aws lmap` drive AWS list/describe operations page-by-page,
+streaming results one item at a time. Both are routed through the `::aws`
+ensemble's `-unknown` handler (not `-map`, because `-map` disables auto-resolve
+of exported procs — see `aws.tcl:14-26`), which re-dispatches to the private
+`::aws::_foreach` / `::aws::_lmap` implementations. Naming them `_foreach`
+/ `_lmap` inside the namespace avoids shadowing the builtins for any
+namespace-scoped code.
 
-1. **Iterate pages explicitly** (the current pattern — caller loops on
-   `NextToken` / `NextMarker` / `Marker`).
-2. **Auto-paginate** — the call returns the concatenation of all
-   pages' result arrays.
-3. **Lazy iterator** — a coroutine-style interface yielding one
-   page-worth of results at a time.
+## Caller surface
 
-This page captures what we know so implementing any of these is
-straightforward.
+```tcl
+aws foreach <itemvar> ?-itemtype <var>? ?-page <var>? ?-type <itemtype>?
+    ?-result_key <key>? ?-page_size <N>? <svc> <op> ?opts...? <body>
 
-## botocore's paginator spec
-
-Each service has a `paginators-1.json` sibling of `service-2.json`:
-
-```
-botocore/botocore/data/<service>/<version>/paginators-1.json
+aws lmap <itemvar> ... <body>      ;# collects body's return value per iter
 ```
 
-Structure:
+- `<itemvar>` — single item bound per iteration; always a JSON fragment.
+- `-itemtype <var>` — binds the current item's shape name (`Object`,
+  `CommonPrefix`, `UserDetail` …). Required when the paginator has multiple
+  result containers unless `-type` or `-result_key` is given.
+- `-page <var>` — binds the full current page JSON once per page; the body is
+  responsible for `unset`ing it if it wants an `info exists` signal on the
+  next page. Aliased — harmless no-op if the option isn't supplied.
+- `-type <itemtype>` — filter: only iterate items of this shape. Also
+  satisfies the multi-container disambiguation.
+- `-result_key <key>` — pin to one result container (matches dotted path or
+  tail segment). Also disambiguates.
+- `-page_size <N>` — forwarded as the op's `limit_key` arg (e.g.
+  `-max_items 25`). Errors with `NO_LIMIT_KEY` if the paginator spec has none.
+- Body control flow: `break` exits `aws foreach` (lmap returns partial list);
+  `continue` next item; `return` returns from caller's proc; error
+  propagates. `throw {AWS FOREACH NEXT_PAGE} {}` stops processing the current
+  page and fetches the next one.
 
-```json
+## The paginator-metadata variable
+
+Each service module gets a `variable paginators` dict keyed by PascalCase op
+name (matching paginators-1.json native form — dispatcher does `to_camel` on
+the caller's snake command name). Per-op metadata shape:
+
+```tcl
 {
-    "pagination": {
-        "ListStacks": {
-            "input_token":  "NextToken",
-            "output_token": "NextToken",
-            "limit_key":    "MaxResults",
-            "result_key":   "StackSummaries"
-        },
-        "DescribeStackEvents": {
-            "input_token":  "NextToken",
-            "output_token": "NextToken",
-            "result_key":   "StackEvents"
-        }
-    }
+    input_tokens        <list of request-field names>
+    output_tokens       <list, parallel to input_tokens>
+    limit_key           <field or "">
+    more_results        <field or "">
+    non_aggregate_keys  <list>
+    item_containers     <list of {itemtype {pathseg ...}}>
 }
 ```
 
-Key fields:
+- `input_tokens` / `output_tokens` are always lists (length 1 for the common
+  case; 3 for route53 ListResourceRecordSets; 2 for s3
+  ListMultipartUploads / ListObjectVersions).
+- `item_containers` pairs the member-shape name (for `-itemtype`) with the
+  dot-split path into the response (for `json extract`). Built from a
+  shape-tree walk at build time.
 
-- `input_token` (string or list of strings): the request param(s) the
-  caller sets to resume. Multiple tokens appear in e.g. dynamodb where
-  `ExclusiveStartTableName` goes with `LastEvaluatedTableName`.
-- `output_token` (string or list): the field(s) in the response that
-  carry the next continuation token. Same cardinality as input_token.
-- `result_key` (string or list): output field(s) containing the
-  paginated results. May be multiple (e.g. s3 list_objects_v2 has
-  `Contents` and `CommonPrefixes`).
-- `limit_key` (optional): the request param for page size (e.g.
-  `MaxResults`, `MaxKeys`, `Limit`).
-- `more_results` (optional): a boolean response field indicating "more
-  pages available", used when there's no natural continuation token
-  but e.g. `IsTruncated`.
-- `non_aggregate_keys` (optional): output fields that aren't part of
-  the result but should be surfaced per-page (metadata).
+## Build-time compilation
 
-See the botocore pagination docs at
-<https://boto3.amazonaws.com/v1/documentation/api/latest/guide/paginators.html>
-for deeper semantics.
+`aws::build::compile_paginators` in `build.tcl`:
 
-## Implementation sketch
+1. Loads `paginators-1.json` if present.
+2. For each op, resolves each `result_key` by walking the output shape's
+   `members[seg].shape.members[seg]....` chain.
+3. Drops entries whose terminal shape isn't `type: list` — this kills
+   Category-3 scalar leaks (`dynamodb Query` declares `[Items, Count,
+   ScannedCount]` as result_keys; Count/ScannedCount are integers and
+   disappear, leaving `Items` as the only container).
+4. Records the list's `member.shape` as the item type.
+5. Ops that end up with zero list-valued containers are dropped entirely.
+6. Normalises `input_token` / `output_token` strings to single-element lists.
 
-### Build-time wiring
+Emitted into the service module as `variable paginators $dict`. Both
+non-rest-xml and rest-xml branches of `build_aws_services` inject it.
 
-In `build.tcl`, alongside `compile_endpoint_rules`, read
-`paginators-1.json` for each service and attach the parsed spec to the
-service module:
+## Runtime orchestration (`aws.tcl:_foreach`)
 
-```tcl
-set pag_fn [file join $definitions $service_dir $latest paginators-1.json]
-if {[file exists $pag_fn]} {
-    set paginators [json extract [readfile $pag_fn] pagination]
-    append service_code "variable paginators $paginators" \n
-}
-```
+1. `package require aws::$svc`; look up `::aws::${svc}::paginators`; error
+   NOT_PAGINATED if missing or op isn't in the dict.
+2. Parse args; validate (TYPE_REQUIRED for multi-container ambiguity;
+   NO_SUCH_KEY if `-result_key` doesn't match; NO_LIMIT_KEY for `-page_size`
+   on ops with no `limit_key`; NO_BODY for missing body script).
+3. Loop: invoke `aws::$svc $command ...svcargs ...page_size_args
+   ...next_page_args` via `uplevel 1`. Each invocation runs in the caller's
+   frame so arg-name rewriting and endpoint resolution behave exactly as a
+   direct call.
+4. Set caller's `-page` var to the whole response.
+5. For each `item_container`, filter by `-type`, set `-itemtype` var if
+   requested, iterate `rl_json::json foreach` over the extracted list,
+   uplevel-eval the body per item.
+6. Body return codes: `break` → exit loop (returns `$reslist`);
+   `continue` → next item; `return` → propagate with `-level` bumped;
+   `NEXT_PAGE` trap → set `$breakout`, break inner and outer loops to fetch
+   the next page; error → propagate; ok with `-collecting` → lappend to
+   `$reslist`.
+7. Termination: `more_results` present and false → stop; otherwise extract
+   any non-empty `output_token` values and thread them back into
+   `next_page_args` (`-[from_camel $in_name] $tok`). No tokens found → stop.
 
-For each op with a paginator entry, the generator emits a
-`<op_name>_pages` proc (or `<op_name>_paginate` — name tbd) that
-wraps the existing per-op proc.
+Order of `try ... on` handlers matters: `trap {AWS FOREACH NEXT_PAGE}` must
+come before `on error`, else the general error handler swallows it.
 
-### Runtime wrapper shape
+## Response-key name conventions
 
-Option A (auto-paginate, concat results):
+Paginator paths use the shape member names (which also appear verbatim in the
+wire response for JSON protocols, and in the JSON produced by
+`_handle_xml_resp` for XML protocols). No `locationName` translation is
+needed at pagination time — the response has already been normalised.
 
-```tcl
-proc list_stacks_pages args {
-    variable paginators
-    set spec [json extract $paginators ListStacks]
-    set input_token  [json get $spec input_token]
-    set output_token [json get $spec output_token]
-    set result_key   [json get $spec result_key]
+## Compound-token ops
 
-    set all_results  {[]}
-    set token        ""
-    while 1 {
-        set page_args $args
-        if {$token ne ""} {lappend page_args -[aws::from_camel $input_token] $token}
-        set resp [list_stacks {*}$page_args]
-        # Append this page's results to the aggregate.
-        if {[json exists $resp $result_key]} {
-            json foreach entry [json extract $resp $result_key] {
-                json set all_results end+1 [json extract $entry]
-            }
-        }
-        if {![json exists $resp $output_token]} break
-        set token [json get $resp $output_token]
-        if {$token eq "" || $token eq "null"} break
-    }
-    json template {
-        { "~K:result_key": "~J:all_results" }
-    }
-}
-```
+Only 3 ops use parallel token arrays:
 
-Option B (yield-per-page): use Tcl 8.6+ coroutines.
+- `s3 ListMultipartUploads` — `{KeyMarker UploadIdMarker}` /
+  `{NextKeyMarker NextUploadIdMarker}`
+- `s3 ListObjectVersions` — `{KeyMarker VersionIdMarker}` /
+  `{NextKeyMarker NextVersionIdMarker}`
+- `route53 ListResourceRecordSets` —
+  `{StartRecordName StartRecordType StartRecordIdentifier}` /
+  `{NextRecordName NextRecordType NextRecordIdentifier}`
 
-Option C (explicit token exposed, just a helper to check): minimal —
-just return the response unchanged and document the pattern.
+The dispatcher zips the pair — any non-empty output_token value gets
+forwarded as its paired input. `foreach in out ...` walks parallel arrays of
+equal length.
 
-### Multi-key handling
+## Multi-container ops (the 32 "Category 1" set)
 
-For paginators with list-valued tokens (dynamodb), the spec gives
-parallel lists and the wrapper has to zip them.
+Ops with multiple list result_keys fall into:
 
-### Backwards compatibility
+- **Heterogeneous** (~15 ops) — different item shapes, caller may legitimately
+  want all of them. Disambiguate with `-itemtype`. Examples:
+  `iam GetAccountAuthorizationDetails` (User/Group/Role/ManagedPolicyDetail),
+  `cloudwatch DescribeAlarms` (MetricAlarm/CompositeAlarm),
+  `s3 ListObjectsV2` (Object/CommonPrefix),
+  `devops-guru ListInsights` (ProactiveInsight/ReactiveInsight).
+- **Parallel/redundant** (~8 ops) — same entities, two views; caller wants
+  one. Pin with `-result_key`. Examples:
+  `ec2 DescribeVpcEndpointServices` (ServiceNames/ServiceDetails),
+  `resource-groups ListGroups` (GroupIdentifiers/Groups).
+- **Scalar leaks** (already filtered at build time — none reach runtime).
+- **Items + diagnostic list** (~3 ops) — e.g. `logs FilterLogEvents` has
+  `events` plus `searchedLogStreams` (diagnostic). Caller either switches in
+  the body or pins `-result_key events`.
 
-The original per-op proc (`list_stacks`) should stay exactly as-is
-(non-paginating single call). Paginated convenience goes to a sibling
-proc or takes an opt-in flag.
+The build-time shape walk picks the member-shape name as `-itemtype`, so
+`{CommonPrefix {CommonPrefixes}}` reads naturally in a `switch` (rather than
+the list-name `CommonPrefixes`).
 
-## Decision points
+## `non_aggregate_keys`
 
-- Proc naming: `list_stacks_pages` / `list_stacks_paginate` /
-  `-paginate 1` flag on `list_stacks`? Pick one convention and document
-  it. A flag keeps the API surface smaller but complicates return
-  types (same proc returns different structures with/without the
-  flag). A suffix is clearer.
-- Concat all vs. yield: a lot of services have potentially huge result
-  sets (s3 buckets with millions of keys, cloudwatch metrics). A
-  concat-everything implementation is ergonomic for small sets and
-  dangerous for large ones. Yielding per page via a coroutine is
-  probably the best default.
-- Stopping condition: when does a paginator stop? Most services use
-  an empty/missing output_token. Some (s3) use `IsTruncated: false`
-  (`more_results` field). Handle both.
+Not used by the dispatcher directly — the caller extracts these from
+`-page` when it wants them. About 76 ops across 25 services populate this
+(e.g. `dynamodb Query`'s `ConsumedCapacity`, `connect Search*`'s
+`ApproximateTotalCount`, `cloudformation DescribeChangeSet`'s 20+ metadata
+fields). Kept in the metadata for completeness and in case a later
+convenience wrapper wants it.
 
-## Test approach
+## Testing
 
-Botocore has pagination test fixtures at
-`botocore/tests/unit/data/paginators/` but those test botocore's own
-paginator class. Smithy tests at
-`botocore/tests/unit/protocols/*.json` don't cover pagination.
+`tests/pagination.test`:
 
-Best approach: add `pagination.test` with integration tests against
-the `rl_aws_account` constraint for services that reliably return
-more than one page of results (cloudformation stacks, iam policies,
-lambda functions).
+- A fake-service harness (`::aws::fake`) registers per-op paginator metadata
+  and a canned page sequence, then stubs op procs that return pages in order
+  and record every call. Lets us test every knob without live AWS.
+- 23 unit tests covering: single-container iteration, token threading,
+  break/continue/return/error propagation, `NEXT_PAGE` throw, lmap collection,
+  lmap partial-result on break, `-page` set-once semantics, `-page_size`
+  mapping and NO_LIMIT_KEY error, multi-container disambiguation errors and
+  all three workarounds (`-itemtype`, `-type`, `-result_key`), compound
+  tokens, `more_results` flag early termination.
+- 4 live integration tests gated by `rl_aws_account`: lambda list_functions
+  spanning pages, cloudformation list_stacks, iam list_policies with
+  `-page_size`, s3 list_objects_v2 multi-container with `-itemtype`.
 
-## Useful references
+## References
 
+- Implementation: `aws.tcl` `_foreach` (~line 3070) and `_lmap` (below it);
+  ensemble wiring at `aws.tcl:14`.
+- Build-time: `build.tcl` `compile_paginators` (and `_normalize_token_list`);
+  injection points in both service-generation loops.
+- Tests: `tests/pagination.test`.
 - botocore pagination guide:
   <https://boto3.amazonaws.com/v1/documentation/api/latest/guide/paginators.html>
-- Per-service paginators-1.json files: every service dir in
-  `botocore/botocore/data/`
-- botocore's paginator implementation:
-  `botocore/botocore/paginate.py` (python reference)
+- Spec files: `botocore/botocore/data/<service>/<version>/paginators-1.json`.

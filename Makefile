@@ -5,6 +5,12 @@ VER=2.0a19
 MODE=-ziplet
 TCLSH=tclsh
 
+# Fixture stack lifecycle
+AWS_TCL_TEST_STACK?=aws-tcl-test
+AWS_REGION?=us-east-1
+AWS_CLI?=aws
+FIXTURE_TEMPLATE=tests/fixtures/aws-tcl-test.json
+
 CONTAINER_ENV=-v "`pwd`/here:/here" --network host --ulimit core=-1
 
 all: tm
@@ -49,4 +55,52 @@ install: tm
 clean:
 	-rm -r tm
 
-.PHONY: clean tm container_test test install all
+# Fixture stack lifecycle <<<
+# See tests/fixtures/README.md for the full story. These targets assume the
+# AWS CLI is installed and the ambient credentials have rights to
+# create/modify the test stack (IAM managed policies, S3 bucket, SSM
+# parameters, CloudWatch log groups).
+
+deploy-fixtures:
+	$(AWS_CLI) cloudformation deploy \
+		--template-file $(FIXTURE_TEMPLATE) \
+		--stack-name    $(AWS_TCL_TEST_STACK) \
+		--region        $(AWS_REGION) \
+		--capabilities  CAPABILITY_NAMED_IAM \
+		--disable-rollback
+
+fixture-events:
+	$(AWS_CLI) cloudformation describe-stack-events \
+		--stack-name $(AWS_TCL_TEST_STACK) \
+		--region     $(AWS_REGION) \
+		--query 'StackEvents[?ResourceStatus==`CREATE_FAILED` || ResourceStatus==`UPDATE_FAILED`].[LogicalResourceId,ResourceType,ResourceStatusReason]' \
+		--output table
+
+seed-fixtures: tm
+	AWS_TCL_TEST_STACK=$(AWS_TCL_TEST_STACK) AWS_REGION=$(AWS_REGION) \
+		$(TCLSH) tests/fixtures/seed_objects.tcl
+
+fixtures: deploy-fixtures seed-fixtures
+
+empty-fixtures-bucket: tm
+	AWS_TCL_TEST_STACK=$(AWS_TCL_TEST_STACK) AWS_REGION=$(AWS_REGION) \
+		$(TCLSH) tests/fixtures/empty_bucket.tcl
+
+teardown-fixtures: empty-fixtures-bucket
+	$(AWS_CLI) cloudformation delete-stack \
+		--stack-name $(AWS_TCL_TEST_STACK) \
+		--region     $(AWS_REGION)
+	$(AWS_CLI) cloudformation wait stack-delete-complete \
+		--stack-name $(AWS_TCL_TEST_STACK) \
+		--region     $(AWS_REGION)
+
+fixture-status:
+	$(AWS_CLI) cloudformation describe-stacks \
+		--stack-name $(AWS_TCL_TEST_STACK) \
+		--region     $(AWS_REGION) \
+		--query 'Stacks[0].StackStatus' \
+		--output text
+# Fixture stack lifecycle >>>
+
+.PHONY: clean tm container_test test install all \
+	deploy-fixtures seed-fixtures fixtures empty-fixtures-bucket teardown-fixtures fixture-status fixture-events

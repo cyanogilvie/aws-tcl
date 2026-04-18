@@ -1,6 +1,23 @@
 # Testing
 
-Test files live in `tests/`, all using `tcltest`. Run against Tcl 9:
+Test files live in `tests/`, all using `tcltest`. Primary target is Tcl 9
+at `/opt/tcl9g/bin/tclsh9.0`.
+
+## Running
+
+Whole suite (preferred):
+
+```
+rm -rf tm && make -e tm TCLSH=/opt/tcl9g/bin/tclsh9.0 && make test TCLSH=/opt/tcl9g/bin/tclsh9.0
+```
+
+Single file:
+
+```
+make test TCLSH=/opt/tcl9g/bin/tclsh9.0 TESTFLAGS='-file pagination.test'
+```
+
+Or direct:
 
 ```
 /opt/tcl9g/bin/tclsh9.0 tests/all.tcl \
@@ -8,13 +25,8 @@ Test files live in `tests/`, all using `tcltest`. Run against Tcl 9:
     -file <filename>
 ```
 
-Rebuild before testing after any aws.tcl / build.tcl change:
-
-```
-rm -rf tm && make -e tm TCLSH=/opt/tcl9g/bin/tclsh9.0
-```
-
 The .tm modules are generated artefacts. `make clean` removes them.
+Rebuild before testing after any aws.tcl / build.tcl change.
 
 ## Test files (current)
 
@@ -23,37 +35,61 @@ The .tm modules are generated artefacts. `make clean` removes them.
 | `units.test` | offline unit tests | 61 tests of primitives — getAttr, substring, parseArn, partition, _a, flatten, error parsers |
 | `endpoint_rules.test` | offline, from fixtures | 13882 tests from botocore/tests/functional/endpoint-rules |
 | `protocol_vectors.test` | offline, from fixtures | 236 serialization tests driven by botocore/tests/unit/protocols/input/*.json (query/ec2/json/json_1_0/rest-json) |
+| `pagination.test` | mixed | 23 offline unit tests of `aws foreach` / `aws lmap` against a fake service; 6 live tests gated by `aws_tcl_fixtures`; 1 legacy rl_aws_account test |
 | `integration.test` | online, gated | smoke / rl-only tests against live AWS |
 | `account.test`, `cloudformation.test`, `dynamodb.test`, `ec2.test`, `logs.test`, `rest-xml.test`, `s3sigv4.test`, `sqs.test`, `sts.test` | online, service-specific | narrow integration tests |
 
-## The all-in-one-process hazard
-
-`tests/common.tcl` does `package forget aws` + `namespace delete ::aws`
-at the top of each test file to reset state. This works when running
-files individually but breaks when running the whole suite in one
-process — state partially survives, `package require aws::endpoints`
-silently returns a stale package with missing variables, and thousands
-of endpoint_rules tests fail.
-
-**Always run per-file.** `for f in tests/*.test; do ... done` or use
-`-file <name>` explicitly. `tests/all.tcl -file all.test` is NOT the
-recommended invocation.
-
 ## Constraints
 
-`integration.test` defines two constraints that gate network-dependent
-tests:
+Gate network-dependent tests on:
 
 - `aws_creds` — true when `aws::helpers::get_creds` returns (i.e. a
-  credential source resolves). Used for all live-AWS tests.
-- `rl_aws_account` — true when `aws::helpers::get_creds` *and*
-  `iam list_account_aliases` returns `"rubylane"` in its list. Used
-  for tests that depend on Ruby Lane-specific deployed resources
-  (lots of stacks, specific lambdas, etc.). The account id never
-  leaves the local runtime — we only check the alias.
+  credential source resolves). Used for all live-AWS tests. Defined in
+  `integration.test` and `pagination.test`.
+- `aws_tcl_fixtures` — true when `aws_creds` *and* the test fixture
+  CloudFormation stack exists and is in a complete state. Defined in
+  `pagination.test` via `tests/fixtures.tcl`. The stack provides
+  deterministic IAM policies / SSM parameters / log groups / seeded S3
+  objects for exact-count assertions. Deploy with `make fixtures`,
+  teardown with `make teardown-fixtures`. See `tests/fixtures/README.md`.
+- `rl_aws_account` — true when `aws_creds` *and*
+  `iam list_account_aliases` returns `"rubylane"` in its list. Used for
+  tests that depend on Ruby Lane-specific deployed resources (lots of
+  stacks, specific lambdas, etc.). The account id never leaves the local
+  runtime — we only check the alias. Being superseded by
+  `aws_tcl_fixtures` for new tests; kept for a few rubylane-only legacy
+  checks.
+- `knownBug` — skips tests pending a specific fix. Used sparingly.
 
 These are test-level gates; the tests themselves do no writes and no
-state mutation.
+state mutation on external state, except the fixture-stack seed helpers
+(which write only into the stack's own bucket).
+
+## The fixture stack
+
+`tests/fixtures/aws-tcl-test.json` is a CloudFormation template that
+stands up free-tier resources with deterministic names: 1 S3 bucket,
+12 IAM managed policies, 12 SSM parameters, 3 CW log groups. Stack
+outputs expose the concrete names/prefixes. `tests/fixtures.tcl`
+caches those outputs and exposes them as `[fixture_stack_output Key]`
+to tests.
+
+`tests/fixtures/seed_objects.tcl` puts a curated set of S3 objects into
+the bucket after stack creation — keys chosen to exercise sigv4 signing
+edge cases (spaces, UTF-8, reserved chars, brackets, parens, tilde) and
+to produce a useful mix of Objects + CommonPrefixes when listed with
+`-delimiter /`. `tests/fixtures/empty_bucket.tcl` flushes the bucket
+before stack deletion (CloudFormation can't delete a non-empty bucket).
+
+Gotchas learned the hard way:
+
+- SSM parameter names whose first hierarchy element starts with `aws` or
+  `ssm` are reserved and return `AccessDeniedException` on create AND
+  delete — effectively zombie resources. Keep all parameter paths under
+  a neutral prefix like `/fixtures/…`.
+- CloudFormation's error response is `<ErrorResponse><Error>…</Error></ErrorResponse>`
+  (unlike S3's top-level `<Error>` or EC2's `<Response><Errors><Error>`).
+  Handled in `_aws_error`, aws.tcl:605.
 
 ## Test style
 

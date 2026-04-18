@@ -1,0 +1,426 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Description": "aws-tcl test fixtures -- deterministic state for the pagination / live-integration test suite. Free-tier resources only. Tear down with `make teardown-fixtures`.",
+    "Resources":   {
+        "TestBucket": {
+            "Type":           "AWS::S3::Bucket",
+            "DeletionPolicy": "Delete",
+            "Properties":     {
+                "BucketName": {
+                    "Fn::Sub": "${AWS::StackName}-${AWS::AccountId}-${AWS::Region}"
+                },
+                "PublicAccessBlockConfiguration": {
+                    "BlockPublicAcls":   true,
+                    "BlockPublicPolicy": true,
+                    "IgnorePublicAcls":  true,
+                    "RestrictPublicBuckets": true
+                }
+            }
+        },
+        "Policy01":   {
+            "Type":       "AWS::IAM::ManagedPolicy",
+            "Properties": {
+                "ManagedPolicyName": {
+                    "Fn::Sub": "${AWS::StackName}-policy-01"
+                },
+                "Description":       "aws-tcl test fixture 01 -- inert read-only stub for pagination tests",
+                "PolicyDocument":    {
+                    "Version":   "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect":   "Allow",
+                            "Action":   "s3:GetObject",
+                            "Resource": "*"
+                        }
+                    ]
+                }
+            }
+        },
+        "Param01":    {
+            "Type":       "AWS::SSM::Parameter",
+            "Properties": {
+                "Name":  {
+                    "Fn::Sub": "/fixtures/${AWS::StackName}/param-01"
+                },
+                "Type":  "String",
+                "Value": "01"
+            }
+        },
+        "Policy02":   {
+            "Type":       "AWS::IAM::ManagedPolicy",
+            "Properties": {
+                "ManagedPolicyName": {
+                    "Fn::Sub": "${AWS::StackName}-policy-02"
+                },
+                "Description":       "aws-tcl test fixture 02 -- inert read-only stub for pagination tests",
+                "PolicyDocument":    {
+                    "Version":   "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect":   "Allow",
+                            "Action":   "s3:GetObject",
+                            "Resource": "*"
+                        }
+                    ]
+                }
+            }
+        },
+        "Param02":    {
+            "Type":       "AWS::SSM::Parameter",
+            "Properties": {
+                "Name":  {
+                    "Fn::Sub": "/fixtures/${AWS::StackName}/param-02"
+                },
+                "Type":  "String",
+                "Value": "02"
+            }
+        },
+        "Policy03":   {
+            "Type":       "AWS::IAM::ManagedPolicy",
+            "Properties": {
+                "ManagedPolicyName": {
+                    "Fn::Sub": "${AWS::StackName}-policy-03"
+                },
+                "Description":       "aws-tcl test fixture 03 -- inert read-only stub for pagination tests",
+                "PolicyDocument":    {
+                    "Version":   "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect":   "Allow",
+                            "Action":   "s3:GetObject",
+                            "Resource": "*"
+                        }
+                    ]
+                }
+            }
+        },
+        "Param03":    {
+            "Type":       "AWS::SSM::Parameter",
+            "Properties": {
+                "Name":  {
+                    "Fn::Sub": "/fixtures/${AWS::StackName}/param-03"
+                },
+                "Type":  "String",
+                "Value": "03"
+            }
+        },
+        "Policy04":   {
+            "Type":       "AWS::IAM::ManagedPolicy",
+            "Properties": {
+                "ManagedPolicyName": {
+                    "Fn::Sub": "${AWS::StackName}-policy-04"
+                },
+                "Description":       "aws-tcl test fixture 04 -- inert read-only stub for pagination tests",
+                "PolicyDocument":    {
+                    "Version":   "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect":   "Allow",
+                            "Action":   "s3:GetObject",
+                            "Resource": "*"
+                        }
+                    ]
+                }
+            }
+        },
+        "Param04":    {
+            "Type":       "AWS::SSM::Parameter",
+            "Properties": {
+                "Name":  {
+                    "Fn::Sub": "/fixtures/${AWS::StackName}/param-04"
+                },
+                "Type":  "String",
+                "Value": "04"
+            }
+        },
+        "Policy05":   {
+            "Type":       "AWS::IAM::ManagedPolicy",
+            "Properties": {
+                "ManagedPolicyName": {
+                    "Fn::Sub": "${AWS::StackName}-policy-05"
+                },
+                "Description":       "aws-tcl test fixture 05 -- inert read-only stub for pagination tests",
+                "PolicyDocument":    {
+                    "Version":   "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect":   "Allow",
+                            "Action":   "s3:GetObject",
+                            "Resource": "*"
+                        }
+                    ]
+                }
+            }
+        },
+        "Param05":    {
+            "Type":       "AWS::SSM::Parameter",
+            "Properties": {
+                "Name":  {
+                    "Fn::Sub": "/fixtures/${AWS::StackName}/param-05"
+                },
+                "Type":  "String",
+                "Value": "05"
+            }
+        },
+        "Policy06":   {
+            "Type":       "AWS::IAM::ManagedPolicy",
+            "Properties": {
+                "ManagedPolicyName": {
+                    "Fn::Sub": "${AWS::StackName}-policy-06"
+                },
+                "Description":       "aws-tcl test fixture 06 -- inert read-only stub for pagination tests",
+                "PolicyDocument":    {
+                    "Version":   "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect":   "Allow",
+                            "Action":   "s3:GetObject",
+                            "Resource": "*"
+                        }
+                    ]
+                }
+            }
+        },
+        "Param06":    {
+            "Type":       "AWS::SSM::Parameter",
+            "Properties": {
+                "Name":  {
+                    "Fn::Sub": "/fixtures/${AWS::StackName}/param-06"
+                },
+                "Type":  "String",
+                "Value": "06"
+            }
+        },
+        "Policy07":   {
+            "Type":       "AWS::IAM::ManagedPolicy",
+            "Properties": {
+                "ManagedPolicyName": {
+                    "Fn::Sub": "${AWS::StackName}-policy-07"
+                },
+                "Description":       "aws-tcl test fixture 07 -- inert read-only stub for pagination tests",
+                "PolicyDocument":    {
+                    "Version":   "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect":   "Allow",
+                            "Action":   "s3:GetObject",
+                            "Resource": "*"
+                        }
+                    ]
+                }
+            }
+        },
+        "Param07":    {
+            "Type":       "AWS::SSM::Parameter",
+            "Properties": {
+                "Name":  {
+                    "Fn::Sub": "/fixtures/${AWS::StackName}/param-07"
+                },
+                "Type":  "String",
+                "Value": "07"
+            }
+        },
+        "Policy08":   {
+            "Type":       "AWS::IAM::ManagedPolicy",
+            "Properties": {
+                "ManagedPolicyName": {
+                    "Fn::Sub": "${AWS::StackName}-policy-08"
+                },
+                "Description":       "aws-tcl test fixture 08 -- inert read-only stub for pagination tests",
+                "PolicyDocument":    {
+                    "Version":   "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect":   "Allow",
+                            "Action":   "s3:GetObject",
+                            "Resource": "*"
+                        }
+                    ]
+                }
+            }
+        },
+        "Param08":    {
+            "Type":       "AWS::SSM::Parameter",
+            "Properties": {
+                "Name":  {
+                    "Fn::Sub": "/fixtures/${AWS::StackName}/param-08"
+                },
+                "Type":  "String",
+                "Value": "08"
+            }
+        },
+        "Policy09":   {
+            "Type":       "AWS::IAM::ManagedPolicy",
+            "Properties": {
+                "ManagedPolicyName": {
+                    "Fn::Sub": "${AWS::StackName}-policy-09"
+                },
+                "Description":       "aws-tcl test fixture 09 -- inert read-only stub for pagination tests",
+                "PolicyDocument":    {
+                    "Version":   "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect":   "Allow",
+                            "Action":   "s3:GetObject",
+                            "Resource": "*"
+                        }
+                    ]
+                }
+            }
+        },
+        "Param09":    {
+            "Type":       "AWS::SSM::Parameter",
+            "Properties": {
+                "Name":  {
+                    "Fn::Sub": "/fixtures/${AWS::StackName}/param-09"
+                },
+                "Type":  "String",
+                "Value": "09"
+            }
+        },
+        "Policy10":   {
+            "Type":       "AWS::IAM::ManagedPolicy",
+            "Properties": {
+                "ManagedPolicyName": {
+                    "Fn::Sub": "${AWS::StackName}-policy-10"
+                },
+                "Description":       "aws-tcl test fixture 10 -- inert read-only stub for pagination tests",
+                "PolicyDocument":    {
+                    "Version":   "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect":   "Allow",
+                            "Action":   "s3:GetObject",
+                            "Resource": "*"
+                        }
+                    ]
+                }
+            }
+        },
+        "Param10":    {
+            "Type":       "AWS::SSM::Parameter",
+            "Properties": {
+                "Name":  {
+                    "Fn::Sub": "/fixtures/${AWS::StackName}/param-10"
+                },
+                "Type":  "String",
+                "Value": "10"
+            }
+        },
+        "Policy11":   {
+            "Type":       "AWS::IAM::ManagedPolicy",
+            "Properties": {
+                "ManagedPolicyName": {
+                    "Fn::Sub": "${AWS::StackName}-policy-11"
+                },
+                "Description":       "aws-tcl test fixture 11 -- inert read-only stub for pagination tests",
+                "PolicyDocument":    {
+                    "Version":   "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect":   "Allow",
+                            "Action":   "s3:GetObject",
+                            "Resource": "*"
+                        }
+                    ]
+                }
+            }
+        },
+        "Param11":    {
+            "Type":       "AWS::SSM::Parameter",
+            "Properties": {
+                "Name":  {
+                    "Fn::Sub": "/fixtures/${AWS::StackName}/param-11"
+                },
+                "Type":  "String",
+                "Value": "11"
+            }
+        },
+        "Policy12":   {
+            "Type":       "AWS::IAM::ManagedPolicy",
+            "Properties": {
+                "ManagedPolicyName": {
+                    "Fn::Sub": "${AWS::StackName}-policy-12"
+                },
+                "Description":       "aws-tcl test fixture 12 -- inert read-only stub for pagination tests",
+                "PolicyDocument":    {
+                    "Version":   "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect":   "Allow",
+                            "Action":   "s3:GetObject",
+                            "Resource": "*"
+                        }
+                    ]
+                }
+            }
+        },
+        "Param12":    {
+            "Type":       "AWS::SSM::Parameter",
+            "Properties": {
+                "Name":  {
+                    "Fn::Sub": "/fixtures/${AWS::StackName}/param-12"
+                },
+                "Type":  "String",
+                "Value": "12"
+            }
+        },
+        "LogGroup01": {
+            "Type":           "AWS::Logs::LogGroup",
+            "DeletionPolicy": "Delete",
+            "Properties":     {
+                "LogGroupName":    {
+                    "Fn::Sub": "/fixtures/${AWS::StackName}/group-01"
+                },
+                "RetentionInDays": 1
+            }
+        },
+        "LogGroup02": {
+            "Type":           "AWS::Logs::LogGroup",
+            "DeletionPolicy": "Delete",
+            "Properties":     {
+                "LogGroupName":    {
+                    "Fn::Sub": "/fixtures/${AWS::StackName}/group-02"
+                },
+                "RetentionInDays": 1
+            }
+        },
+        "LogGroup03": {
+            "Type":           "AWS::Logs::LogGroup",
+            "DeletionPolicy": "Delete",
+            "Properties":     {
+                "LogGroupName":    {
+                    "Fn::Sub": "/fixtures/${AWS::StackName}/group-03"
+                },
+                "RetentionInDays": 1
+            }
+        }
+    },
+    "Outputs":     {
+        "BucketName":     {
+            "Value": {
+                "Ref": "TestBucket"
+            }
+        },
+        "PolicyPrefix":   {
+            "Value": {
+                "Fn::Sub": "${AWS::StackName}-policy-"
+            }
+        },
+        "ParamPrefix":    {
+            "Value": {
+                "Fn::Sub": "/fixtures/${AWS::StackName}/"
+            }
+        },
+        "LogGroupPrefix": {
+            "Value": {
+                "Fn::Sub": "/fixtures/${AWS::StackName}/"
+            }
+        },
+        "StackName":      {
+            "Value": {
+                "Ref": "AWS::StackName"
+            }
+        }
+    }
+}

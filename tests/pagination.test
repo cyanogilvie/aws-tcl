@@ -1,0 +1,661 @@
+# Tests for aws::foreach and aws::lmap.
+#
+# Unit tests stand up a fake service namespace with canned paginator metadata
+# and a canned page sequence; no live AWS required. Integration tests gated by
+# aws_creds / rl_aws_account verify end-to-end behavior against real services.
+
+if {[lsearch [namespace children] ::tcltest] == -1} {
+    package require tcltest
+    namespace import ::tcltest::*
+}
+
+tcltest::loadTestedCommands
+package require aws 2
+package require rl_json
+package require rltest
+interp alias {} json {} ::rl_json::json
+
+# Fake-service harness <<<
+# Each test sets: ::aws::fake::paginators (dict op->meta) and
+# ::aws::fake::_pages($op) (list of JSON pages). Each call to an op returns the
+# next page and advances the index.
+namespace eval ::aws::fake {
+	namespace export *
+	namespace ensemble create -prefixes no
+	namespace path {::rl_json ::aws::helpers}
+	variable paginators	{}
+	variable _pages
+	variable _idx
+	variable _calls		{}
+
+	proc _serve {op args} {
+		variable _pages
+		variable _idx
+		variable _calls
+		lappend _calls [list $op {*}$args]
+		set i	[expr {[info exists _idx($op)] ? $_idx($op) : 0}]
+		set pages	$_pages($op)
+		if {$i >= [llength $pages]} {
+			set p	[lindex $pages end]
+		} else {
+			set p	[lindex $pages $i]
+			incr _idx($op)
+		}
+		return $p
+	}
+}
+package provide aws::fake 2.0a19
+
+proc reset_fake_service {} {
+	namespace eval ::aws::fake {
+		variable paginators	{}
+		variable _pages
+		variable _idx
+		variable _calls		{}
+		array unset _pages
+		array unset _idx
+		# Clear any op procs added by previous tests
+		foreach p [info procs ::aws::fake::*] {
+			if {[namespace tail $p] ni {_serve}} {rename $p ""}
+		}
+	}
+}
+
+proc register_fake_op {op pmeta pages} {
+	namespace eval ::aws::fake [list variable paginators]
+	namespace eval ::aws::fake [list dict set paginators $op $pmeta]
+	namespace eval ::aws::fake [list variable _pages]
+	set ::aws::fake::_pages([::aws::from_camel $op]) $pages
+	# Define an op proc routed through _serve.
+	set snake [::aws::from_camel $op]
+	namespace eval ::aws::fake [list proc $snake args "_serve $snake {*}\$args"]
+}
+# Fake-service harness >>>
+
+# Simple single-container, single-token pagination <<<
+test paginate-simple-1.1 {iterates all items across multiple pages} -setup { #<<<
+	reset_fake_service
+	register_fake_op ListWidgets {
+		input_tokens		Marker
+		output_tokens		NextMarker
+		limit_key			MaxItems
+		more_results		{}
+		non_aggregate_keys	{}
+		item_containers		{{Widget {Widgets}}}
+	} [list \
+		{{"Widgets":[{"id":1},{"id":2}],"NextMarker":"aaa"}} \
+		{{"Widgets":[{"id":3},{"id":4}],"NextMarker":"bbb"}} \
+		{{"Widgets":[{"id":5}]}} \
+	]
+	set ids	{}
+} -body {
+	aws foreach w fake list_widgets {
+		lappend ids [json get $w id]
+	}
+	set ids
+} -cleanup {unset -nocomplain w ids} -result {1 2 3 4 5}
+#>>>
+test paginate-simple-1.2 {continuation token is threaded through calls} -setup { #<<<
+	reset_fake_service
+	register_fake_op ListWidgets {
+		input_tokens		Marker
+		output_tokens		NextMarker
+		limit_key			{}
+		more_results		{}
+		non_aggregate_keys	{}
+		item_containers		{{Widget {Widgets}}}
+	} [list \
+		{{"Widgets":[{"id":1}],"NextMarker":"p2"}} \
+		{{"Widgets":[{"id":2}],"NextMarker":"p3"}} \
+		{{"Widgets":[{"id":3}]}} \
+	]
+} -body {
+	aws foreach w fake list_widgets {}
+	lmap c $::aws::fake::_calls {lsearch -exact $c -marker}
+} -cleanup {unset -nocomplain w c} -result {-1 1 1}
+#>>>
+test paginate-simple-1.3 {terminates on empty output_token} -setup { #<<<
+	reset_fake_service
+	register_fake_op ListWidgets {
+		input_tokens		Marker
+		output_tokens		NextMarker
+		limit_key			{}
+		more_results		{}
+		non_aggregate_keys	{}
+		item_containers		{{Widget {Widgets}}}
+	} [list \
+		{{"Widgets":[{"id":1}],"NextMarker":""}} \
+		{{"Widgets":[{"id":99}]}} \
+	]
+	set ids	{}
+} -body {
+	aws foreach w fake list_widgets {lappend ids [json get $w id]}
+	set ids
+} -cleanup {unset -nocomplain w ids} -result 1
+#>>>
+# Simple single-container, single-token pagination >>>
+
+# Return-code handling <<<
+test paginate-break-2.1 {break stops iteration and returns empty} -setup { #<<<
+	reset_fake_service
+	register_fake_op ListWidgets {
+		input_tokens		Marker
+		output_tokens		NextMarker
+		limit_key			{}
+		more_results		{}
+		non_aggregate_keys	{}
+		item_containers		{{Widget {Widgets}}}
+	} [list \
+		{{"Widgets":[{"id":1},{"id":2},{"id":3}],"NextMarker":"p2"}} \
+		{{"Widgets":[{"id":4}]}} \
+	]
+	set ids	{}
+} -body {
+	aws foreach w fake list_widgets {
+		lappend ids [json get $w id]
+		if {[json get $w id] == 2} break
+	}
+	list $ids [llength $::aws::fake::_calls]
+} -cleanup {unset -nocomplain w ids} -result {{1 2} 1}
+#>>>
+test paginate-continue-2.2 {continue skips item and keeps going} -setup { #<<<
+	reset_fake_service
+	register_fake_op ListWidgets {
+		input_tokens		Marker
+		output_tokens		NextMarker
+		limit_key			{}
+		more_results		{}
+		non_aggregate_keys	{}
+		item_containers		{{Widget {Widgets}}}
+	} [list \
+		{{"Widgets":[{"id":1},{"id":2},{"id":3}]}} \
+	]
+	set ids	{}
+} -body {
+	aws foreach w fake list_widgets {
+		set id [json get $w id]
+		if {$id == 2} continue
+		lappend ids $id
+	}
+	set ids
+} -cleanup {unset -nocomplain w id ids} -result {1 3}
+#>>>
+test paginate-return-2.3 {return in body exits caller's proc} -setup { #<<<
+	reset_fake_service
+	register_fake_op ListWidgets {
+		input_tokens		Marker
+		output_tokens		NextMarker
+		limit_key			{}
+		more_results		{}
+		non_aggregate_keys	{}
+		item_containers		{{Widget {Widgets}}}
+	} [list \
+		{{"Widgets":[{"id":1},{"id":2},{"id":3}]}} \
+	]
+	proc ::test_caller {} {
+		aws foreach w fake list_widgets {
+			if {[json get $w id] == 2} {return "done-at-2"}
+		}
+		return "walked-through"
+	}
+} -body {
+	::test_caller
+} -cleanup {unset -nocomplain w; rename ::test_caller ""} -result done-at-2
+#>>>
+test paginate-error-2.4 {error in body propagates with errorCode intact} -setup { #<<<
+	reset_fake_service
+	register_fake_op ListWidgets {
+		input_tokens		Marker
+		output_tokens		NextMarker
+		limit_key			{}
+		more_results		{}
+		non_aggregate_keys	{}
+		item_containers		{{Widget {Widgets}}}
+	} [list {{"Widgets":[{"id":1}]}}]
+} -body {
+	aws foreach w fake list_widgets {
+		throw {TEST SENTINEL} "body-raised"
+	}
+} -cleanup {unset -nocomplain w} -returnCodes error -errorCode {TEST SENTINEL} -result body-raised
+#>>>
+test paginate-next_page-2.5 {NEXT_PAGE throw jumps to next page} -setup { #<<<
+	reset_fake_service
+	register_fake_op ListWidgets {
+		input_tokens		Marker
+		output_tokens		NextMarker
+		limit_key			{}
+		more_results		{}
+		non_aggregate_keys	{}
+		item_containers		{{Widget {Widgets}}}
+	} [list \
+		{{"Widgets":[{"id":1},{"id":2},{"id":3}],"NextMarker":"p2"}} \
+		{{"Widgets":[{"id":10},{"id":11}]}} \
+	]
+	set ids	{}
+} -body {
+	aws foreach w fake list_widgets {
+		set id [json get $w id]
+		lappend ids $id
+		if {$id == 1} {throw {AWS FOREACH NEXT_PAGE} {}}
+	}
+	set ids
+} -cleanup {unset -nocomplain w id ids} -result {1 10 11}
+#>>>
+# Return-code handling >>>
+
+# aws::lmap <<<
+test paginate-lmap-3.1 {lmap collects per-iteration results} -setup { #<<<
+	reset_fake_service
+	register_fake_op ListWidgets {
+		input_tokens		Marker
+		output_tokens		NextMarker
+		limit_key			{}
+		more_results		{}
+		non_aggregate_keys	{}
+		item_containers		{{Widget {Widgets}}}
+	} [list \
+		{{"Widgets":[{"id":1},{"id":2}],"NextMarker":"p2"}} \
+		{{"Widgets":[{"id":3}]}} \
+	]
+} -body {
+	aws lmap w fake list_widgets {
+		expr {[json get $w id] * 10}
+	}
+} -cleanup {unset -nocomplain w} -result {10 20 30}
+#>>>
+test paginate-lmap-3.2 {lmap on break returns partial list} -setup { #<<<
+	reset_fake_service
+	register_fake_op ListWidgets {
+		input_tokens		Marker
+		output_tokens		NextMarker
+		limit_key			{}
+		more_results		{}
+		non_aggregate_keys	{}
+		item_containers		{{Widget {Widgets}}}
+	} [list \
+		{{"Widgets":[{"id":1},{"id":2},{"id":3}],"NextMarker":"p2"}} \
+		{{"Widgets":[{"id":4}]}} \
+	]
+} -body {
+	aws lmap w fake list_widgets {
+		set id [json get $w id]
+		if {$id == 2} break
+		set id
+	}
+} -cleanup {unset -nocomplain w id} -result 1
+#>>>
+# aws::lmap >>>
+
+# -page alias <<<
+test paginate-page-4.1 {-page sets a fresh value once per page} -setup { #<<<
+	reset_fake_service
+	register_fake_op ListWidgets {
+		input_tokens		Marker
+		output_tokens		NextMarker
+		limit_key			{}
+		more_results		{}
+		non_aggregate_keys	{}
+		item_containers		{{Widget {Widgets}}}
+	} [list \
+		{{"Widgets":[{"id":1},{"id":2}],"NextMarker":"p2","Name":"page-one"}} \
+		{{"Widgets":[{"id":3}],"Name":"page-two"}} \
+	]
+	set page_names	{}
+} -body {
+	aws foreach w -page page fake list_widgets {
+		if {[info exists page]} {
+			lappend page_names [json get $page Name]
+			unset page
+		}
+	}
+	set page_names
+} -cleanup {unset -nocomplain w page page_names} -result {page-one page-two}
+#>>>
+# -page alias >>>
+
+# -page_size / limit_key <<<
+test paginate-page_size-5.1 {-page_size is forwarded as the limit_key arg} -setup { #<<<
+	reset_fake_service
+	register_fake_op ListWidgets {
+		input_tokens		Marker
+		output_tokens		NextMarker
+		limit_key			MaxItems
+		more_results		{}
+		non_aggregate_keys	{}
+		item_containers		{{Widget {Widgets}}}
+	} [list {{"Widgets":[{"id":1}]}}]
+} -body {
+	aws foreach w -page_size 25 fake list_widgets {}
+	lindex $::aws::fake::_calls 0
+} -cleanup {unset -nocomplain w} -result {list_widgets -max_items 25}
+#>>>
+test paginate-page_size-5.2 {-page_size with no limit_key errors cleanly} -setup { #<<<
+	reset_fake_service
+	register_fake_op DescribeThing {
+		input_tokens		NextToken
+		output_tokens		NextToken
+		limit_key			{}
+		more_results		{}
+		non_aggregate_keys	{}
+		item_containers		{{Thing {Things}}}
+	} [list {{"Things":[]}}]
+} -body {
+	aws foreach w -page_size 25 fake describe_thing {}
+} -cleanup {unset -nocomplain w} \
+  -returnCodes error -errorCode {AWS FOREACH NO_LIMIT_KEY} \
+  -match glob -result {*has no limit_key*}
+#>>>
+# -page_size / limit_key >>>
+
+# Multi-container handling <<<
+set multi_op_meta {
+	input_tokens		Marker
+	output_tokens		NextMarker
+	limit_key			{}
+	more_results		{}
+	non_aggregate_keys	{}
+	item_containers		{{Object {Contents}} {CommonPrefix {CommonPrefixes}}}
+}
+set multi_op_pages [list \
+	{{"Contents":[{"Key":"a"},{"Key":"b"}],"CommonPrefixes":[{"Prefix":"sub/"}]}} \
+]
+
+test paginate-multi-6.1 {no disambiguation → TYPE_REQUIRED} -setup { #<<<
+	reset_fake_service
+	register_fake_op ListObjectsV2 $multi_op_meta $multi_op_pages
+} -body {
+	aws foreach w fake list_objects_V2 {}
+} -cleanup {unset -nocomplain w} \
+  -returnCodes error -errorCode {AWS FOREACH TYPE_REQUIRED} \
+  -match glob -result {*multiple item containers*}
+#>>>
+test paginate-multi-6.2 {-itemtype binds per item} -setup { #<<<
+	reset_fake_service
+	register_fake_op ListObjectsV2 $multi_op_meta $multi_op_pages
+	set types	{}
+} -body {
+	aws foreach w -itemtype t fake list_objects_V2 {
+		lappend types $t
+	}
+	set types
+} -cleanup {unset -nocomplain w t types} -result {Object Object CommonPrefix}
+#>>>
+test paginate-multi-6.3 {-type filters to one container} -setup { #<<<
+	reset_fake_service
+	register_fake_op ListObjectsV2 $multi_op_meta $multi_op_pages
+	set keys	{}
+} -body {
+	aws foreach w -type Object fake list_objects_V2 {
+		lappend keys [json get $w Key]
+	}
+	set keys
+} -cleanup {unset -nocomplain w keys} -result {a b}
+#>>>
+test paginate-multi-6.4 {-result_key filters by tail segment} -setup { #<<<
+	reset_fake_service
+	register_fake_op ListObjectsV2 $multi_op_meta $multi_op_pages
+	set prefixes	{}
+} -body {
+	aws foreach w -result_key CommonPrefixes fake list_objects_V2 {
+		lappend prefixes [json get $w Prefix]
+	}
+	set prefixes
+} -cleanup {unset -nocomplain w prefixes} -result sub/
+#>>>
+test paginate-multi-6.5 {-result_key with unknown key errors cleanly} -setup { #<<<
+	reset_fake_service
+	register_fake_op ListObjectsV2 $multi_op_meta $multi_op_pages
+} -body {
+	aws foreach w -result_key Bogus fake list_objects_V2 {}
+} -cleanup {unset -nocomplain w} \
+  -returnCodes error -errorCode {AWS FOREACH NO_SUCH_KEY} \
+  -match glob -result {*doesn't match*}
+#>>>
+# Multi-container handling >>>
+
+# Compound tokens (S3 / Route53 style) <<<
+test paginate-compound-7.1 {parallel input/output token arrays thread through} -setup { #<<<
+	reset_fake_service
+	register_fake_op ListObjectVersions {
+		input_tokens		{KeyMarker VersionIdMarker}
+		output_tokens		{NextKeyMarker NextVersionIdMarker}
+		limit_key			{}
+		more_results		{}
+		non_aggregate_keys	{}
+		item_containers		{{ObjectVersion {Versions}}}
+	} [list \
+		{{"Versions":[{"VersionId":"v1"}],"NextKeyMarker":"k2","NextVersionIdMarker":"v2"}} \
+		{{"Versions":[{"VersionId":"v3"}]}} \
+	]
+} -body {
+	aws foreach w fake list_object_versions {}
+	# Second call should contain both token args forwarded.
+	set c1 [lindex $::aws::fake::_calls 1]
+	list [lsearch -exact $c1 -key_marker] [lsearch -exact $c1 -version_id_marker]
+} -cleanup {unset -nocomplain w c1} -match regexp -result {^[1-9][0-9]* [1-9][0-9]*$}
+#>>>
+# Compound tokens >>>
+
+# more_results flag <<<
+test paginate-more_results-8.1 {more_results:false terminates even with token present} -setup { #<<<
+	reset_fake_service
+	register_fake_op ListItems {
+		input_tokens		Marker
+		output_tokens		Marker
+		limit_key			{}
+		more_results		IsTruncated
+		non_aggregate_keys	{}
+		item_containers		{{Item {Items}}}
+	} [list \
+		{{"Items":[{"n":1}],"Marker":"m2","IsTruncated":false}} \
+		{{"Items":[{"n":99}]}} \
+	]
+	set ns	{}
+} -body {
+	aws foreach it fake list_items {lappend ns [json get $it n]}
+	set ns
+} -cleanup {unset -nocomplain it ns} -result 1
+#>>>
+test paginate-more_results-8.2 {more_results:true allows further pages} -setup { #<<<
+	reset_fake_service
+	register_fake_op ListItems {
+		input_tokens		Marker
+		output_tokens		Marker
+		limit_key			{}
+		more_results		IsTruncated
+		non_aggregate_keys	{}
+		item_containers		{{Item {Items}}}
+	} [list \
+		{{"Items":[{"n":1}],"Marker":"m2","IsTruncated":true}} \
+		{{"Items":[{"n":2}],"IsTruncated":false}} \
+	]
+	set ns	{}
+} -body {
+	aws foreach it fake list_items {lappend ns [json get $it n]}
+	set ns
+} -cleanup {unset -nocomplain it ns} -result {1 2}
+#>>>
+# more_results flag >>>
+
+# Dispatch errors <<<
+test paginate-dispatch-9.1 {op without paginator entry → NOT_PAGINATED} -setup { #<<<
+	reset_fake_service
+} -body {
+	aws foreach w fake get_thing {}
+} -cleanup {unset -nocomplain w} \
+  -returnCodes error -errorCode {AWS FOREACH NOT_PAGINATED} -match glob -result {*not paginated*}
+#>>>
+test paginate-dispatch-9.2 {missing iteration body script errors} -setup { #<<<
+	reset_fake_service
+	register_fake_op ListWidgets {
+		input_tokens		Marker
+		output_tokens		NextMarker
+		limit_key			{}
+		more_results		{}
+		non_aggregate_keys	{}
+		item_containers		{{Widget {Widgets}}}
+	} [list {{"Widgets":[]}}]
+} -body {
+	aws foreach w fake list_widgets
+} -cleanup {unset -nocomplain w} \
+  -returnCodes error -errorCode {AWS FOREACH NO_BODY} -match glob -result {*body*}
+#>>>
+# Dispatch errors >>>
+
+# Integration tests — live AWS, gated by the fixture stack <<<
+tcltest::testConstraint aws_creds [try { #<<<
+	aws::helpers::get_creds
+	return -level 0 true
+} trap {AWS NO_CREDENTIALS} {} {
+	return -level 0 false
+} on error {} {
+	return -level 0 false
+}]
+#>>>
+
+source [file join [file dirname [info script]] fixtures.tcl]
+
+tcltest::testConstraint aws_tcl_fixtures [expr { #<<<
+	[tcltest::testConstraint aws_creds] && [try {
+		fixture_stack_ready
+	} on error {} {return -level 0 false}]
+}]
+#>>>
+
+# The fixture stack deploys exactly 12 policies, 12 parameters, 3 log groups,
+# and (after `make seed-fixtures`) 12 S3 objects. Tests here assert those
+# exact counts and against the stack's output-provided prefixes.
+
+test paginate-live-iam-10.1 {exact-count pagination against fixture IAM policies} -constraints aws_tcl_fixtures -setup { #<<<
+	set prefix	[fixture_stack_output PolicyPrefix]
+	set region	[fixture_stack_region]
+} -body {
+	set names	{}
+	aws foreach p -page_size 5 iam list_policies -region $region -scope Local {
+		set name	[json get $p PolicyName]
+		if {[string match ${prefix}* $name]} {lappend names $name}
+	}
+	# 12 fixture policies named <prefix>01..<prefix>12
+	list [llength $names] [lindex [lsort $names] 0] [lindex [lsort $names] end]
+} -cleanup {unset -nocomplain p name names prefix region} -match glob -result {12 *-policy-01 *-policy-12}
+#>>>
+test paginate-live-ssm-10.2 {exact-count pagination of fixture SSM parameters} -constraints aws_tcl_fixtures -setup { #<<<
+	set prefix	[fixture_stack_output ParamPrefix]
+	set region	[fixture_stack_region]
+} -body {
+	set names	{}
+	# SSM is a json-protocol service — complex input values like
+	# -parameter_filters are JSON fragments, not Tcl lists.
+	aws foreach p -page_size 5 ssm describe_parameters \
+			-region $region \
+			-parameter_filters [json template {
+				[{"Key":"Name","Option":"BeginsWith","Values":["~S:prefix"]}]
+			} [list prefix $prefix]] \
+	{
+		lappend names [json get $p Name]
+	}
+	llength $names
+} -cleanup {unset -nocomplain p names prefix region} -result 12
+#>>>
+test paginate-live-logs-10.3 {exact-count pagination of fixture log groups with page_size 1} -constraints aws_tcl_fixtures -setup { #<<<
+	set prefix	[fixture_stack_output LogGroupPrefix]
+	set region	[fixture_stack_region]
+} -body {
+	set names	{}
+	aws foreach g -page_size 1 logs describe_log_groups \
+			-region $region \
+			-log_group_name_prefix $prefix \
+	{
+		lappend names [json get $g logGroupName]
+	}
+	llength $names
+} -cleanup {unset -nocomplain g names prefix region} -result 3
+#>>>
+test paginate-live-s3-flat-10.4 {flat s3 list_objects_v2 — all seeded keys in order} -constraints aws_tcl_fixtures -setup { #<<<
+	set bucket	[fixture_stack_output BucketName]
+	set region	[fixture_stack_region]
+} -body {
+	set keys	{}
+	aws foreach obj -type Object -page_size 5 s3 list_objects_V2 \
+			-region $region \
+			-bucket $bucket \
+	{
+		lappend keys [json get $obj Key]
+	}
+	llength $keys
+} -cleanup {unset -nocomplain obj keys bucket region} -result 12
+#>>>
+test paginate-live-s3-multi-10.5 {s3 list_objects_v2 multi-container splits Objects and CommonPrefixes} -constraints aws_tcl_fixtures -setup { #<<<
+	set bucket	[fixture_stack_output BucketName]
+	set region	[fixture_stack_region]
+} -body {
+	set objects		{}
+	set prefixes	{}
+	aws foreach item -itemtype t s3 list_objects_V2 \
+			-region $region \
+			-bucket $bucket \
+			-delimiter / \
+	{
+		switch -- $t {
+			Object			{lappend objects [json get $item Key]}
+			CommonPrefix	{lappend prefixes [json get $item Prefix]}
+			default			{error "unexpected itemtype $t"}
+		}
+	}
+	# Root-level: readme.txt is the only Object at the top; files/, zone-a/ and
+	# zone-b/ are the three CommonPrefixes.
+	list [lsort $objects] [lsort $prefixes]
+} -cleanup {unset -nocomplain item t objects prefixes bucket region} \
+  -result {readme.txt {files/ zone-a/ zone-b/}}
+#>>>
+test paginate-live-s3-signing-10.6 {sigv4 signing on keys with spaces, reserved chars, UTF-8} -constraints aws_tcl_fixtures -setup { #<<<
+	# head_object exercises the full sigv4 path for each key. If any of these
+	# returns a signature-mismatch or the key isn't findable, it'll throw.
+	set bucket	[fixture_stack_output BucketName]
+	set region	[fixture_stack_region]
+	set tricky	{
+		"files/with space.txt"
+		"files/unicode-é-✓.txt"
+		"files/reserved+=&?#.txt"
+		"files/parens-(test).txt"
+		"files/brackets-\[test\].txt"
+		"files/tilde-~test.txt"
+	}
+} -body {
+	foreach key $tricky {
+		aws s3 head_object -region $region -bucket $bucket -key $key
+	}
+	expr {[llength $tricky] == 6}
+} -cleanup {unset -nocomplain key tricky bucket region} -result 1
+#>>>
+
+# Legacy (Ruby-Lane only) — kept so the existing gated test still runs when
+# deploying the fixture stack isn't an option. Skipped otherwise.
+tcltest::testConstraint rl_aws_account [expr { #<<<
+	[tcltest::testConstraint aws_creds] &&
+	[try {
+		set aliases	[json get [aws iam list_account_aliases] AccountAliases]
+		expr {"rubylane" in $aliases}
+	} on error {} {
+		return -level 0 false
+	}]
+}]
+#>>>
+test paginate-live-cloudformation-11.1 {live cloudformation list_stacks iterates stacks} -constraints rl_aws_account -body { #<<<
+	# Rubylane has many stacks; fixture account only has our one fixture stack,
+	# so this test can't deterministically force >1 page. Left gated on
+	# rl_aws_account for the original regression check.
+	set names	{}
+	aws foreach s cloudformation list_stacks -region us-east-1 {
+		lappend names [json get $s StackName]
+		if {[llength $names] >= 3} break
+	}
+	expr {[llength $names] >= 3}
+} -cleanup {unset -nocomplain s names} -result 1
+#>>>
+# Integration tests >>>
+
+::tcltest::cleanupTests
+return
+
+# vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4

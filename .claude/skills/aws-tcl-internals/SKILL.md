@@ -1,6 +1,6 @@
 ---
 name: aws-tcl-internals
-description: Deep knowledge of how the aws-tcl package works internally — shape parsing, the compile_input pipeline, per-protocol code paths (query/ec2/rest-xml/json/rest-json), response parsing, rule-engine primitives, and the rewriter transform system. Use this when adding or debugging service features, extending protocol support (smithy-rpc-v2-cbor, pagination), investigating serialization issues, or changing any of the build.tcl / aws.tcl machinery.
+description: Deep knowledge of how the aws-tcl package works internally — shape parsing, the compile_input pipeline, per-protocol code paths (query/ec2/rest-xml/json/rest-json), pagination (aws foreach / aws lmap), response parsing, rule-engine primitives, and the rewriter transform system. Use this when adding or debugging service features, extending protocol support (smithy-rpc-v2-cbor), investigating serialization issues, or changing any of the build.tcl / aws.tcl machinery.
 ---
 
 # aws-tcl internals guide
@@ -24,8 +24,8 @@ matching the task:
 | `protocols.md` | per-protocol quirks (query `.member.N`, ec2 capitalization, rest-xml XML trees, json/rest-json body assembly) |
 | `response-parsing.md` | fixing response decoding; handling a new response shape type; changing error classification |
 | `rule-engine.md` | endpoint_rules bugs; adding rule-engine fn helpers |
-| `testing.md` | writing new tests; understanding the test harness; tcltest gotchas |
-| `pagination.md` | adding pagination support (planned, not implemented) |
+| `pagination.md` | understanding or extending `aws foreach` / `aws lmap` and the paginator metadata |
+| `testing.md` | writing new tests; understanding the test harness; the fixture stack; tcltest gotchas |
 | `cbor.md` | implementing smithy-rpc-v2-cbor (planned, not implemented) |
 
 ## Critical design decisions to respect
@@ -46,22 +46,20 @@ Two principles that should not be silently reversed:
 
 ## Test landscape
 
-Per-file run is always clean. Running the whole suite in one process has
-known cross-contamination (common.tcl does `namespace delete ::aws`), so
-CI / development runs should be per-file:
+`make test TCLSH=/opt/tcl9g/bin/tclsh9.0` runs the whole suite in one
+process. Single file: `make test TESTFLAGS='-file <name>'`. See
+`testing.md` for the full run matrix.
 
-```
-for f in tests/*.test; do
-    /opt/tcl9g/bin/tclsh9.0 tests/all.tcl \
-        -load "apply {ver {source tests/load_self.tcl}} 2.0a19" \
-        -file "$(basename $f)"
-done
-```
+Running `protocol_vectors.test` (236 cases) is the best smoke for
+serialization changes. `endpoint_rules.test` (13882 cases) covers the
+rule engine. `pagination.test` (30 cases) exercises `aws foreach` /
+`aws lmap` against a fake service harness + live fixture stack.
+`integration.test` gates live-AWS smoke checks behind `aws_creds` /
+`rl_aws_account`.
 
-Running protocol_vectors.test is the best smoke for serialization changes —
-236/236 is the current green baseline. endpoint_rules.test (13882 cases)
-covers rule engine. integration.test gates live-AWS tests behind the
-`aws_creds` / `rl_aws_account` constraints.
+Live tests can also be run against a deterministic fixture
+CloudFormation stack deployed by `make fixtures` — gated by the
+`aws_tcl_fixtures` constraint. See `tests/fixtures/README.md`.
 
 ## Environment notes
 

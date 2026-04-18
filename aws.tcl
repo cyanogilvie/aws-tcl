@@ -11,8 +11,20 @@ package require reuri 0.13.4
 
 namespace eval aws {
 	namespace export *
+	# Note: we can't use -map for foreach/lmap because specifying -map disables
+	# auto-resolution of exported procs (which this ensemble relies on for
+	# commands like `aws from_camel`, `aws endpoint`, etc.). Route them via the
+	# -unknown handler instead; it fires for any subcommand not already an
+	# exported proc, which works because `foreach` and `lmap` are not procs in
+	# this namespace (they'd shadow the builtins inside namespace-scoped code).
 	namespace ensemble create -prefixes no -unknown {apply {
-		{cmd subcmd args} {package require aws::$subcmd; return}
+		{cmd subcmd args} {
+			switch -- $subcmd {
+				foreach { return [list ::aws::_foreach] }
+				lmap    { return [list ::aws::_lmap] }
+				default { package require aws::$subcmd; return }
+			}
+		}
 	}}
 
 	variable debug			false
@@ -3069,6 +3081,149 @@ namespace eval aws {
 		#puts stderr "template end, object rep: [tcl::unsupported::representation $object]"
 		#puts stderr [json debug $object]
 		set object
+	}
+
+	#>>>
+	proc _foreach {iterator_varname args} { # Paginate a service operation, running body per item <<<
+		# -itemtype is a plain option (not -alias) because the TYPE_REQUIRED
+		# disambiguation check needs to know whether the caller supplied it,
+		# which -alias obscures (info exists on an alias reports on the
+		# caller's target var, not whether the option was given).
+		# -page is -alias: we always write the current page into it; if not
+		# supplied, the write becomes a harmless local.
+		parse_args $args {
+			-collecting		{-boolean}
+			-page_size		{}
+			-itemtype		{}
+			-page			{-alias}
+			-result_key		{}
+			-type			{}
+			svc				{-required}
+			command			{-required}
+			args			{-name svcargs}
+		}
+
+		if {[llength $svcargs] == 0} {
+			throw {AWS FOREACH NO_BODY} "An iterator body script is required"
+		}
+		set body	[lindex $svcargs end]
+		set svcargs	[lrange $svcargs 0 end-1]
+
+		upvar 1 $iterator_varname item
+		if {[info exists itemtype]} {upvar 1 $itemtype _itemtype_out}
+
+		package require aws::$svc
+
+		set pag_var	::aws::${svc}::paginators
+		if {![info exists $pag_var]} {
+			throw {AWS FOREACH NOT_PAGINATED} \
+				"Service $svc has no paginator metadata (no paginators-1.json in botocore)"
+		}
+		set paginators	[set $pag_var]
+		set op_camel	[to_camel $command]
+		if {![dict exists $paginators $op_camel]} {
+			throw {AWS FOREACH NOT_PAGINATED} \
+				"Operation $svc $command is not paginated"
+		}
+		set pspec	[dict get $paginators $op_camel]
+
+		set input_tokens	[dict get $pspec input_tokens]
+		set output_tokens	[dict get $pspec output_tokens]
+		set limit_key		[dict get $pspec limit_key]
+		set more_results	[dict get $pspec more_results]
+		set item_containers	[dict get $pspec item_containers]
+
+		if {[info exists result_key]} {
+			# Accept either the dot-joined form or just the tail path segment.
+			set filtered	{}
+			foreach container $item_containers {
+				lassign $container ctype cpath
+				if {$result_key eq [join $cpath .] || $result_key eq [lindex $cpath end]} {
+					lappend filtered $container
+				}
+			}
+			if {[llength $filtered] == 0} {
+				throw {AWS FOREACH NO_SUCH_KEY} \
+					"-result_key \"$result_key\" doesn't match any container for $svc $command (have: [lmap c $item_containers {join [lindex $c 1] .}])"
+			}
+			set item_containers	$filtered
+		}
+
+		if {[llength $item_containers] > 1 && ![info exists itemtype] && ![info exists type]} {
+			set types	[lmap c $item_containers {lindex $c 0}]
+			throw {AWS FOREACH TYPE_REQUIRED} \
+				"Operation $svc $command has multiple item containers ($types); pass -itemtype <var>, -type <itemtype>, or -result_key <key>"
+		}
+
+		set page_size_args	{}
+		if {[info exists page_size]} {
+			if {$limit_key eq ""} {
+				throw {AWS FOREACH NO_LIMIT_KEY} \
+					"Operation $svc $command has no limit_key; cannot honor -page_size"
+			}
+			set page_size_args	[list -[from_camel $limit_key] $page_size]
+		}
+
+		set reslist			{}
+		set next_page_args	{}
+		while 1 {
+			set breakout 0
+			set res	[uplevel 1 [list aws::$svc $command {*}$svcargs {*}$page_size_args {*}$next_page_args]]
+			set page	$res
+
+			foreach container $item_containers {
+				lassign $container this_itype cpath
+				if {[info exists type] && $type ne $this_itype} continue
+				if {[info exists itemtype]} {set _itemtype_out $this_itype}
+				if {![rl_json::json exists $res {*}$cpath]} continue
+				rl_json::json foreach item [rl_json::json extract $res {*}$cpath] {
+					try {
+						uplevel 1 $body
+					} on break {} {
+						return $reslist
+					} on continue {} {
+						continue
+					} on return {r o} {
+						dict incr o -level 1
+						dict set o -code return
+						return -options $o $r
+					} trap {AWS FOREACH NEXT_PAGE} {} {
+						set breakout 1
+						break
+					} on error {r o} {
+						dict incr o -level 1
+						return -options $o $r
+					} on ok r {
+						if {$collecting} {lappend reslist $r}
+					}
+				}
+				if {$breakout} break
+			}
+
+			# Termination:
+			# 1. Explicit more_results flag present and false → done.
+			if {$more_results ne "" && [rl_json::json exists $res $more_results]} {
+				if {![string is true -strict [rl_json::json get $res $more_results]]} break
+			}
+			# 2. No (or empty) continuation tokens → done.
+			set next_page_args	{}
+			set any_token		0
+			foreach in_name $input_tokens out_name $output_tokens {
+				if {![rl_json::json exists $res $out_name]} continue
+				set tok	[rl_json::json get $res $out_name]
+				if {$tok eq "" || $tok eq "null"} continue
+				lappend next_page_args -[from_camel $in_name] $tok
+				incr any_token
+			}
+			if {!$any_token} break
+		}
+
+		set reslist
+	}
+
+	#>>>
+	proc _lmap {iterator_varname args} { # Collecting variant of aws foreach <<<
+		tailcall ::aws::_foreach $iterator_varname -collecting {*}$args
 	}
 
 	#>>>

@@ -20,12 +20,11 @@ Key pages to start with:
 - `protocols.md` — what each protocol does differently
 - `response-parsing.md` — success and error response decoding
 - `rule-engine.md` — endpoint-rules compilation and the runtime helpers
-- `testing.md` — per-file tests, constraints, hazards
+- `pagination.md` — aws foreach / aws lmap, driven by paginators-1.json
+- `testing.md` — test file layout, constraints, the fixture stack
 
 Forward-looking (not yet implemented):
 
-- `pagination.md` — how to add pagination using botocore's
-  paginators-1.json spec
 - `cbor.md` — how to add native smithy-rpc-v2-cbor support alongside
   the json fallback
 
@@ -33,8 +32,12 @@ Forward-looking (not yet implemented):
 
 - Primary test target: Tcl 9 at `/opt/tcl9g/bin/tclsh9.0`
 - Build: `rm -rf tm && make -e tm TCLSH=/opt/tcl9g/bin/tclsh9.0`
-- Test: run per-file with
-  `tclsh9.0 tests/all.tcl -load "apply {ver {source tests/load_self.tcl}} 2.0a19" -file <name>`
+- Test: `make test TCLSH=/opt/tcl9g/bin/tclsh9.0` runs the whole suite in
+  one process. Single file: add `TESTFLAGS='-file <name>'`.
+- Live-test fixture stack: `make fixtures` deploys + seeds a CloudFormation
+  stack in the caller's account with deterministic resources; tests gated
+  by the `aws_tcl_fixtures` constraint run against it.
+  `make teardown-fixtures` cleans up. See `tests/fixtures/README.md`.
 - `botocore/` is a git submodule; currently pinned to v1.42.90
 - Related sources (not in this repo):
   - rl_json: `~/git/rl_json` (see memory)
@@ -54,9 +57,13 @@ that memory first.
 - `tests/protocol_vectors.test` — 236 serialization cases from
   botocore; the best smoke for serialization work
 - `tests/units.test` — 61 unit tests of primitives
+- `tests/pagination.test` — 30 unit + fixture-stack tests of
+  `aws foreach` / `aws lmap`
 - `tests/integration.test` — live-AWS tests gated by credentials /
   account-alias constraints
+- `tests/s3sigv4.test` — live s3 sigv4 path-encoding cases (goes
+  through `aws s3 put_object` now; no more workaround)
 
-Green baseline: all tests pass per-file (known cross-contamination
-when running the whole suite in one process — that's a test-harness
-issue documented in `testing.md`).
+Green baseline: `make test` passes whole suite in one process
+(14245 / 14251 at time of writing; remaining skips are constraint-
+gated: rl_aws_account + a handful of known-bug sentinels).

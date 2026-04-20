@@ -44,7 +44,7 @@ namespace eval ::aws::fake {
 		return $p
 	}
 }
-package provide aws::fake 2.0a19
+package provide aws::fake 2.0a20
 
 proc reset_fake_service {} {
 	namespace eval ::aws::fake {

@@ -57,6 +57,11 @@ that memory first.
   rule-engine changes break these loudly
 - `tests/protocol_vectors.test` — 236 serialization cases from
   botocore; the best smoke for serialization work
+- `tests/signing_vectors.test` — 74 SigV4 + SigV4-A test cases from
+  AWS's aws-c-auth signing-test-suite; exercises canonical-request /
+  STS / signature correctness including path normalization variants,
+  UTF-8 paths, header continuation, duplicate keys, and pre-encoded
+  query strings
 - `tests/units.test` — primitives + retry classifier / backoff /
   Retry-After / UUIDv4 / idempotency-token auto-fill
 - `tests/retry.test` — `_aws_req` retry loop end-to-end with a
@@ -69,9 +74,11 @@ that memory first.
   through `aws s3 put_object` now; no more workaround)
 
 Green baseline: `make test` passes whole suite in one process
-(14283 / 14289 at time of writing; remaining skips are constraint-
+(14374 / 14380 at time of writing; remaining skips are constraint-
 gated: rl_aws_account + a handful of known-bug sentinels).
 
-Requires rl_http ≥ 1.22 (for `-connect_timeout` / `-read_timeout`).
-In a dev setup where rl_http isn't system-installed, point make/tests
-at the dev build via `AWSTCL_EXTRA_TM_PATH=/path/to/rl_http/tm`.
+Requires rl_http ≥ 1.23 (for `-connect_timeout` / `-read_timeout`, reuri 0.15 compatibility)
+and tomcrypt ≥ 0.9.2 (for `ecc_import_raw_private`, used by SigV4-A).
+In a dev setup where a dependency isn't system-installed, point
+make/tests at the dev build via
+`AWSTCL_EXTRA_TM_PATH=/path/to/rl_http/tm:/path/to/tomcrypt/tm`.

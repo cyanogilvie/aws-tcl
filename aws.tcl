@@ -3,13 +3,12 @@
 
 package require rl_http 1.22
 package require Thread
-package require tomcrypt
-package require uri
+package require tomcrypt 0.9.2
 package require parse_args
 package require tdom
 package require rl_json
 package require chantricks
-package require reuri 0.13.4
+package require reuri 0.15.0
 
 namespace eval aws {
 	namespace export *
@@ -72,9 +71,7 @@ namespace eval aws {
 			::aws
 		}
 
-		interp alias {} ::aws::helpers::sigencode {} ::reuri encode awssig
-
-		# Retry / rate-limit configuration
+		# Retry / rate-limit configuration <<<
 		#
 		# Rate-limit state is kept in process-scoped tsv arrays because
 		# rl_http's keepalive pool also crosses interp/thread boundaries:
@@ -170,6 +167,11 @@ namespace eval aws {
 		if {[llength [tsv::names aws_tcl_rate]] == 0} {
 			# No-op: tsv::names is cheap; ensures the array exists lazily
 		}
+		# Retry / rate-limit configuration >>>
+
+		interp alias {} ::aws::helpers::sigencode {} ::reuri encode awssig
+
+		tomcrypt::prng create prng {}
 
 		proc _cache {cachekey script} { #<<<
 			variable cache
@@ -188,20 +190,20 @@ namespace eval aws {
 
 		#>>>
 
-		# Sleep for $ms milliseconds without entering a nested event
-		# loop. Two paths:
-		#   1. Coroutine: schedule a wakeup with after, yield. On
-		#      coroutine teardown the after is cancelled via a trace.
-		#   2. Plain script: block the thread on a per-thread
-		#      cond+mutex using thread::cond wait's built-in timeout.
-		#      The cond is private to this thread so nobody else can
-		#      notify it; the wait returns purely via the timeout.
-		#      No vwait, so no re-entrant event processing.
-		#
-		# Callers that need the event loop to keep servicing other
-		# work during the delay should use a coroutine (e.g. via
-		# aio::coro_sleep at the outer level).
 		proc _sleep_ms ms { #<<<
+			# Sleep for $ms milliseconds without entering a nested event
+			# loop. Two paths:
+			#   1. Coroutine: schedule a wakeup with after, yield. On
+			#      coroutine teardown the after is cancelled via a trace.
+			#   2. Plain script: block the thread on a per-thread
+			#      cond+mutex using thread::cond wait's built-in timeout.
+			#      The cond is private to this thread so nobody else can
+			#      notify it; the wait returns purely via the timeout.
+			#      No vwait, so no re-entrant event processing.
+			#
+			# Callers that need the event loop to keep servicing other
+			# work during the delay should use a coroutine (e.g. via
+			# aio::coro_sleep at the outer level).
 			if {$ms <= 0} return
 			if {[info coroutine] ne ""} {
 				set aid [after $ms [info coroutine]]
@@ -231,11 +233,11 @@ namespace eval aws {
 		}
 
 		#>>>
-		# UUIDv4 suitable for idempotency tokens. Random bytes come from
-		# libtomcrypt's CSPRNG; version (4) and variant (10xx) nibbles
-		# are set per RFC 4122.
 		proc _uuid4 {} { #<<<
-			set bytes	[::tomcrypt::rng_bytes 16]
+			# UUIDv4 suitable for idempotency tokens. Random bytes come from
+			# libtomcrypt's CSPRNG; version (4) and variant (10xx) nibbles
+			# are set per RFC 4122.
+			set bytes	[prng bytes 16]
 			binary scan $bytes cu16 b
 			lset b 6	[expr {([lindex $b 6] & 0x0f) | 0x40}]
 			lset b 8	[expr {([lindex $b 8] & 0x3f) | 0x80}]
@@ -244,11 +246,11 @@ namespace eval aws {
 		}
 
 		#>>>
-		# Exponential backoff with full jitter. attempt is 1-based.
-		#   delay = rand(0, 1) * min(base * 2^(attempt-1), cap)
-		# Matches botocore ExponentialBackoff and the AWS SDK v2/v3
-		# "standard" retry mode. Returns delay in milliseconds.
 		proc _backoff_ms {attempt {base {}} {cap {}}} { #<<<
+			# Exponential backoff with full jitter. attempt is 1-based.
+			#   delay = rand(0, 1) * min(base * 2^(attempt-1), cap)
+			# Matches botocore ExponentialBackoff and the AWS SDK v2/v3
+			# "standard" retry mode. Returns delay in milliseconds.
 			variable _backoff_cap
 			variable _backoff_base
 			if {$base eq ""} {set base $_backoff_base}
@@ -258,10 +260,10 @@ namespace eval aws {
 		}
 
 		#>>>
-		# Parse a Retry-After response header. Supports the delay-seconds
-		# form (integer) and HTTP-date form; returns delay in ms, or ""
-		# if the header is absent / unparseable. Non-negative only.
 		proc _retry_after_ms headers { #<<<
+			# Parse a Retry-After response header. Supports the delay-seconds
+			# form (integer) and HTTP-date form; returns delay in ms, or ""
+			# if the header is absent / unparseable. Non-negative only.
 			if {![dict exists $headers retry-after]} return
 			set v	[string trim [dict get $headers retry-after]]
 			if {$v eq ""} return
@@ -277,13 +279,13 @@ namespace eval aws {
 		}
 
 		#>>>
-		# Classify a caught error. Returns one of:
-		#   {throttle <code>}  — server told us to slow down
-		#   {transient <code>} — server hiccup or connection error, retry
-		#   {clockskew <code>} — signing clock skew, retry after resync
-		#   {none <code>}      — not retryable
-		# $options is the dict from `on error` / `trap`.
 		proc _classify_error options { #<<<
+			# Classify a caught error. Returns one of:
+			#   {throttle <code>}  — server told us to slow down
+			#   {transient <code>} — server hiccup or connection error, retry
+			#   {clockskew <code>} — signing clock skew, retry after resync
+			#   {none <code>}      — not retryable
+			# $options is the dict from `on error` / `trap`.
 			variable _throttle_codes
 			variable _transient_codes
 			variable _retry_statuses
@@ -310,13 +312,13 @@ namespace eval aws {
 		}
 
 		#>>>
-		# Per-service rate-limit bucket. Keyed by a stable service id
-		# (signingName if available, else host). State is a three-list
-		# {max_rate next_send last_throttle}:
-		#   max_rate        : current cap in Hz
-		#   next_send       : earliest clock microseconds we may send
-		#   last_throttle   : clock seconds of last observed throttle
 		proc _rate_before_send key { #<<<
+			# Per-service rate-limit bucket. Keyed by a stable service id
+			# (signingName if available, else host). State is a three-list
+			# {max_rate next_send last_throttle}:
+			#   max_rate        : current cap in Hz
+			#   next_send       : earliest clock microseconds we may send
+			#   last_throttle   : clock seconds of last observed throttle
 			variable _max_send_rate
 			variable _min_send_rate
 			variable retry_mode
@@ -363,9 +365,9 @@ namespace eval aws {
 		}
 
 		#>>>
-		# Stable per-service key for the rate-limit bucket. Uses the
-		# signing name + region; either may be empty for metadata endpoints.
 		proc _rate_key {sig_service region} { #<<<
+			# Stable per-service key for the rate-limit bucket. Uses the
+			# signing name + region; either may be empty for metadata endpoints.
 			if {$sig_service eq ""} {set sig_service -}
 			if {$region eq ""} {set region -}
 			return $sig_service:$region
@@ -373,8 +375,9 @@ namespace eval aws {
 
 		#>>>
 		proc sign {K str} { #<<<
-			package require hmac
-			binary encode base64 [hmac::HMAC_SHA1 $K [encoding convertto utf-8 $str]]
+			# sigv2/s3: returns base64, consumed directly into an
+			# Authorization header.
+			binary encode base64 [tomcrypt::hmac sha1 $K [encoding convertto utf-8 $str]]
 		}
 
 		#>>>
@@ -409,8 +412,10 @@ namespace eval aws {
 			namespace ensemble create -prefixes no
 
 			proc AWS4-HMAC-SHA256 bytes { #<<<
-				package require hmac
-				binary encode hex [hmac::H sha256 $bytes]
+				# Caller expects hex — this feeds the x-amz-content-sha256
+				# header which is part of the canonical request that
+				# gets signed, and the server compares hex.
+				binary encode hex [tomcrypt::hash sha256 $bytes]
 			}
 
 			#>>>
@@ -542,15 +547,104 @@ namespace eval aws {
 			}
 			_debug {log notice "sigv4_signing_key, region: $region, service: $service"}
 
-			package require hmac
 			set amzDate		[amz-date $date]
-			set kDate		[hmac::HMAC_SHA256 [encoding convertto utf-8 AWS4$aws_key] [encoding convertto utf-8 $amzDate]]
-			set kRegion		[hmac::HMAC_SHA256 $kDate       [encoding convertto utf-8 $region]]
-			set kService	[hmac::HMAC_SHA256 $kRegion     [encoding convertto utf-8 $service]]
-			hmac::HMAC_SHA256 $kService    [encoding convertto utf-8 aws4_request]
+			set kDate		[tomcrypt::hmac sha256 [encoding convertto utf-8 AWS4$aws_key]	[encoding convertto utf-8 $amzDate]]
+			set kRegion		[tomcrypt::hmac sha256 $kDate									[encoding convertto utf-8 $region]]
+			set kService	[tomcrypt::hmac sha256 $kRegion									[encoding convertto utf-8 $service]]
+			tomcrypt::hmac sha256 $kService aws4_request
 		}
 
 		#>>>
+		# Shared canonicalization helpers for sigv4 / sigv4a <<<
+		# All return pure data; no upvar, no side effects.
+
+		proc _canonical_path {path do_normalize disable_double_encoding} { #<<<
+			# Split, optionally normalize, and percent-encode $path into its
+			# canonical forms. Returns {canonical_uri canonical_uri_sig}.
+			# canonical_uri_sig double-encodes unless $disable_double_encoding.
+			# When !$do_normalize (S3, MRAP) empty components are preserved so
+			# repeated / trailing slashes survive reassembly.
+			if {$path eq ""} {return {/ /}}
+			# reuri::path get returns "/" as element 0 for an absolute
+			# path and the decoded segments after. Drop the marker and
+			# remember whether we need to re-prepend "/".
+			set segs		[reuri::path get $path]
+			set has_lead	[expr {[lindex $segs 0] eq "/"}]
+			set urlv		[lrange $segs $has_lead end]
+			if {!$do_normalize} {
+				set n_urlv	$urlv
+			} else {
+				# TODO: properly normalize according to RFC 3986 §6 (doesn't apply to s3)
+				set n_urlv			{}
+				set had_trailing	0
+				foreach e $urlv {
+					switch -- $e {
+						. - ""	{set had_trailing 1}
+						..		{set n_urlv [lrange $n_urlv 0 end-1]}
+						default	{lappend n_urlv $e; set had_trailing 0}
+					}
+				}
+				if {$had_trailing} {lappend n_urlv ""}
+			}
+			set prefix	[expr {$has_lead ? "/" : ""}]
+			set canonical_uri_sig	${prefix}[join [lmap e $n_urlv {
+				if {$disable_double_encoding} {sigencode $e} else {sigencode [sigencode $e]}
+			}] /]
+			set canonical_uri		${prefix}[join [lmap e $n_urlv {sigencode $e}] /]
+			if {$canonical_uri eq ""} {return {/ /}}
+			list $canonical_uri $canonical_uri_sig
+		}
+
+		#>>>
+		proc _canonical_query params { #<<<
+			# Build the canonical query string: encode, sort by encoded key
+			# (values as tiebreak), then k=v&... Empty value is still k=.
+			if {[llength $params] == 0} {return ""}
+			set paramsort {{a b} {
+				set kc	[string compare [lindex $a 0] [lindex $b 0]]
+				switch -- $kc {
+					1 - -1	{ set kc }
+					default { string compare [lindex $a 1] [lindex $b 1] }
+				}
+			}}
+			set encoded	[lmap {k v} $params {list [sigencode $k] [sigencode $v]}]
+			join [lmap e [lsort -command [list apply $paramsort] $encoded] {
+				lassign $e ek ev
+				format %s=%s $ek $ev
+			}] &
+		}
+
+		#>>>
+		proc _canonical_headers t_headers { #<<<
+			# Build the canonical-headers block and signed-headers list from
+			# a dict of name→list-of-values (case-insensitive key sort).
+			# Returns {canonical_headers_block signed_headers_semi_joined}.
+			set canonical_headers	""
+			set signed_headers		{}
+			foreach {k v} [lsort -index 0 -stride 2 -nocase $t_headers] {
+				set h	[string tolower [string trim $k]]
+				lappend signed_headers	$h
+				append canonical_headers	"$h:[join [lmap e $v {regsub -all { +} [string trim $e] { }}] ,]\n"
+			}
+			list $canonical_headers [join $signed_headers ";"]
+		}
+
+		#>>>
+		proc _url_query_tail params { #<<<
+			# Encode $params as a ?k=v&... tail for the final request URL.
+			# Empty-valued params are emitted as the bare key (no trailing =).
+			if {![llength $params]} {return ""}
+			string cat ? [join [lmap {k v} $params {
+				if {$v eq ""} {
+					sigencode $k
+				} else {
+					format %s=%s [sigencode $k] [sigencode $v]
+				}
+			}] &]
+		}
+
+		#>>>
+		# Shared canonicalization helpers >>>
 		proc sigv4 args { #<<<
 			global env
 
@@ -570,6 +664,7 @@ namespace eval aws {
 				-content_type				{-default {}}
 				-body						{-default {}}
 				-algorithm					{-enum {AWS4-HMAC-SHA256} -default AWS4-HMAC-SHA256}
+				-normalize					{-enum {auto true false} -default auto -# {auto = normalize unless sig_service is s3; explicit true/false overrides}}
 
 				-out_url					{-alias}
 				-out_headers				{-alias}
@@ -613,104 +708,30 @@ namespace eval aws {
 			set fq_credential_scope	[amz-date $date]/[string tolower $credential_scope/$sig_service/aws4_request]
 			# Credential scope >>>
 
-			# Produce urlv: a list of fully decoded path elements, and canonized_path: a fully-encoded and normalized path <<<
-			set urlv	{}
-			if {[string trim $path /] eq ""} {
-				set canonical_uri		/
-				set canonical_uri_sig	/
-			} else {
-				set urlv	[reuri::path get [string trimleft $path /]]
-				if {$sig_service eq "s3"} {
-					set n_urlv	$urlv
-				} else {
-					# TODO: properly normalize path according to RFC 3986 section 6 - does not apply to s3
-					set n_urlv	{}
-					foreach e $urlv {
-						set skipped	0
-						switch -- $e {
-							. - ""		{set skipped 1}
-							..			{set n_urlv	[lrange $n_urlv 0 end-1]}
-							default		{lappend n_urlv $e}
-						}
-					}
-					if {$skipped} {lappend n_urlv ""}		;# Compensate for the switch on {. ""} stripping all the slashes off the end of the uri
-				}
-				set canonical_uri_sig	/[join [lmap e $n_urlv {
-					if {$disable_double_encoding} {
-						sigencode $e
-					} else {
-						sigencode [sigencode $e]
-					}
-				}] /]
-				set canonical_uri	/[join [lmap e $n_urlv {
-					sigencode $e
-				}] /]
-				if {$sig_service eq "s3" && [string index $path end] eq "/" && [string index $canonical_uri end] ne "/"} {
-					append canonical_uri		/
-					append canonical_uri_sig	/
-				}
-			}
+			# Canonical URI <<<
+			# -normalize auto = skip normalization only for s3; true/false override.
+			set do_normalize	[expr {$normalize eq "auto" ? ($sig_service ne "s3") : $normalize}]
+			lassign [_canonical_path $path $do_normalize $disable_double_encoding] \
+				canonical_uri canonical_uri_sig
 			#>>>
 
-			# Canonical query string <<<
-			#if {[info exists aws_token]} {
-			#	# Some services require the token to be added to the canonical request, others require it appended
-			#	switch -- $sig_service {
-			#		?? {
-			#			lappend params X-Amz-Security-Token	$aws_token
-			#		}
-			#	}
-			#}
-
-			if {[llength $params] == 0} {
-				set canonical_query_string	""
-			} else {
-				set paramsort {{a b} { #<<<
-					# AWS sort wants sorting on keys, with values as tiebreaks
-					set kc	[string compare [lindex $a 0] [lindex $b 0]]
-					switch -- $kc {
-						1 - -1	{ set kc }
-						default { string compare [lindex $a 1] [lindex $b 1] }
-					}
-				}}
-
-				#>>>
-
-				set canonical_query_string	[join [lmap e [lsort -command [list apply $paramsort] [lmap {k v} $params {list $k $v}]] {
-					lassign $e k v
-					format %s=%s [sigencode $k] [sigencode $v]
-				}] &]
-			}
-
-			#if {[info exists aws_token]} {
-			#	# Some services require the token to be added to th canonical request, others require it appended
-			#	switch -- $sig_service {
-			#		?? {
-			#			lappend params X-Amz-Security-Token	$aws_token
-			#		}
-			#	}
-			#}
-			# Canonical query string >>>
+			set canonical_query_string	[_canonical_query $params]
 
 			# Canonical headers <<<
 			set out_headers		$headers
 			if {!$have_date_header} {
 				lappend out_headers	x-amz-date	[amz-datetime $date]
 			}
-
 			if {
 				"content-type" ni [lmap {k v} $out_headers {string tolower $k}] &&
 				$content_type ne ""
 			} {
 				lappend out_headers content-type $content_type
 			}
-
 			if {"host" ni [lmap {k v} $out_headers {string tolower $k}]} {
-				#log notice "Appending host header" {{"header":{"host":"~S:endpoint"}}}
 				lappend out_headers host $endpoint		;# :authority for HTTP/2
 			}
 			if {$aws_token ne ""} {
-				#log notice "Appending aws_token header" {{"header":{"X-Amz-Security-Token":"~S:aws_token"}}}
 				lappend out_headers X-Amz-Security-Token	$aws_token
 			}
 
@@ -729,17 +750,7 @@ namespace eval aws {
 			foreach {k v} $out_headers {
 				dict lappend t_headers $k $v
 			}
-
-			set canonical_headers	""
-			set signed_headers		{}
-			foreach {k v} [lsort -index 0 -stride 2 -nocase $t_headers] {
-				set h	[string tolower [string trim $k]]
-				#if {$h in {content-legnth}} continue		;# Problem with test vectors?
-				lappend signed_headers	$h
-				append canonical_headers	"$h:[join [lmap e $v {regsub -all { +} [string trim $e] { }}] ,]\n"
-				#log debug "Adding canonical header" {{"h":"~S:h","canonical_headers":"~S:canonical_headers","signed_headers":"~S:signed_headers"}}
-			}
-			set signed_headers	[join $signed_headers ";"]
+			lassign [_canonical_headers $t_headers] canonical_headers signed_headers
 			# Canonical headers >>>
 
 			foreach {k v} $t_headers {
@@ -767,9 +778,8 @@ namespace eval aws {
 			# Task2: Create String to Sign >>>
 
 			# Task3: Calculate signature <<<
-			package require hmac
 			set signing_key	[sigv4_signing_key -aws_key $aws_key -date $date -region $signing_region -service $sig_service]
-			set signature	[binary encode hex [hmac::HMAC_SHA256 $signing_key [encoding convertto utf-8 $string_to_sign]]]
+			set signature	[binary encode hex [tomcrypt::hmac sha256 $signing_key [encoding convertto utf-8 $string_to_sign]]]
 			#puts stderr "sig:\n$signature"
 			# Task3: Calculate signature >>>
 
@@ -778,17 +788,200 @@ namespace eval aws {
 			set out_authz		$authorization
 			lappend out_headers	Authorization $authorization
 
-			set eparams [if {[llength $params]} {
-				string cat ? [join [lmap {k v} $params {
-					if {$v eq ""} {
-						sigencode $k
+			set out_url		$scheme://$endpoint$canonical_uri[_url_query_tail $params]
+		}
+
+		#>>>
+		# SigV4-A: ECDSA over P-256. Multi-region-capable successor to
+		# sigv4 used by a handful of services (S3 Multi-Region Access
+		# Points, some Cognito / EventBridge / STS flows). Key
+		# differences from sigv4:
+		#   - credential scope omits the region component
+		#   - algorithm name: AWS4-ECDSA-P256-SHA256
+		#   - signing key is a P-256 scalar derived from the secret
+		#     access key via NIST SP 800-108 counter-mode KDF
+		#   - signing op is ECDSA-sign-hash, not HMAC
+		#   - X-Amz-Region-Set header lists the regions (or "*") the
+		#     signature is valid for
+		#   - signature is hex of the ANSI X9.62 DER-encoded (r,s)
+		variable _sigv4a_p256_n \
+			[scan ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551 %llx]
+
+		proc _derive_sigv4a_scalar {aws_key aws_id} { #<<<
+			# NIST SP 800-108 counter-mode KDF with HMAC-SHA256,
+			# producing a P-256 scalar from "AWS4A" || secret_access_key.
+			# Layout matches aws-c-auth's key_derivation.c:
+			#
+			#   FixedInput = 0x00000001
+			#              || "AWS4-ECDSA-P256-SHA256"
+			#              || 0x00
+			#              || AccessKeyId
+			#              || counter (single byte)
+			#              || 0x00000100           ; uint32_be(256) = output bits
+			#
+			# Iterate counter 1..254. Interpret HMAC output as a big-endian
+			# 256-bit int c. If c ≤ n-2 accept: private scalar = c + 1.
+			# First iteration succeeds ~100% of the time in practice.
+			variable _sigv4a_p256_n
+
+			set kdf_key			[encoding convertto utf-8 AWS4A$aws_key]
+			set prefix_bytes	[binary format I 1]		;# uint32_be(1) — fixed placeholder
+			set label_bytes		AWS4-ECDSA-P256-SHA256
+			set id_bytes		[encoding convertto utf-8 $aws_id]
+			set length_bytes	[binary format I 256]	;# uint32_be(256) — output bits
+
+			set n_minus_2	[expr {$_sigv4a_p256_n - 2}]
+
+			for {set counter 1} {$counter <= 254} {incr counter} {
+				set counter_byte	[binary format c $counter]
+				set fixed_input		$prefix_bytes$label_bytes\x00$id_bytes$counter_byte$length_bytes
+				set c_bytes			[tomcrypt::hmac sha256 $kdf_key $fixed_input]
+				# scan %llx is the bignum-safe parser; `expr 0x<hex>`
+				# silently truncates to 128 bits for 64-hex-char strings
+				# in Tcl 9.
+				set c	[scan [binary encode hex $c_bytes] %llx]
+				if {$c <= $n_minus_2} {
+					return [binary decode hex [format %064llx [expr {$c + 1}]]]
+				}
+			}
+			throw {AWS SIGV4A KDF_EXHAUSTED} \
+				"SigV4-A KDF failed to produce a valid scalar in 254 iterations"
+		}
+
+		#>>>
+		proc sigv4a args { #<<<
+			global env
+
+			parse_args::parse_args $args {
+				-variant					{-enum {v4a s3v4a} -default v4a}
+				-method						{-required}
+				-endpoint					{-required}
+				-sig_service				{-default {}}
+				-region						{-default us-east-1 -# {only used for hostname/endpoint selection; signature is region-agnostic}}
+				-region_set					{-default *}
+				-disable_double_encoding	{-default 0}
+				-path						{-required}
+				-scheme						{-default http}
+				-headers					{-default {}}
+				-params						{-default {}}
+				-content_type				{-default {}}
+				-body						{-default {}}
+				-normalize					{-enum {auto true false} -default auto -# {auto = normalize unless sig_service is s3; explicit true/false overrides}}
+
+				-out_url					{-alias}
+				-out_headers				{-alias}
+				-out_sts					{-alias}
+
+				-date						{-# {Fake the date - for test suite}}
+				-out_creq					{-alias -# {internal - used for test suite}}
+				-out_authz					{-alias -# {internal - used for test suite}}
+				-out_sreq					{-alias -# {internal - used for test suite}}
+			}
+			_debug {log notice "sigv4a args: $args"}
+
+			set algorithm	AWS4-ECDSA-P256-SHA256
+
+			set creds		[get_creds]
+			set aws_id		[dict get $creds access_key]
+			set aws_key		[dict get $creds secret]
+			set aws_token	[if {[dict exists $creds token]} {dict get $creds token}]
+
+			if {$sig_service eq ""} {
+				throw {AWS SIGV4A MISSING_SIG_SERVICE} \
+					"sigv4a: -sig_service is required"
+			}
+			set region_set_header	[join $region_set ,]
+
+			set have_date_header	0
+			foreach {k v} $headers {
+				if {[string tolower $k] eq "x-amz-date"} {
+					set have_date_header	1
+					set date	[clock scan $v -format %Y%m%dT%H%M%SZ -timezone :UTC]
+				}
+			}
+			if {![info exists date]} {
+				set date	[clock seconds]
+			}
+
+			# v4a credential scope — no region
+			set fq_credential_scope	[amz-date $date]/$sig_service/aws4_request
+
+			# Canonical URI <<<
+			set do_normalize	[expr {$normalize eq "auto" ? ($sig_service ne "s3") : $normalize}]
+			lassign [_canonical_path $path $do_normalize $disable_double_encoding] \
+				canonical_uri canonical_uri_sig
+			#>>>
+
+			set canonical_query_string	[_canonical_query $params]
+
+			# Canonical headers, with the v4a-required X-Amz-Region-Set <<<
+			set out_headers		$headers
+			if {!$have_date_header} {
+				lappend out_headers	x-amz-date	[amz-datetime $date]
+			}
+			if {"x-amz-region-set" ni [lmap {k v} $out_headers {string tolower $k}]} {
+				lappend out_headers X-Amz-Region-Set $region_set_header
+			}
+			if {
+				"content-type" ni [lmap {k v} $out_headers {string tolower $k}] &&
+				$content_type ne ""
+			} {
+				lappend out_headers content-type $content_type
+			}
+			if {"host" ni [lmap {k v} $out_headers {string tolower $k}]} {
+				lappend out_headers host $endpoint
+			}
+			if {$aws_token ne ""} {
+				lappend out_headers X-Amz-Security-Token	$aws_token
+			}
+
+			# s3v4a variant: S3 ops that use UNSIGNED-PAYLOAD
+			if {$variant eq "s3v4a"} {
+				if {"x-amz-content-sha256" ni [lmap {k v} $headers {set k}]} {
+					if {$body eq ""} {
+						lappend out_headers x-amz-content-sha256	UNSIGNED-PAYLOAD
 					} else {
-						format %s=%s [sigencode $k] [sigencode $v]
+						lappend out_headers x-amz-content-sha256	[hash AWS4-HMAC-SHA256 $body]
 					}
-				}] &]
-			}]
-			set url			$scheme://$endpoint$canonical_uri$eparams
-			set out_url		$url
+				}
+			}
+
+			set t_headers	{}
+			foreach {k v} $out_headers {
+				dict lappend t_headers $k $v
+			}
+			lassign [_canonical_headers $t_headers] canonical_headers signed_headers
+			# Canonical headers >>>
+
+			foreach {k v} $t_headers {
+				if {$k ne "x-amz-content-sha256"} continue
+				set hashed_payload $v
+			}
+			if {![info exists hashed_payload]} {
+				set hashed_payload	[hash AWS4-HMAC-SHA256 $body]
+			}
+
+			set canonical_request	"[string toupper $method]\n$canonical_uri_sig\n$canonical_query_string\n$canonical_headers\n$signed_headers\n$hashed_payload"
+			_debug {puts stderr "canonical request (v4a):\n$canonical_request"}
+			set hashed_canonical_request	[hash AWS4-HMAC-SHA256 $canonical_request]
+			set out_creq	$canonical_request
+
+			set string_to_sign	[encoding convertto utf-8 $algorithm]\n[amz-datetime $date]\n[encoding convertto utf-8 $fq_credential_scope]\n$hashed_canonical_request
+			set out_sts		$string_to_sign
+			_debug {puts stderr "sts (v4a):\n$out_sts"}
+
+			# Task3: ECDSA sign <<<
+			set sts_hash	[tomcrypt::hash sha256 [encoding convertto utf-8 $string_to_sign]]
+			set priv_scalar	[_derive_sigv4a_scalar $aws_key $aws_id]
+			set priv_key	[tomcrypt::ecc_import_raw_private secp256r1 $priv_scalar]
+			set signature	[binary encode hex [tomcrypt::ecc_sign $priv_key $sts_hash]]
+			# Task3 >>>
+
+			set authorization	"$algorithm Credential=$aws_id/$fq_credential_scope, SignedHeaders=$signed_headers, Signature=$signature"
+			set out_authz		$authorization
+			lappend out_headers	Authorization $authorization
+
+			set out_url		$scheme://$endpoint$canonical_uri[_url_query_tail $params]
 		}
 
 		#>>>
@@ -923,7 +1116,7 @@ namespace eval aws {
 				-response_headers			{-alias}
 				-status						{-alias}
 				-sig_service				{-default {}}
-				-version					{-enum {v4 v2 s3 s3v4} -default v4 -# {AWS signature version}}
+				-version					{-enum {v4 v2 s3 s3v4 v4a s3v4a} -default v4 -# {AWS signature version}}
 				-region						{-required}
 				-credential_scope			{-default ""}
 				-disable_double_encoding	{-default 0}
@@ -952,9 +1145,10 @@ namespace eval aws {
 			if {$max_keepalive_count eq ""} {
 				set max_keepalive_count	[set ::aws::helpers::max_keepalive_count]
 			}
-			if {[reuri::uri exists $path query]} {
-				set q		[reuri::uri extract $path query]
-				set path	[reuri::uri extract $path path /]
+			if {[reuri exists $path query]} {
+				set q		[reuri extract $path query]
+				set path	[reuri extract $path path]
+				if {$path eq ""} {set path /}
 				foreach {k v} $params {
 					reuri::query set q $k $v
 				}
@@ -997,6 +1191,25 @@ namespace eval aws {
 						-credential_scope			$credential_scope \
 						-disable_double_encoding	$disable_double_encoding \
 						-signing_region				$signing_region \
+						-out_url					signed_url \
+						-out_headers				signed_headers \
+						-out_sts					string_to_sign
+				}
+
+				v4a - s3v4a {
+					sigv4a \
+						-variant					$version \
+						-method						$method \
+						-endpoint					$endpoint \
+						-sig_service				$sig_service \
+						-region						$region \
+						-path						$path \
+						-scheme						$scheme \
+						-headers					$headers \
+						-params						$params \
+						-content_type				$content_type \
+						-body						$body \
+						-disable_double_encoding	$disable_double_encoding \
 						-out_url					signed_url \
 						-out_headers				signed_headers \
 						-out_sts					string_to_sign
@@ -1103,7 +1316,7 @@ namespace eval aws {
 				-response_headers			{-alias}
 				-status						{-alias}
 				-sig_service				{-default {}}
-				-version					{-enum {v4 v2 s3 s3v4} -default v4 -# {AWS signature version}}
+				-version					{-enum {v4 v2 s3 s3v4 v4a s3v4a} -default v4 -# {AWS signature version}}
 				-retries					{-default {}}
 				-region						{-required}
 				-credential_scope			{-default ""}
@@ -1449,80 +1662,6 @@ namespace eval aws {
 
 	#>>>
 
-	if 0 {
-	# Many newer AWS services' APIs follow this pattern:
-	proc build_action_api args { #<<<
-		parse_args $args {
-			-scheme			{-default http}
-			-service		{-required}
-			-endpoint		{}
-			-target_service	{-# {If specified, override $service in x-amz-target header}}
-			-accessor		{-# {If specified, override s/-/_/g($service) as the ensemble cname}}
-			-actions		{-required}
-		}
-
-		if {![info exists target_service]} {
-			set target_service	$service
-		}
-
-		if {![info exists accessor]} {
-			set accessor	[string map {- _} $service]
-		}
-
-		if {![info exists endpoint]} {
-			set endpoint	$service
-		}
-
-		namespace eval ::aws::$accessor [string map [list \
-			%scheme%			[list $scheme] \
-			%service%			[list $endpoint] \
-			%sig_service%		[list $service] \
-			%target_service%	[list $target_service] \
-		] {
-			namespace export *
-			namespace ensemble create -prefixes no
-			namespace path {
-				::parse_args
-			}
-
-			proc log args {tailcall aws::helpers::log {*}$args}
-			proc req args { #<<<
-				parse_args $args {
-					-region		{-default us-east-1}
-					-params		{-required}
-					-action		{-required}
-				}
-
-				_aws_req POST %service% / \
-					-sig_service	%sig_service% \
-					-scheme			%scheme% \
-					-region			$region \
-					-body			[encoding convertto utf-8 $params] \
-					-content_type	application/x-amz-json-1.1 \
-					-headers		[list x-amz-target %target_service%.$action]
-			}
-
-			#>>>
-		}]
-
-		foreach action $actions {
-			# FooBarBaz -> foo_bar_baz
-			proc ::aws::${accessor}::[string tolower [join [regexp -all -inline {[A-Z][a-z]+} $action] _]] args [string map [list \
-				%action% [list $action] \
-			] {
-				parse_args $args {
-					-region		{-default us-east-1}
-					-params		{-default {{}} -# {JSON doc containing the request parameters}}
-				}
-
-				req -region $region -action %action% -params $params
-			}]
-		}
-	}
-
-	#>>>
-	}
-
 	proc _ei {cache_ns endpointPrefix defaults dnsSuffix region_overrides region} { #<<<
 		variable ${cache_ns}::endpoint_cache
 
@@ -1599,12 +1738,15 @@ namespace eval aws {
 			sigv4	{
 				set sigver	v4
 			}
+			sigv4a	{
+				set sigver	v4a
+			}
 		}
 
 		set url		[json get $endpoint url]
 		dict create \
-			protocols				[list [reuri::uri get $url scheme http]] \
-			hostname				[reuri::uri get $url host] \
+			protocols				[list [reuri get $url scheme http]] \
+			hostname				[reuri get $url host] \
 			url						$url \
 			region					[json get $endpoint _ region] \
 			credentialScope			[json get $endpoint _ credentialScope] \
@@ -1640,13 +1782,13 @@ namespace eval aws {
 	}
 
 	#>>>
-	# Auto-populate an idempotency-token member. Called from generated
-	# op code before _service_req when the input shape has a member with
-	# idempotencyToken:true: if the caller didn't supply a value, we
-	# insert a freshly generated UUIDv4 so that a retry of the request
-	# (either by this SDK or an application-level retry) is deduped by
-	# the service. No-op if the caller provided their own token.
 	proc _auto_idempotency_token var { #<<<
+		# Auto-populate an idempotency-token member. Called from generated
+		# op code before _service_req when the input shape has a member with
+		# idempotencyToken:true: if the caller didn't supply a value, we
+		# insert a freshly generated UUIDv4 so that a retry of the request
+		# (either by this SDK or an application-level retry) is deduped by
+		# the service. No-op if the caller provided their own token.
 		upvar 1 $var v
 		if {![info exists v]} {
 			set v	[::aws::helpers::_uuid4]
@@ -1654,11 +1796,12 @@ namespace eval aws {
 	}
 
 	#>>>
-	# Per-shape body-value transforms applied before json template substitution.
-	# compile_input emits an `if {[info exists X]} {set _tx_X [_tx_FOO $X]}` line
-	# for each member that needs pre-template conversion; the template then
-	# references `~{S,J,N}:_tx_X` rather than the raw arg.
 	proc _apply_tx {kind var args} { #<<<
+		# Per-shape body-value transforms applied before json template substitution.
+		# compile_input emits an `if {[info exists X]} {set _tx_X [_tx_FOO $X]}` line
+		# for each member that needs pre-template conversion; the template then
+		# references `~{S,J,N}:_tx_X` rather than the raw arg.
+		#
 		# Called at op-proc start: if $var is set, computes the transformed
 		# value into _tx_$var in the caller's scope. Template substitutions
 		# reference ~{S,J,N}:_tx_$var so missing args still resolve to null.
@@ -1676,6 +1819,7 @@ namespace eval aws {
 			default		{error "Unhandled transform kind \"$kind\""}
 		}]
 	}
+
 	#>>>
 	proc _tx_rewrite {val spec} { #<<<
 		# Walk a user-supplied JSON fragment per the rewriter spec, producing
@@ -1745,11 +1889,13 @@ namespace eval aws {
 			}
 		}
 	}
+
 	#>>>
 	proc _tx_blob val { #<<<
 		# JSON body blobs are base64 strings.
 		binary encode base64 $val
 	}
+
 	#>>>
 	proc _tx_float val { #<<<
 		# AWS JSON protocols serialize non-finite floats as strings.
@@ -1759,6 +1905,7 @@ namespace eval aws {
 			set val
 		}
 	}
+
 	#>>>
 	proc _tx_ts_epoch val { #<<<
 		# Convert the user's value (ISO 8601 or epoch integer) to an epoch
@@ -1766,20 +1913,24 @@ namespace eval aws {
 		# the default timestampFormat is unixTimestamp.
 		_tx_ts_parse $val
 	}
+
 	#>>>
 	proc _tx_ts_iso val { #<<<
 		clock format [_tx_ts_parse $val] -format {%Y-%m-%dT%H:%M:%SZ} -timezone :UTC
 	}
+
 	#>>>
 	proc _tx_ts_rfc822 val { #<<<
 		clock format [_tx_ts_parse $val] -format {%a, %d %b %Y %H:%M:%S GMT} -timezone :UTC
 	}
+
 	#>>>
 	proc _tx_ts_parse val { #<<<
 		# Accept an epoch integer or an ISO 8601 string, return epoch seconds.
 		if {[string is integer -strict $val]} {return $val}
 		clock scan $val -format {%Y-%m-%dT%H:%M:%SZ} -timezone :UTC
 	}
+
 	#>>>
 	proc _flatten_query_param {queryvar prefix value spec} { #<<<
 		# Serialize $value into $queryvar as query-string pairs, honouring the
@@ -1938,7 +2089,7 @@ namespace eval aws {
 			set rep	[if {[info exists _a_$arg]} {
 				set _a_$arg
 			}]
-			set repe	[reuri::uri encode path $rep]
+			set repe	[reuri encode path $rep]
 			#lappend uri_map_out	"{$pat}" $repe "{$pat+}" [string map {%2F /} $repe]
 			lappend uri_map_out	"{$pat}" $repe "{$pat+}" [reuri::path join {*}[reuri::path get [string map {+ %2B} $rep]]]
 		}
@@ -1976,7 +2127,7 @@ namespace eval aws {
 		#puts stderr "payload: ($payload)"
 		if {$content_type eq "application/x-www-form-urlencoded; charset=utf-8"} {
 			set body	[join [lmap {k v} $query {
-				format %s=%s [reuri::uri encode query $k] [reuri::uri encode query $v]
+				format %s=%s [reuri encode query $k] [reuri encode query $v]
 			}] &]
 			set query	{}
 		} elseif {$payload ne ""} {
@@ -2984,22 +3135,21 @@ namespace eval aws {
 		proc parseURL uri { #<<<
 			try {
 				#puts stderr "aws::_fn::parseURL ($uri)"
-				#set parts	[reuri::uri get $uri]
 				set parts	{}
-				dict set parts scheme	[reuri::uri get $uri scheme]
-				dict set parts host		[reuri::uri get $uri host]
-				dict set parts hosttype	[reuri::uri get $uri hosttype]
-				dict set parts path		[reuri::uri extract $uri path {}]
+				dict set parts scheme	[reuri get $uri scheme]
+				dict set parts host		[reuri get $uri host]
+				dict set parts hosttype	[reuri get $uri hosttype]
+				dict set parts path		[reuri extract $uri path]
 				# Matches botocore parse_url: reject non-http(s) schemes and URLs
 				# with queries (rule engine treats null result as parse failure).
 				if {[dict get $parts scheme] ni {http https}} {
 					error "parseURL: unsupported scheme"
 				}
-				if {[reuri::uri exists $uri query] && [reuri::uri get $uri query] ne ""} {
+				if {[reuri get $uri query {}] ne ""} {
 					error "parseURL: query not supported"
 				}
-				if {[reuri::uri exists $uri port]} {
-					dict append parts host :[reuri::uri get $uri port]
+				if {[reuri exists $uri port]} {
+					dict append parts host :[reuri get $uri port]
 				}
 				if {[dict get $parts path] in {/ {}}} {
 					dict set parts normalizedPath /
@@ -3328,12 +3478,19 @@ namespace eval aws {
 							set sigver	v4
 						}
 					}
+					sigv4a	{
+						if {[json get $endpoint _ service] eq "s3"} {
+							set sigver	s3v4a
+						} else {
+							set sigver	v4a
+						}
+					}
 				}
 
 				set url		[json get $endpoint url]
 				dict create \
-					protocols				[list [reuri::uri get $url scheme http]] \
-					hostname				[reuri::uri get $url host] \
+					protocols				[list [reuri get $url scheme http]] \
+					hostname				[reuri get $url host] \
 					url						$url \
 					region					[json get $endpoint _ region] \
 					credentialScope			[json get $endpoint _ credentialScope] \
@@ -3342,7 +3499,7 @@ namespace eval aws {
 					signingRegion			[json get $authscheme signingRegion] \
 			}] $endpoint]
 
-			set path	[string trimright [reuri::uri extract [json get $endpoint url] path {}] /]
+			set path	[string trimright [reuri extract [json get $endpoint url] path] /]
 			append path	%requestUri%
 			dict with params {}		;# The unpacked key variables are accessed by the request procs through upvar
 			# Newer endpoint rules omit signingName when it matches the service's
@@ -4292,7 +4449,7 @@ namespace eval aws {
 }
 
 namespace eval ::tcl::mathfunc {
-	proc aws_b val {
+	proc aws_b val { #<<<
 		if {[string is boolean -strict $val]} {
 			set val
 		} elseif {[json valid $val]} {
@@ -4301,12 +4458,14 @@ namespace eval ::tcl::mathfunc {
 			expr {$val ne ""}
 		}
 	}
+
+	#>>>
 }
 
 
 # Hook into the tclreadline tab completion
 namespace eval ::tclreadline {
-	proc complete(aws) {text start end line pos mod} {
+	proc complete(aws) {text start end line pos mod} { #<<<
 		if {$pos == 1} {
 			set dir	[file join $::aws::dir aws]
 			set services	[lmap e [glob -nocomplain -type f -tails -directory $dir *.tm] {
@@ -4326,6 +4485,8 @@ namespace eval ::tclreadline {
 		package require tclreadline::complete::ensemble
 		::tclreadline::complete::ensemble ::aws $text $start $end $line $pos $mod
 	}
+
+	#>>>
 }
 
 # vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4

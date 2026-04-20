@@ -176,6 +176,38 @@ op → `_service_req` → `_aws_req` → `_req` → `rl_http`.
   non-AWS errorcodes). Covers all throttle codes, transient codes,
   socket errors, non-retryable errors, exhaustion, and `Retry-After`.
 
+## SigV4-A (multi-region signing)
+
+`::aws::helpers::sigv4a` signs with ECDSA over P-256 instead of HMAC-SHA256.
+Used by S3 Multi-Region Access Points and a handful of control-plane ops.
+Key differences from sigv4:
+
+- **Credential scope omits the region**: `$date/$service/aws4_request`.
+- **Algorithm**: `AWS4-ECDSA-P256-SHA256`.
+- **Signing key**: a P-256 scalar derived from
+  `"AWS4A" || secret_access_key` by a counter-mode KDF (NIST SP 800-108)
+  using HMAC-SHA256 as PRF — `_derive_sigv4a_scalar` implements this.
+  Loaded into a tomcrypt ecc_key via `tomcrypt::ecc_import_raw_private
+  secp256r1 $scalar`.
+- **`X-Amz-Region-Set` header** is added automatically and signed; default
+  is `*` (signature valid in any region), overridable via `-region_set
+  {us-east-1 us-west-2 ...}` on `sigv4a`. Plumbing for a per-op
+  `-region_set` option isn't wired yet — deferred until a real caller
+  needs it.
+- **Signature format**: hex of the ANSI X9.62 DER-encoded `(r,s)` tuple
+  (exactly what `tomcrypt::ecc_sign` returns, just hex-wrapped).
+- **`k` is random**, so the signature is non-deterministic. Tests verify
+  round-trip against the derived public key via `tomcrypt::ecc_verify`,
+  not by bit-matching the signature.
+
+Endpoint-rules `authScheme` of `sigv4a` maps to the `-version v4a`
+(non-S3) or `-version s3v4a` (S3) path in `_req`. Both routes are wired
+in the two `sigver` switches — one at the generated-service level
+(aws.tcl ~1527) and one in `_compile_rest-xml_op` (aws.tcl ~3260) for
+the lazy S3 path.
+
+Requires `tomcrypt >= 0.9.2` for `ecc_import_raw_private`.
+
 ## Not yet implemented
 
 - Cubic rate adjustor / full adaptive mode (the simpler halve-and-recover

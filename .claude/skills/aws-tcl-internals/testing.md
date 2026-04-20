@@ -21,7 +21,7 @@ Or direct:
 
 ```
 /opt/tcl9g/bin/tclsh9.0 tests/all.tcl \
-    -load "apply {ver {source tests/load_self.tcl}} 2.0a19" \
+    -load "apply {ver {source tests/load_self.tcl}} 2.0a20" \
     -file <filename>
 ```
 
@@ -34,6 +34,8 @@ Rebuild before testing after any aws.tcl / build.tcl change.
 |---|---|---|
 | `units.test` | offline unit tests | primitives — getAttr, substring, parseArn, partition, _a, flatten, error parsers, retry classifier, backoff, Retry-After parser, UUIDv4, idempotency auto-fill |
 | `retry.test` | offline unit tests | 9 end-to-end tests of `_aws_req`'s retry loop with a programmable mock `_req` — all throttle/transient codes, socket errors, exhaustion, Retry-After |
+| `sigv4a.test` | offline unit tests | 17 tests: SigV4-A KDF scalar derivation, full-signing output shape (algorithm, scope-without-region, X-Amz-Region-Set), end-to-end signature-verifies-against-derived-pubkey |
+| `signing_vectors.test` | offline, from fixtures | 74 tests driven by AWS's published SigV4 / SigV4-A test vectors in aws-c-auth/tests/aws-signing-test-suite. v4 cases check canonical request + STS + signature bit-exactly; v4a cases check canonical request + STS bit-exactly, verify the produced signature against the expected public key from public-key.json, and also cross-check that our KDF derives the same public key |
 | `endpoint_rules.test` | offline, from fixtures | 13882 tests from botocore/tests/functional/endpoint-rules |
 | `protocol_vectors.test` | offline, from fixtures | 236 serialization tests driven by botocore/tests/unit/protocols/input/*.json (query/ec2/json/json_1_0/rest-json) |
 | `pagination.test` | mixed | 23 offline unit tests of `aws foreach` / `aws lmap` against a fake service; 6 live tests gated by `aws_tcl_fixtures`; 1 legacy rl_aws_account test |

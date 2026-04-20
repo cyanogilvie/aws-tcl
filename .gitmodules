@@ -2,3 +2,6 @@
 	path = botocore
 	url = https://github.com/boto/botocore.git
 	shallow = true
+[submodule "aws-c-auth"]
+	path = aws-c-auth
+	url = https://github.com/awslabs/aws-c-auth

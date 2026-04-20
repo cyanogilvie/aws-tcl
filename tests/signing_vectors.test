@@ -1,0 +1,370 @@
+if {[lsearch [namespace children] ::tcltest] == -1} {
+	package require tcltest
+	namespace import ::tcltest::*
+}
+
+tcltest::loadTestedCommands
+package require aws 2
+package require tomcrypt 0.9.2
+package require rl_json
+interp alias {} json {} ::rl_json::json
+
+# Drive sigv4 and sigv4a against AWS's published test vector suite at
+#   aws-c-auth/tests/aws-signing-test-suite/{v4,v4a}/<name>/
+#
+# Each vector directory contains:
+#   context.json                  - credentials, region, service, timestamp, normalize flag
+#   request.txt                   - raw HTTP/1.1 request (CRLF or LF)
+#   header-canonical-request.txt  - expected canonical request
+#   header-string-to-sign.txt     - expected STS
+#   header-signature.txt          - expected signature hex (v4 only; v4a uses random k)
+#   header-signed-request.txt     - expected signed request w/ Authorization
+#   public-key.json               - v4a only: expected ECDSA public point {X, Y}
+#
+# v4 signatures are deterministic (HMAC) so we check bit-exactly.
+# v4a signatures are non-deterministic (ECDSA uses random k); we check
+#   the canonical request + STS exactly, verify the produced signature
+#   cryptographically against the expected public key, and check that
+#   the public key derived by our KDF matches the published one.
+
+namespace eval ::sigvec {
+	variable suite_dir	[file normalize \
+		[file join [file dirname [info script]] ../aws-c-auth/tests/aws-signing-test-suite]]
+
+	# Replace get_creds with a vector-controlled stub. Rename-shuffle
+	# rather than `info body` round-trip (info body + proc chokes on
+	# comments / unbalanced braces in long bodies).
+	proc install_stub_creds {} {
+		if {[info commands ::aws::helpers::_get_creds_orig] eq ""} {
+			rename ::aws::helpers::get_creds ::aws::helpers::_get_creds_orig
+		}
+		proc ::aws::helpers::get_creds {} {
+			variable ::sigvec::current_creds
+			return $::sigvec::current_creds
+		}
+	}
+	proc uninstall_stub_creds {} {
+		if {[info commands ::aws::helpers::_get_creds_orig] ne ""} {
+			rename ::aws::helpers::get_creds ""
+			rename ::aws::helpers::_get_creds_orig ::aws::helpers::get_creds
+		}
+	}
+
+	# Parse a raw HTTP/1.1 request text into
+	#   {method <m> path <p> headers {k v k v ...} body <b>}
+	# Headers keep their original case and order, and duplicate keys
+	# are allowed (emitted as multiple {k v} pairs in the list).
+	# Continuation lines (leading whitespace) are concatenated onto the
+	# preceding header value with a single space separator, per RFC 7230
+	# §3.2.4 — the test suite's multiline cases rely on this behavior.
+	#
+	# $text is the raw bytes of the request file; the head (request
+	# line + headers) is decoded as UTF-8 so reuri::encode sees
+	# codepoints, not raw bytes. Body stays as bytes.
+	proc parse_request text {
+		set text	[string map {\r\n \n} $text]
+		set idx		[string first "\n\n" $text]
+		if {$idx < 0} {
+			set head	$text
+			set body	""
+		} else {
+			set head	[string range $text 0 $idx-1]
+			set body	[string range $text $idx+2 end]
+		}
+		set head	[encoding convertfrom utf-8 $head]
+		set lines	[split $head \n]
+		set request_line	[lindex $lines 0]
+		if {![regexp {^(\S+)\s+(.+)\s+HTTP/\S+$} $request_line -> method path]} {
+			error "bad request line: $request_line"
+		}
+		set headers	{}
+		set cur_k	""
+		set cur_v	""
+		foreach line [lrange $lines 1 end] {
+			if {$line eq ""} continue
+			if {[regexp {^[ \t]} $line]} {
+				if {$cur_k eq ""} {
+					error "continuation line with no prior header: $line"
+				}
+				append cur_v " " [string trim $line]
+				continue
+			}
+			if {$cur_k ne ""} {
+				lappend headers $cur_k $cur_v
+			}
+			if {![regexp {^([^:]+):(.*)$} $line -> cur_k cur_v]} {
+				error "bad header line: $line"
+			}
+		}
+		if {$cur_k ne ""} {
+			lappend headers $cur_k $cur_v
+		}
+		dict create method $method path $path headers $headers body $body
+	}
+
+	# Split "path?k=v&k2=v2" into {$path {k v k2 v2}}.
+	# reuri::query get handles %-decoding; sigv4's canonical-request
+	# step re-encodes once (via -disable_double_encoding 1 in the
+	# harness), giving the single-encoded form AWS requires.
+	proc split_query path {
+		set idx	[string first ? $path]
+		if {$idx < 0} {return [list $path {}]}
+		set q	[string range $path $idx+1 end]
+		set p	[string range $path 0 $idx-1]
+		list $p [reuri::query get $q]
+	}
+
+	proc read_file {path {mode rb}} {
+		set f	[open $path $mode]
+		try {read $f} finally {close $f}
+	}
+
+	# Load one test-vector directory; returns a dict of everything
+	# the test harness needs. Missing optional files (e.g. public-key.json
+	# for v4) are absent from the dict. Returns {} if the vector has no
+	# header-* expected outputs (some v4a vectors only exercise
+	# query-string signing, which we don't implement).
+	proc load_vector dir {
+		if {![file exists $dir/header-canonical-request.txt]} {return {}}
+		set v	[dict create]
+		dict set v dir $dir
+		dict set v name [file tail $dir]
+		dict set v context	[read_file $dir/context.json r]
+		dict set v request	[read_file $dir/request.txt]
+		dict set v expected_creq	[read_file $dir/header-canonical-request.txt]
+		dict set v expected_sts		[read_file $dir/header-string-to-sign.txt]
+		dict set v expected_sreq	[read_file $dir/header-signed-request.txt]
+		if {[file exists $dir/header-signature.txt]} {
+			dict set v expected_sig	[string trim [read_file $dir/header-signature.txt]]
+		}
+		if {[file exists $dir/public-key.json]} {
+			dict set v public_key	[read_file $dir/public-key.json r]
+		}
+		return $v
+	}
+
+	# List all vector directories in $suite/{v4,v4a}
+	proc list_vectors flavor {
+		variable suite_dir
+		lsort [glob -nocomplain -type d -directory [file join $suite_dir $flavor] *]
+	}
+
+	# Common signing-call preamble: load vector, set creds from context,
+	# parse request and compute the args that feed sigv4 / sigv4a.
+	# Returns a dict with keys:
+	#   ctx           - the parsed context JSON
+	#   method path params headers body   - parsed from request.txt
+	#   date          - Unix seconds, from context.timestamp
+	#   endpoint      - derived from Host header (or defaults to first host-looking value)
+	#   sig_service   - from context
+	#   region        - from context
+	#   normalize     - "true"/"false"
+	#   creds         - dict {access_key ... secret ... token?}
+	#   expected_creq expected_sts expected_sreq expected_sig public_key
+	proc prep_vector v {
+		set ctx		[dict get $v context]
+		set parsed	[parse_request [dict get $v request]]
+		lassign [split_query [dict get $parsed path]] only_path qparams
+
+		set creds	[dict create \
+			access_key	[json get $ctx credentials access_key_id] \
+			secret		[json get $ctx credentials secret_access_key]]
+		if {[json exists $ctx credentials token]} {
+			dict set creds token	[json get $ctx credentials token]
+		}
+
+		set headers	[dict get $parsed headers]
+		# Pluck the Host header to seed the endpoint. Case-insensitive lookup.
+		# Use hk/hv to avoid shadowing the enclosing vector-dict $v.
+		set endpoint	example.amazonaws.com
+		foreach {hk hv} $headers {
+			if {[string equal -nocase $hk Host]} {
+				set endpoint [string trim $hv]
+			}
+		}
+
+		set date	[clock scan [json get $ctx timestamp] \
+			-format "%Y-%m-%dT%H:%M:%SZ" -timezone :UTC]
+
+		set body	[dict get $parsed body]
+		# aws-c-auth's driver adds the x-amz-content-sha256 header to
+		# the canonical request when sign_body=true (the signer's
+		# signed_body_header = AWS_SBHT_X_AMZ_CONTENT_SHA256 path).
+		# Our sigv4 only does this automatically for the s3v4 variant,
+		# so the harness adds the header itself when requested — the
+		# signer picks it up since it already flows existing
+		# x-amz-content-sha256 through canonical headers.
+		if {[json get $ctx sign_body]} {
+			if {"x-amz-content-sha256" ni [lmap {hk hv} $headers {string tolower $hk}]} {
+				lappend headers X-Amz-Content-Sha256 \
+					[binary encode hex [tomcrypt::hash sha256 $body]]
+			}
+		}
+
+		dict create \
+			ctx			$ctx \
+			method		[dict get $parsed method] \
+			path		$only_path \
+			params		$qparams \
+			headers		$headers \
+			body		$body \
+			date		$date \
+			endpoint	$endpoint \
+			sig_service	[json get $ctx service] \
+			region		[json get $ctx region] \
+			normalize	[expr {[json get $ctx normalize] ? "true" : "false"}] \
+			creds		$creds \
+			expected_creq	[dict get $v expected_creq] \
+			expected_sts	[dict get $v expected_sts] \
+			expected_sreq	[dict get $v expected_sreq] \
+			expected_sig	[if {[dict exists $v expected_sig]} {dict get $v expected_sig}] \
+			public_key		[if {[dict exists $v public_key]}   {dict get $v public_key}]
+	}
+
+	# Run sigv4 on one vector, validate canonical request + STS + signature
+	# bit-exactly. Returns "ok" on success or a descriptive failure.
+	proc check_v4 prep {
+		variable current_creds
+		dict with prep {}
+		set current_creds $creds
+
+		::aws::helpers::sigv4 \
+			-method       $method \
+			-endpoint     $endpoint \
+			-sig_service  $sig_service \
+			-region       $region \
+			-path         $path \
+			-params       $params \
+			-headers      $headers \
+			-body         $body \
+			-date         $date \
+			-normalize    $normalize \
+			-disable_double_encoding 1 \
+			-out_url      url \
+			-out_headers  hdrs \
+			-out_sts      sts \
+			-out_creq     creq \
+			-out_authz    authz
+
+		if {$creq ne $expected_creq} {
+			return "creq mismatch:\nGOT:\n$creq\nEXPECTED:\n$expected_creq"
+		}
+		if {$sts ne $expected_sts} {
+			return "sts mismatch:\nGOT:\n$sts\nEXPECTED:\n$expected_sts"
+		}
+		regexp {Signature=([0-9a-f]+)} $authz -> got_sig
+		if {$got_sig ne $expected_sig} {
+			return "sig mismatch: got $got_sig vs expected $expected_sig"
+		}
+		return ok
+	}
+
+	# Run sigv4a on one vector. Canonical request and STS are exact-match;
+	# the signature itself is non-deterministic so we verify it against
+	# the expected public key instead.
+	proc check_v4a prep {
+		variable current_creds
+		dict with prep {}
+		set current_creds $creds
+
+		::aws::helpers::sigv4a \
+			-method       $method \
+			-endpoint     $endpoint \
+			-sig_service  $sig_service \
+			-region       $region \
+			-region_set   $region \
+			-path         $path \
+			-params       $params \
+			-headers      $headers \
+			-body         $body \
+			-date         $date \
+			-normalize    $normalize \
+			-disable_double_encoding 1 \
+			-out_url      url \
+			-out_headers  hdrs \
+			-out_sts      sts \
+			-out_creq     creq \
+			-out_authz    authz
+
+		if {$creq ne $expected_creq} {
+			return "creq mismatch:\nGOT:\n$creq\nEXPECTED:\n$expected_creq"
+		}
+		if {$sts ne $expected_sts} {
+			return "sts mismatch:\nGOT:\n$sts\nEXPECTED:\n$expected_sts"
+		}
+
+		# Construct the expected public key from {X, Y}.
+		set Xh	[json get $public_key X]
+		set Yh	[json get $public_key Y]
+		set pub_ansi	[binary decode hex 04$Xh$Yh]
+		set pub_key		[tomcrypt::ecc_ansi_x963_import $pub_ansi secp256r1]
+
+		# Cross-check: our KDF-derived public key matches the one the
+		# vector says we should have produced.
+		set scalar	[::aws::helpers::_derive_sigv4a_scalar [dict get $creds secret] [dict get $creds access_key]]
+		set our_priv	[tomcrypt::ecc_import_raw_private secp256r1 $scalar]
+		set our_pub		[tomcrypt::ecc_extract_pubkey $our_priv]
+		set our_ansi	[tomcrypt::ecc_ansi_x963_export $our_pub]
+		if {[binary encode hex $our_ansi] ne "04[string tolower $Xh][string tolower $Yh]"} {
+			return "derived pubkey mismatch: our [binary encode hex $our_ansi] vs expected 04$Xh$Yh"
+		}
+
+		# Verify the produced signature against the public key over SHA-256(STS).
+		regexp {Signature=([0-9a-f]+)} $authz -> got_sig
+		set sig_bytes	[binary decode hex $got_sig]
+		set sts_hash	[tomcrypt::hash sha256 [encoding convertto utf-8 $sts]]
+		if {![tomcrypt::ecc_verify $sig_bytes $sts_hash $pub_key]} {
+			return "signature did not verify against expected public key"
+		}
+		return ok
+	}
+}
+
+# Install the credentials stub for the whole file; restore on cleanup.
+::sigvec::install_stub_creds
+
+# Vectors we intentionally skip:
+#   post-sts-header-after uses omit_session_token:true, which marks the
+#   x-amz-security-token header as added AFTER signing (not part of the
+#   SignedHeaders). Our sigv4/sigv4a always sign the security-token
+#   header — the only production use of "after" is some presigned-URL
+#   edge cases, not a priority.
+set ::sigvec::skip_v4  {post-sts-header-after}
+set ::sigvec::skip_v4a {post-sts-header-after}
+
+# Walk v4 vectors <<<
+foreach vec_dir [::sigvec::list_vectors v4] {
+	set name	[file tail $vec_dir]
+	if {$name in $::sigvec::skip_v4} continue
+	set loaded	[::sigvec::load_vector $vec_dir]
+	if {$loaded eq ""} continue
+	set prep	[::sigvec::prep_vector $loaded]
+	test sigv4-vector-$name "v4 vector $name" -body {
+		::sigvec::check_v4 $prep
+	} -cleanup {unset -nocomplain prep} -result ok
+}
+# Walk v4 vectors >>>
+
+# Walk v4a vectors <<<
+foreach vec_dir [::sigvec::list_vectors v4a] {
+	set name	[file tail $vec_dir]
+	if {$name in $::sigvec::skip_v4a} continue
+	set loaded	[::sigvec::load_vector $vec_dir]
+	if {$loaded eq ""} continue
+	set prep	[::sigvec::prep_vector $loaded]
+	test sigv4a-vector-$name "v4a vector $name" -body {
+		::sigvec::check_v4a $prep
+	} -cleanup {unset -nocomplain prep} -result ok
+}
+# Walk v4a vectors >>>
+
+# File-level teardown: drop the creds stub and the helpers namespace so
+# the interpreter is left unchanged.
+::sigvec::uninstall_stub_creds
+unset -nocomplain vec_dir name prep ::sigvec::skip_v4 ::sigvec::skip_v4a
+namespace delete ::sigvec
+
+::tcltest::cleanupTests
+return
+
+# vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4

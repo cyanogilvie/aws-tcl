@@ -1,0 +1,8 @@
+[wrap-git]
+clone-recursive = true
+url = https://github.com/cyanogilvie/chantricks
+revision = v1.0.9
+depth = 1
+
+[provide]
+dependency_names = chantricks

@@ -8,7 +8,7 @@ if {[info exists ::env(AWSTCL_EXTRA_TM_PATH)]} {
 }
 set aws_ver	[package require aws 2]
 
-package require rl_json
+package require rl_json 0.17
 package require parse_args
 package require chantricks
 

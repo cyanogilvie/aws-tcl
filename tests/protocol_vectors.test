@@ -20,7 +20,7 @@ if {[lsearch [namespace children] ::tcltest] == -1} {
 
 tcltest::loadTestedCommands
 package require aws 2
-package require rl_json
+package require rl_json 0.17
 package require rltest
 if {[llength [info commands json]] == 0} {namespace import rl_json::*}
 

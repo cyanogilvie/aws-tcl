@@ -1,61 +1,22 @@
-DESTDIR=
-PREFIX=/usr/local
-PACKAGE_NAME=aws
-VER=2.0a20
-MODE=-ziplet
-TCLSH=tclsh
+# Residual Makefile — fixture-stack lifecycle only.
+#
+# Build, test, install, and doc targets moved to meson. Use:
+#
+#   PKG_CONFIG_PATH=/opt/tcl9g/lib/pkgconfig meson setup build9g -Dtestmode=true
+#   meson compile -C build9g
+#   meson test    -C build9g
+#   meson install -C build9g --destdir /tmp/stage    # staged install
+#
+# The fixture stack (CloudFormation + S3 seed) is pure shell automation
+# against the AWS CLI — there's no meaningful meson step to wrap, so
+# these targets remain in make.
 
-# Fixture stack lifecycle
-AWSTCL_TEST_STACK?=aws-tcl-test
-AWS_REGION?=us-east-1
-AWS_CLI?=aws
-FIXTURE_TEMPLATE=tests/fixtures/aws-tcl-test.json
-
-CONTAINER_ENV=-v "`pwd`/here:/here" --network host --ulimit core=-1
-
-all: tm
-
-tm: tm/aws-$(VER).tm
-
-tm/aws-$(VER).tm: aws.tcl build.tcl
-	mkdir -p tm/aws
-	cp aws.tcl tm/aws-$(VER).tm
-	$(TCLSH) build.tcl -ver $(VER) $(MODE) -definitions botocore/botocore/data -prefix tm || rm rm/aws-$(VER).tm
-
-test: tm
-#	docker run --rm --name aws-tcl-test \
-#		-v "`pwd`/tests:/tests" \
-#		-v "`pwd`/tm:/tests/tm" \
-#		-v "$(HOME)/.aws:/root/.aws" \
-#		alpine-tcl:test \
-#		/tests/all.tcl $(TESTFLAGS)
-	$(TCLSH) tests/all.tcl $(TESTFLAGS) -load "apply {ver {source tests/load_self.tcl}} $(VER)"
-
-vim-gdb: tm
-	vim -c 'packadd termdebug' -c 'set mouse=a' -c 'set number' -c 'set foldlevel=100' -c 'Termdebug -ex set\ print\ pretty\ on --args $(TCLSH) tests/all.tcl -singleproc 1 -load apply\ {ver\ {source\ tests/load_self.tcl}}\ $(VER) $(TESTFLAGS)' -c "2windo set nonumber" -c "1windo set nonumber"
-
-container_test: tm
-	docker run --rm --name aws-tcl-test \
-		-v "`pwd`/tests:/tests" \
-		-v "`pwd`/tm:/tests/tm" \
-		-v "$(HOME)/.aws:/root/.aws" \
-		cyanogilvie/alpine-tcl:v0.9.77-stripped \
-		/tests/all.tcl $(TESTFLAGS)
-
-install: tm
-	mkdir -p $(DESTDIR)$(PREFIX)/lib/tcl8/site-tcl
-	mkdir -p $(DESTDIR)$(PREFIX)/lib/tcl9/site-tcl
-	cp -a tm/* $(DESTDIR)$(PREFIX)/lib/tcl8/site-tcl/
-	cp -a tm/* $(DESTDIR)$(PREFIX)/lib/tcl9/site-tcl/
-
-clean:
-	-rm -r tm
-
-# Fixture stack lifecycle <<<
-# See tests/fixtures/README.md for the full story. These targets assume the
-# AWS CLI is installed and the ambient credentials have rights to
-# create/modify the test stack (IAM managed policies, S3 bucket, SSM
-# parameters, CloudWatch log groups).
+AWSTCL_TEST_STACK ?= aws-tcl-test
+AWS_REGION        ?= us-east-1
+AWS_CLI           ?= aws
+BUILDDIR          ?= build9g
+FIXTURE_TEMPLATE   = tests/fixtures/aws-tcl-test.json
+TCLSH             ?= $(shell command -v tclsh 2>/dev/null)
 
 deploy-fixtures:
 	$(AWS_CLI) cloudformation deploy \
@@ -72,13 +33,13 @@ fixture-events:
 		--query 'StackEvents[?ResourceStatus==`CREATE_FAILED` || ResourceStatus==`UPDATE_FAILED`].[LogicalResourceId,ResourceType,ResourceStatusReason]' \
 		--output table
 
-seed-fixtures: tm
+seed-fixtures:
 	AWSTCL_TEST_STACK=$(AWSTCL_TEST_STACK) AWS_REGION=$(AWS_REGION) \
 		$(TCLSH) tests/fixtures/seed_objects.tcl
 
 fixtures: deploy-fixtures seed-fixtures
 
-empty-fixtures-bucket: tm
+empty-fixtures-bucket:
 	AWSTCL_TEST_STACK=$(AWSTCL_TEST_STACK) AWS_REGION=$(AWS_REGION) \
 		$(TCLSH) tests/fixtures/empty_bucket.tcl
 
@@ -96,7 +57,6 @@ fixture-status:
 		--region     $(AWS_REGION) \
 		--query 'Stacks[0].StackStatus' \
 		--output text
-# Fixture stack lifecycle >>>
 
-.PHONY: clean tm container_test test install all \
-	deploy-fixtures seed-fixtures fixtures empty-fixtures-bucket teardown-fixtures fixture-status fixture-events
+.PHONY: deploy-fixtures fixture-events seed-fixtures fixtures \
+	empty-fixtures-bucket teardown-fixtures fixture-status

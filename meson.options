@@ -1,0 +1,25 @@
+option('tm_mode',
+  type:        'combo',
+  choices:     ['ziplet', 'brlet', 'plain'],
+  value:       'ziplet',
+  description: 'Service module packaging. "ziplet" = self-extracting gzip (default, smallest with no extra dependency). "brlet" = brotli-compressed (smaller still, requires the brotli Tcl package at runtime). "plain" = uncompressed Tcl source (large, useful for debugging the generator).',
+)
+
+option('testmode',
+  type:        'boolean',
+  value:       false,
+  description: 'Enable the whitebox test constraint. The test suite uses this to gate tests that poke at internal procs that are not part of the supported API.',
+)
+
+option('build_tests',
+  type:        'boolean',
+  value:       true,
+  description: 'Build the test suite (-Dbuild_tests=false skips fetching the test-only subprojects: rl_http, tomcrypt, reuri, s2n, tdom). `meson test` will have nothing to run when disabled.',
+)
+
+# Note: there is no install_deps option. When aws-tcl resolves a dep
+# to a subproject rather than a system install, the subproject's own
+# install rules are respected by `meson install` — which, for the
+# teabase-based deps, means they'll end up in the install prefix
+# alongside aws. Pass `meson install --skip-subprojects` to install
+# only aws-tcl proper and rely on system-installed deps at runtime.

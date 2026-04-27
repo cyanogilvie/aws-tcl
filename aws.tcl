@@ -1,12 +1,12 @@
 # AWS signature version 4: https://docs.aws.amazon.com/general/latest/gr/signature-version-4.html
 # All services support version 4, except SimpleDB which requires version 2
 
-package require rl_http 1.22
+package require rl_http 1.24
 package require Thread
 package require tomcrypt 0.9.2
 package require parse_args
 package require tdom
-package require rl_json
+package require rl_json 0.17
 package require chantricks
 package require reuri 0.15.0
 
@@ -30,34 +30,8 @@ namespace eval aws {
 
 	variable debug			false
 
-	# TODO: consult env(AWS_CONFIG_FILE) if present (and expand leading ~) to find the config file, defaulting to ~/.aws/config
-	# TODO: apply other env vars from https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-envvars.html
-
-	variable default_region	[if {[info exists ::env(AWS_REGION)]} {
-		set ::env(AWS_REGION)
-	} elseif {[info exists ::env(AWS_DEFAULT_REGION)]} {
-		set ::env(AWS_DEFAULT_REGION)
-	} elseif {
-		[info exists ::env(HOME)] &&
-		[file readable [file join $::env(HOME) .aws/config]]
-	} {
-		package require inifile
-		set ini	[::ini::open [file join $::env(HOME) .aws/config] r]
-		if {[info exists ::env(AWS_PROFILE)]} {
-			set section	"profile $::env(AWS_PROFILE)"
-		} else {
-			set section	default
-		}
-		try {
-			::ini::value $ini $section region
-		} finally {
-			::ini::close $ini
-			unset -nocomplain ini
-		}
-	} else {
-		return -level 0 us-east-1
-	}]
-
+	# default_region is initialised after the helpers namespace is defined
+	# (see the `variable default_region` block below the `namespace eval helpers`).
 	variable dir	[file dirname [file normalize [info script]]]
 	variable endpoint_cache	{}
 
@@ -82,13 +56,12 @@ namespace eval aws {
 		#   aws_tcl_rate_cfg   - shared config (retry mode, max attempts)
 		# All rate-limit reads/writes are serialized via tsv::lock on
 		# aws_tcl_rate.
-		variable retry_mode		[if {[info exists ::env(AWS_RETRY_MODE)]} {
-			# legacy / standard / adaptive — matches AWS SDK v2/v3 terminology
-			set ::env(AWS_RETRY_MODE)
-		} else { return -level 0 standard }]
-		variable max_attempts	[if {[info exists ::env(AWS_MAX_ATTEMPTS)]} {
-			set ::env(AWS_MAX_ATTEMPTS)
-		} else { return -level 0 3 }]
+		# retry_mode / max_attempts default to "" and are populated on first
+		# access by _resolve_retry_config, which checks env vars first, then
+		# the active profile in ~/.aws/config, then falls back to SDK defaults.
+		# Callers can still override by setting the vars explicitly.
+		variable retry_mode		""
+		variable max_attempts	""
 
 		# Retry classifier tables (merged from botocore _retry.json per-service
 		# policies plus the SDK-wide transient set). Membership in either
@@ -186,6 +159,208 @@ namespace eval aws {
 		proc _debug script { #<<<
 			variable ::aws::debug
 			if {$debug} {uplevel 1 $script}
+		}
+
+		#>>>
+		# Config / credentials file resolution. These mirror the AWS CLI
+		# rules for locating and reading ~/.aws/config and ~/.aws/credentials,
+		# and for picking the active profile.
+		proc _profile_name {} { #<<<
+			global env
+			if {[info exists env(AWS_PROFILE)] && $env(AWS_PROFILE) ne ""} {
+				return $env(AWS_PROFILE)
+			}
+			if {[info exists env(AWS_DEFAULT_PROFILE)] && $env(AWS_DEFAULT_PROFILE) ne ""} {
+				return $env(AWS_DEFAULT_PROFILE)
+			}
+			return default
+		}
+
+		#>>>
+		proc _expand_path path { #<<<
+			if {$path eq ""} {return ""}
+			# file normalize expands leading ~ via Tcl's filename-resolution rules.
+			file normalize $path
+		}
+
+		#>>>
+		proc _config_file_path {} { #<<<
+			global env
+			if {[info exists env(AWS_CONFIG_FILE)] && $env(AWS_CONFIG_FILE) ne ""} {
+				return [_expand_path $env(AWS_CONFIG_FILE)]
+			}
+			if {[info exists env(HOME)]} {
+				return [file join $env(HOME) .aws/config]
+			}
+			return ""
+		}
+
+		#>>>
+		proc _credentials_file_path {} { #<<<
+			global env
+			if {[info exists env(AWS_SHARED_CREDENTIALS_FILE)] && $env(AWS_SHARED_CREDENTIALS_FILE) ne ""} {
+				return [_expand_path $env(AWS_SHARED_CREDENTIALS_FILE)]
+			}
+			if {[info exists env(HOME)]} {
+				return [file join $env(HOME) .aws/credentials]
+			}
+			return ""
+		}
+
+		#>>>
+		proc _ini_section_keys {path section} { #<<<
+			# Return a dict of key→value for the given INI section, or {} if
+			# the file is unreadable or the section is absent.
+			if {$path eq "" || ![file readable $path]} {return {}}
+			package require inifile
+			set ini	[::ini::open $path r]
+			try {
+				if {$section ni [::ini::sections $ini]} {return {}}
+				set result	{}
+				foreach k [::ini::keys $ini $section] {
+					dict set result $k [::ini::value $ini $section $k]
+				}
+				return $result
+			} finally {
+				::ini::close $ini
+			}
+		}
+
+		#>>>
+		proc _config_profile_keys {{profile {}}} { #<<<
+			if {$profile eq ""} {set profile [_profile_name]}
+			set section	[expr {$profile eq "default" ? "default" : "profile $profile"}]
+			_ini_section_keys [_config_file_path] $section
+		}
+
+		#>>>
+		proc _credentials_profile_keys {{profile {}}} { #<<<
+			if {$profile eq ""} {set profile [_profile_name]}
+			# The credentials file uses bare profile names, no "profile " prefix.
+			_ini_section_keys [_credentials_file_path] $profile
+		}
+
+		#>>>
+		proc _profile_value {key {profile {}}} { #<<<
+			# Credentials-file entry takes precedence over config-file entry
+			# for the same key. Returns "" when neither file has it.
+			set creds	[_credentials_profile_keys $profile]
+			if {[dict exists $creds $key]} {return [dict get $creds $key]}
+			set cfg		[_config_profile_keys $profile]
+			if {[dict exists $cfg $key]} {return [dict get $cfg $key]}
+			return ""
+		}
+
+		#>>>
+		proc _endpoint_url_override service { #<<<
+			# Resolve AWS_ENDPOINT_URL-style overrides for the given service.
+			# Precedence (CLI-compatible, strongest first):
+			#   1. AWS_ENDPOINT_URL_<SERVICE>
+			#   2. AWS_ENDPOINT_URL
+			#   3. active profile's services.<id>.<svc>.endpoint_url
+			#      (requires a services = <id> key in the profile)
+			#   4. active profile's endpoint_url
+			# Returns the URL string, or "" if no override applies.
+			global env
+
+			# Convert service id to env var suffix (s3 -> S3, dynamodb -> DYNAMODB,
+			# transcribe-streaming -> TRANSCRIBE_STREAMING).
+			set svc_env [string toupper [string map {- _} $service]]
+			if {[info exists env(AWS_ENDPOINT_URL_$svc_env)] && $env(AWS_ENDPOINT_URL_$svc_env) ne ""} {
+				return $env(AWS_ENDPOINT_URL_$svc_env)
+			}
+			if {[info exists env(AWS_ENDPOINT_URL)] && $env(AWS_ENDPOINT_URL) ne ""} {
+				return $env(AWS_ENDPOINT_URL)
+			}
+			set profile_cfg [_config_profile_keys]
+			if {[dict exists $profile_cfg services]} {
+				set services_section "services [dict get $profile_cfg services]"
+				set svc_keys [_ini_section_keys [_config_file_path] $services_section]
+				# keys look like "<svc> endpoint_url" but inifile flattens
+				# the "svc = ..." group — the CLI uses a nested syntax we can
+				# approximate by matching "<svc>.endpoint_url" or storing under
+				# a compound key. We try the literal compound key first.
+				if {[dict exists $svc_keys "$service.endpoint_url"]} {
+					return [dict get $svc_keys "$service.endpoint_url"]
+				}
+			}
+			if {[dict exists $profile_cfg endpoint_url]} {
+				return [dict get $profile_cfg endpoint_url]
+			}
+			return ""
+		}
+
+		#>>>
+		proc _apply_endpoint_override {endpoint_info_var service} { #<<<
+			# Mutate endpoint_info in place to apply any AWS_ENDPOINT_URL*
+			# override. Preserves signing region / credential scope from the
+			# rule-engine result; overrides only transport fields (scheme,
+			# host, port).
+			upvar 1 $endpoint_info_var ei
+			set url [_endpoint_url_override $service]
+			if {$url eq ""} {return}
+			set scheme [reuri get $url scheme http]
+			set host   [reuri get $url host]
+			set port   [reuri get $url port ""]
+			if {$port ne ""} {set host $host:$port}
+			dict set ei hostname $host
+			dict set ei protocols [list $scheme]
+			# Drop sslCommonName — it would override hostname for https but
+			# is meaningless against a user-supplied endpoint.
+			dict unset ei sslCommonName
+			_debug {log notice "endpoint override for $service: $url -> scheme=$scheme host=$host"}
+		}
+
+		#>>>
+		proc _config_bool {key default_val} { #<<<
+			# Read a boolean config value (env var first, then profile) using
+			# CLI-style truthy matching (true/1/yes/on, case-insensitive).
+			global env
+			set env_name [string toupper $key]
+			if {[info exists env(AWS_$env_name)]} {
+				set raw $env(AWS_$env_name)
+			} else {
+				set raw [_profile_value [string tolower $key]]
+			}
+			if {$raw eq ""} {return $default_val}
+			return [expr {[string tolower $raw] in {true 1 yes on}}]
+		}
+
+		#>>>
+		proc _ca_bundle {} { #<<<
+			# Resolve AWS_CA_BUNDLE / active profile ca_bundle, or "" if unset.
+			# Returns the path to a PEM bundle suitable for passing to
+			# rl_http's -cafile option (1.24+).
+			global env
+			if {[info exists env(AWS_CA_BUNDLE)] && $env(AWS_CA_BUNDLE) ne ""} {
+				return $env(AWS_CA_BUNDLE)
+			}
+			return [_profile_value ca_bundle]
+		}
+
+		#>>>
+		proc _resolve_retry_config {} { #<<<
+			# Populate retry_mode / max_attempts from env or active profile
+			# if they haven't been set yet. Idempotent.
+			global env
+			variable retry_mode
+			variable max_attempts
+			if {$retry_mode eq ""} {
+				if {[info exists env(AWS_RETRY_MODE)] && $env(AWS_RETRY_MODE) ne ""} {
+					set retry_mode $env(AWS_RETRY_MODE)
+				} else {
+					set v [_profile_value retry_mode]
+					set retry_mode [expr {$v ne "" ? $v : "standard"}]
+				}
+			}
+			if {$max_attempts eq ""} {
+				if {[info exists env(AWS_MAX_ATTEMPTS)] && $env(AWS_MAX_ATTEMPTS) ne ""} {
+					set max_attempts $env(AWS_MAX_ATTEMPTS)
+				} else {
+					set v [_profile_value max_attempts]
+					set max_attempts [expr {$v ne "" ? $v : 3}]
+				}
+			}
 		}
 
 		#>>>
@@ -319,6 +494,7 @@ namespace eval aws {
 			#   max_rate        : current cap in Hz
 			#   next_send       : earliest clock microseconds we may send
 			#   last_throttle   : clock seconds of last observed throttle
+			_resolve_retry_config
 			variable _max_send_rate
 			variable _min_send_rate
 			variable retry_mode
@@ -1250,6 +1426,7 @@ namespace eval aws {
 			}
 			}
 			#puts stderr "rl_http $method $signed_url -headers [list $signed_headers] -data [list $body]"
+			set ca_bundle	[_ca_bundle]
 			set extra	[if {$::aws::debug} {
 				package require chantricks
 				list -tapchan [list ::chantricks::tapchan [list apply {
@@ -1283,6 +1460,7 @@ namespace eval aws {
 				-max_keepalive_age		$max_keepalive_age \
 				-max_keepalive_count	$max_keepalive_count \
 				-headers				$signed_headers \
+				{*}[expr {$ca_bundle ne "" ? [list -cafile $ca_bundle] : {}}] \
 				{*}$extra \
 				-data					$body
 
@@ -1303,6 +1481,7 @@ namespace eval aws {
 
 		#>>>
 		proc _aws_req {method endpoint path args} { #<<<
+			_resolve_retry_config
 			variable max_attempts
 			variable retry_mode
 
@@ -1406,9 +1585,32 @@ namespace eval aws {
 
 		#>>>
 		proc get_creds {} { #<<<
+			# Resolves credentials the way the AWS CLI does, in this order:
+			#   1. A per-thread override pushed by _with_creds (used by AssumeRole
+			#      nested STS calls to avoid recursing through the chain).
+			#   2. A static override set via aws::set_creds.
+			#   3. Env vars: AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY (+optional
+			#      AWS_SESSION_TOKEN). Never cached — refreshed from env each call.
+			#   4. Env-var web-identity: AWS_ROLE_ARN + AWS_WEB_IDENTITY_TOKEN_FILE.
+			#   5. The active profile. For each profile we try in order:
+			#        a. credential_process
+			#        b. role_arn + web_identity_token_file (AssumeRoleWithWebIdentity)
+			#        c. role_arn + source_profile OR credential_source (AssumeRole)
+			#        d. sso_session / sso_start_url (not yet implemented)
+			#        e. static aws_access_key_id / aws_secret_access_key
+			#   6. Container creds: AWS_CONTAINER_CREDENTIALS_RELATIVE_URI or
+			#      AWS_CONTAINER_CREDENTIALS_FULL_URI (+ optional auth token).
+			#   7. EC2 IMDS (v2 preferred, v1 fallback unless disabled).
 			global env
 			variable creds
+			variable _cred_override
 
+			# 1. per-thread override (for nested STS calls)
+			if {[info exists _cred_override] && [llength $_cred_override] > 0} {
+				return [lindex $_cred_override end]
+			}
+
+			# 2. static override via set_creds, or a prior-call cached chain result
 			if {
 				[info exists creds] &&
 				[dict exists $creds expires] &&
@@ -1416,74 +1618,98 @@ namespace eval aws {
 			} {
 				unset creds
 			}
+			if {[info exists creds]} {return $creds}
 
-			if {![info exists creds]} { # Attempt to find some credentials laying around
-				# Environment variables <<<
-				if {
-					[info exists env(AWS_ACCESS_KEY_ID)] &&
-					$env(AWS_ACCESS_KEY_ID) ne "" &&
-					[info exists env(AWS_SECRET_ACCESS_KEY)]
-				} {
-					# Don't cache the env var creds to $creds - they're cheap enough
-					# to reconstruct each time from the env vars, and there is no
-					# mechanism for expressing credential expiry, so we have to fetch
-					# each time (something may be periodically updating the env with
-					# fresh creds).
-					dict set tmp access_key		$env(AWS_ACCESS_KEY_ID)
-					dict set tmp secret			$env(AWS_SECRET_ACCESS_KEY)
-					if {[info exists env(AWS_SESSION_TOKEN)]} {
-						dict set tmp token		$env(AWS_SESSION_TOKEN)
-					}
-					dict set tmp source			env
-					_debug {log debug "Found credentials: env"}
-					return $tmp
+			# 3. env vars (never cached)
+			if {
+				[info exists env(AWS_ACCESS_KEY_ID)] &&
+				$env(AWS_ACCESS_KEY_ID) ne "" &&
+				[info exists env(AWS_SECRET_ACCESS_KEY)]
+			} {
+				set tmp [dict create \
+					access_key	$env(AWS_ACCESS_KEY_ID) \
+					secret		$env(AWS_SECRET_ACCESS_KEY) \
+					source		env \
+				]
+				if {[info exists env(AWS_SESSION_TOKEN)]} {
+					dict set tmp token $env(AWS_SESSION_TOKEN)
 				}
-
-				# Environment variables >>>
-				# User creds: ~/.aws/credentials <<<
-				if {[info exists env(HOME)]} {
-					set credfile	[file join $env(HOME) .aws/credentials]
-					if {[file readable $credfile]} {
-						package require inifile
-						set ini	[::ini::open $credfile r]
-						if {[info exists env(AWS_PROFILE)]} {
-							set section	$env(AWS_PROFILE)
-						} else {
-							set section	default
-						}
-						try {
-							dict set creds access_key	[::ini::value $ini $section aws_access_key_id]
-							dict set creds secret		[::ini::value $ini $section aws_secret_access_key]
-							dict set creds token		""
-							dict set creds source		user
-							_debug {log debug "Found credentials: user"}
-						} on ok {} {
-							return $creds
-						} finally {
-							::ini::close $ini
-						}
-					}
-				}
-
-				# User creds: ~/.aws/credentials >>>
-				# Instance role creds <<<
-				try {
-					instance_role_creds
-				} on ok role_creds {
-					dict set creds access_key		[json get $role_creds AccessKeyId]
-					dict set creds secret			[json get $role_creds SecretAccessKey]
-					dict set creds token			[json get $role_creds Token]
-					dict set creds expires			[json get $role_creds expires_sec]
-					dict set creds source			instance_role
-					_debug {log debug "Found credentials: instance_role"}
-					return $creds
-				} on error {} {}
-				# Instance role creds >>>
-
-				throw {AWS NO_CREDENTIALS} "No credentials were supplied or could be found"
+				_debug {log debug "Found credentials: env"}
+				return $tmp
 			}
 
-			set creds
+			# 4. env-var web identity (IRSA / EKS Pod Identity token mode)
+			if {
+				[info exists env(AWS_ROLE_ARN)] && $env(AWS_ROLE_ARN) ne "" &&
+				[info exists env(AWS_WEB_IDENTITY_TOKEN_FILE)] && $env(AWS_WEB_IDENTITY_TOKEN_FILE) ne ""
+			} {
+				set role_session [expr {
+					[info exists env(AWS_ROLE_SESSION_NAME)] && $env(AWS_ROLE_SESSION_NAME) ne ""
+					? $env(AWS_ROLE_SESSION_NAME)
+					: "aws-tcl-[_uuid4]"
+				}]
+				set creds [_web_identity_creds \
+					$env(AWS_ROLE_ARN) $env(AWS_WEB_IDENTITY_TOKEN_FILE) $role_session]
+				_debug {log debug "Found credentials: web_identity (env)"}
+				return $creds
+			}
+
+			# 5. active profile
+			try {
+				set creds [_resolve_profile_creds [_profile_name] {}]
+				_debug {log debug "Found credentials: profile [_profile_name] ([dict get $creds source])"}
+				return $creds
+			} trap {AWS NO_PROFILE_CREDS} {} {
+				# profile isn't configured for static/process/role/sso —
+				# fall through to container/IMDS
+				unset -nocomplain creds
+			}
+
+			# 6. container creds (ECS RELATIVE_URI or EKS FULL_URI)
+			if {
+				[info exists env(AWS_CONTAINER_CREDENTIALS_RELATIVE_URI)] ||
+				[info exists env(AWS_CONTAINER_CREDENTIALS_FULL_URI)]
+			} {
+				try {
+					set role_creds [_container_creds]
+					set creds [_creds_from_sts_json $role_creds container]
+					_debug {log debug "Found credentials: container"}
+					return $creds
+				} on error {msg opts} {
+					_debug {log warn "Container credentials fetch failed: $msg"}
+					unset -nocomplain creds
+				}
+			}
+
+			# 7. EC2 instance metadata
+			if {![_imds_disabled]} {
+				try {
+					set role_creds [instance_role_creds]
+					set creds [_creds_from_sts_json $role_creds instance_role]
+					_debug {log debug "Found credentials: instance_role"}
+					return $creds
+				} on error {} {
+					unset -nocomplain creds
+				}
+			}
+
+			throw {AWS NO_CREDENTIALS} "No credentials were supplied or could be found"
+		}
+
+		#>>>
+		proc _creds_from_sts_json {role_creds source} { #<<<
+			# role_creds is a JSON doc with AccessKeyId / SecretAccessKey / Token /
+			# expires_sec (epoch seconds, pre-parsed from Expiration).
+			set out [dict create \
+				access_key	[json get $role_creds AccessKeyId] \
+				secret		[json get $role_creds SecretAccessKey] \
+				token		[json get $role_creds Token] \
+				source		$source \
+			]
+			if {[json exists $role_creds expires_sec]} {
+				dict set out expires [json get $role_creds expires_sec]
+			}
+			return $out
 		}
 
 		#>>>
@@ -1498,30 +1724,683 @@ namespace eval aws {
 		}
 
 		#>>>
-		proc instance_role_creds {} { #<<<
+		proc _with_creds {creds script} { #<<<
+			# Push $creds onto the override stack, evaluate $script in the
+			# caller's scope, then pop. Used by the AssumeRole / web-identity
+			# paths so the nested sts:AssumeRole(WithWebIdentity) call signs
+			# with the source creds instead of recursing through get_creds.
+			variable _cred_override
+			if {![info exists _cred_override]} {set _cred_override {}}
+			lappend _cred_override $creds
+			try {
+				uplevel 1 $script
+			} finally {
+				set _cred_override [lrange $_cred_override 0 end-1]
+			}
+		}
+
+		#>>>
+		proc _resolve_profile_creds {profile visited} { #<<<
+			# Recursive resolver for named-profile credential sources.
+			# Returns a creds dict or throws {AWS NO_PROFILE_CREDS} if the
+			# profile exists but has nothing resolvable, or {AWS PROFILE_CYCLE}
+			# on source_profile cycles.
+			if {$profile in $visited} {
+				throw {AWS PROFILE_CYCLE} "source_profile cycle detected: [list $profile {*}$visited]"
+			}
+			lappend visited $profile
+
+			set cfg		[_config_profile_keys $profile]
+			set cred	[_credentials_profile_keys $profile]
+			# Merge: credentials-file keys override config-file keys.
+			set merged	[dict merge $cfg $cred]
+
+			if {[dict size $merged] == 0} {
+				throw {AWS NO_PROFILE_CREDS} "profile '$profile' not found in config or credentials file"
+			}
+
+			# a. credential_process
+			if {[dict exists $merged credential_process]} {
+				return [_credential_process_creds [dict get $merged credential_process]]
+			}
+
+			# b. web-identity via profile
+			if {
+				[dict exists $merged role_arn] &&
+				[dict exists $merged web_identity_token_file]
+			} {
+				set session [expr {
+					[dict exists $merged role_session_name]
+					? [dict get $merged role_session_name]
+					: "aws-tcl-[_uuid4]"
+				}]
+				return [_web_identity_creds \
+					[dict get $merged role_arn] \
+					[dict get $merged web_identity_token_file] \
+					$session]
+			}
+
+			# c. AssumeRole via source_profile or credential_source
+			if {[dict exists $merged role_arn]} {
+				if {[dict exists $merged source_profile]} {
+					set source_profile	[dict get $merged source_profile]
+					set source_creds	[_resolve_profile_creds $source_profile $visited]
+				} elseif {[dict exists $merged credential_source]} {
+					set source_creds	[_creds_from_source [dict get $merged credential_source]]
+				} else {
+					throw {AWS PROFILE_INVALID} "profile '$profile' has role_arn but no source_profile or credential_source"
+				}
+				if {[dict exists $merged mfa_serial]} {
+					throw {AWS UNSUPPORTED} "profile '$profile' requires MFA (mfa_serial); aws-tcl does not prompt — obtain a session token with the AWS CLI and export it via env vars"
+				}
+				set session [expr {
+					[dict exists $merged role_session_name]
+					? [dict get $merged role_session_name]
+					: "aws-tcl-[_uuid4]"
+				}]
+				set duration [expr {
+					[dict exists $merged duration_seconds]
+					? [dict get $merged duration_seconds]
+					: 3600
+				}]
+				set external_id [expr {
+					[dict exists $merged external_id]
+					? [dict get $merged external_id]
+					: ""
+				}]
+				return [_assume_role_creds \
+					$source_creds \
+					[dict get $merged role_arn] \
+					$session $duration $external_id]
+			}
+
+			# d. SSO / IAM Identity Center — modern sso_session or legacy
+			# sso_start_url on the profile. We read the token cache that
+			# `aws sso login` maintains; we do not run the device-code
+			# login flow ourselves. Token refresh via refreshToken is
+			# supported.
+			if {[dict exists $merged sso_session]} {
+				return [_sso_creds_from_session $profile $merged]
+			}
+			if {[dict exists $merged sso_start_url]} {
+				return [_sso_creds_from_legacy $profile $merged]
+			}
+
+			# e. static access_key / secret_key
+			if {
+				[dict exists $merged aws_access_key_id] &&
+				[dict exists $merged aws_secret_access_key]
+			} {
+				set out [dict create \
+					access_key	[dict get $merged aws_access_key_id] \
+					secret		[dict get $merged aws_secret_access_key] \
+					source		"profile:$profile" \
+				]
+				if {[dict exists $merged aws_session_token]} {
+					dict set out token [dict get $merged aws_session_token]
+				}
+				return $out
+			}
+
+			throw {AWS NO_PROFILE_CREDS} "profile '$profile' has no resolvable credential source"
+		}
+
+		#>>>
+		proc _creds_from_source source { #<<<
+			# credential_source = Environment | Ec2InstanceMetadata | EcsContainer
+			global env
+			switch -- $source {
+				Environment {
+					if {
+						![info exists env(AWS_ACCESS_KEY_ID)] ||
+						![info exists env(AWS_SECRET_ACCESS_KEY)]
+					} {
+						throw {AWS NO_CREDENTIALS} "credential_source=Environment but AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY not set"
+					}
+					set out [dict create \
+						access_key	$env(AWS_ACCESS_KEY_ID) \
+						secret		$env(AWS_SECRET_ACCESS_KEY) \
+						source		env \
+					]
+					if {[info exists env(AWS_SESSION_TOKEN)]} {
+						dict set out token $env(AWS_SESSION_TOKEN)
+					}
+					return $out
+				}
+				Ec2InstanceMetadata {
+					return [_creds_from_sts_json [instance_role_creds] instance_role]
+				}
+				EcsContainer {
+					return [_creds_from_sts_json [_container_creds] container]
+				}
+				default {
+					throw {AWS PROFILE_INVALID} "unknown credential_source: $source"
+				}
+			}
+		}
+
+		#>>>
+		proc _credential_process_creds command { #<<<
+			# Run the configured credential_process command. Returns a creds dict
+			# including an 'expires' epoch when Expiration is present. The command
+			# is parsed as a shell-style string per the AWS spec — supports
+			# "foo --bar baz" without invoking a real shell.
+			# Tcl's exec with {*}[split ...] would be wrong for quoted args, so
+			# we go via `sh -c` to match CLI behaviour on POSIX.
+			try {
+				set out [exec sh -c $command 2>/dev/null]
+			} on error {msg opts} {
+				throw {AWS CREDENTIAL_PROCESS} "credential_process failed: $msg"
+			}
+			try {
+				set j $out
+				if {[json get $j Version] != 1} {
+					throw {AWS CREDENTIAL_PROCESS} "credential_process returned Version != 1"
+				}
+				set result [dict create \
+					access_key	[json get $j AccessKeyId] \
+					secret		[json get $j SecretAccessKey] \
+					source		credential_process \
+				]
+				if {[json exists $j SessionToken]} {
+					dict set result token [json get $j SessionToken]
+				}
+				if {[json exists $j Expiration]} {
+					dict set result expires [clock scan [json get $j Expiration] -timezone :UTC -format {%Y-%m-%dT%H:%M:%SZ}]
+				}
+				return $result
+			} on error {msg opts} {
+				throw {AWS CREDENTIAL_PROCESS} "credential_process output unparseable: $msg"
+			}
+		}
+
+		#>>>
+		proc _assume_role_creds {source_creds role_arn session_name duration external_id} { #<<<
+			# Nest-call sts:AssumeRole using $source_creds. Runs through the
+			# normal operation dispatcher so endpoint rules, retries, etc. all
+			# still apply; _with_creds short-circuits the credential chain
+			# while this runs.
+			variable ::aws::default_region
+			package require aws::sts
+			set args [list \
+				-RoleArn $role_arn \
+				-RoleSessionName $session_name \
+				-DurationSeconds $duration \
+				-region $::aws::default_region]
+			if {$external_id ne ""} {lappend args -ExternalId $external_id}
+			_with_creds $source_creds {
+				set resp [aws sts assume_role {*}$args]
+			}
+			set j [json extract $resp Credentials]
+			return [dict create \
+				access_key	[json get $j AccessKeyId] \
+				secret		[json get $j SecretAccessKey] \
+				token		[json get $j SessionToken] \
+				expires		[clock scan [json get $j Expiration] -timezone :UTC -format {%Y-%m-%dT%H:%M:%SZ}] \
+				source		"assume-role:$role_arn" \
+			]
+		}
+
+		#>>>
+		proc _web_identity_creds {role_arn token_file session_name} { #<<<
+			# Nest-call sts:AssumeRoleWithWebIdentity. This operation is
+			# anonymous (noAuth) so no source credentials are needed.
+			variable ::aws::default_region
+			package require aws::sts
+			set fh [open $token_file r]
+			try {
+				set token [read $fh]
+			} finally {
+				close $fh
+			}
+			set token [string trim $token]
+			set resp [aws sts assume_role_with_web_identity \
+				-RoleArn $role_arn \
+				-RoleSessionName $session_name \
+				-WebIdentityToken $token \
+				-region $::aws::default_region]
+			set j [json extract $resp Credentials]
+			return [dict create \
+				access_key	[json get $j AccessKeyId] \
+				secret		[json get $j SecretAccessKey] \
+				token		[json get $j SessionToken] \
+				expires		[clock scan [json get $j Expiration] -timezone :UTC -format {%Y-%m-%dT%H:%M:%SZ}] \
+				source		"web-identity:$role_arn" \
+			]
+		}
+
+		#>>>
+		proc _sso_creds_from_session {profile merged} { #<<<
+			# Modern sso-session form. Profile carries sso_session=NAME +
+			# sso_account_id + sso_role_name; the [sso-session NAME]
+			# section in ~/.aws/config carries sso_start_url, sso_region,
+			# sso_registration_scopes. Token cache filename is sha1(NAME).
+			foreach k {sso_session sso_account_id sso_role_name} {
+				if {![dict exists $merged $k]} {
+					throw {AWS PROFILE_INVALID} "profile '$profile' is missing $k"
+				}
+			}
+			set session_name	[dict get $merged sso_session]
+			set session_cfg		[_ini_section_keys \
+				[_config_file_path] "sso-session $session_name"]
+			if {[dict size $session_cfg] == 0} {
+				throw {AWS PROFILE_INVALID} "profile '$profile' references sso-session '$session_name' but no \[sso-session $session_name\] section exists in the config file"
+			}
+			foreach k {sso_start_url sso_region} {
+				if {![dict exists $session_cfg $k]} {
+					throw {AWS PROFILE_INVALID} "\[sso-session $session_name\] is missing $k"
+				}
+			}
+			_sso_creds_common \
+				$profile \
+				$session_name \
+				[dict get $session_cfg sso_start_url] \
+				[dict get $session_cfg sso_region] \
+				[dict get $merged sso_account_id] \
+				[dict get $merged sso_role_name]
+		}
+
+		#>>>
+		proc _sso_creds_from_legacy {profile merged} { #<<<
+			# Legacy form. All four keys on the profile; token cache
+			# filename is sha1(sso_start_url).
+			foreach k {sso_start_url sso_region sso_account_id sso_role_name} {
+				if {![dict exists $merged $k]} {
+					throw {AWS PROFILE_INVALID} "profile '$profile' is missing $k"
+				}
+			}
+			_sso_creds_common \
+				$profile \
+				[dict get $merged sso_start_url] \
+				[dict get $merged sso_start_url] \
+				[dict get $merged sso_region] \
+				[dict get $merged sso_account_id] \
+				[dict get $merged sso_role_name]
+		}
+
+		#>>>
+		proc _sso_creds_common {profile cache_key start_url region account_id role_name} { #<<<
+			# Load the on-disk token cache, refresh it if expired and a
+			# refresh token is available, then call sso:GetRoleCredentials
+			# to mint temporary AWS creds. In-memory cached per-profile
+			# until 60s before the creds expire.
+			variable _sso_role_creds_cache
+			if {
+				[info exists _sso_role_creds_cache] &&
+				[dict exists $_sso_role_creds_cache $profile] &&
+				[clock seconds] < [dict get $_sso_role_creds_cache $profile expires] - 60
+			} {
+				return [dict get $_sso_role_creds_cache $profile]
+			}
+
+			set token_path	[_sso_token_cache_path $cache_key]
+			set token		[_sso_load_token $token_path $start_url $cache_key]
+			# Refresh if close to expiry and refresh token is present.
+			if {
+				[clock seconds] >= [dict get $token expires_at] - 60 &&
+				[dict exists $token refreshToken] &&
+				[dict get $token refreshToken] ne "" &&
+				[dict exists $token clientId] &&
+				[dict exists $token clientSecret]
+			} {
+				set token [_sso_refresh_token $region $token $token_path]
+			}
+			if {[clock seconds] >= [dict get $token expires_at]} {
+				throw {AWS SSO_TOKEN_EXPIRED} "SSO access token for profile '$profile' has expired — run 'aws sso login --profile $profile' to refresh"
+			}
+
+			set rc [_sso_get_role_credentials \
+				$region [dict get $token accessToken] $account_id $role_name]
+			# roleCredentials.expiration is epoch milliseconds.
+			set expires_sec [expr {[json get $rc expiration] / 1000}]
+			set out [dict create \
+				access_key	[json get $rc accessKeyId] \
+				secret		[json get $rc secretAccessKey] \
+				token		[json get $rc sessionToken] \
+				expires		$expires_sec \
+				source		"sso:$profile" \
+			]
+			if {![info exists _sso_role_creds_cache]} {
+				set _sso_role_creds_cache {}
+			}
+			dict set _sso_role_creds_cache $profile $out
+			return $out
+		}
+
+		#>>>
+		proc _sso_token_cache_path key { #<<<
+			# The CLI / SDKs hash the session name (modern) or sso_start_url
+			# (legacy) with SHA-1 and use the lowercase hex digest as the
+			# filename under ~/.aws/sso/cache/.
+			global env
+			if {![info exists env(HOME)]} {
+				throw {AWS SSO_NO_HOME} "HOME not set — cannot locate SSO token cache"
+			}
+			set digest [binary encode hex [tomcrypt::hash sha1 $key]]
+			return [file join $env(HOME) .aws/sso/cache $digest.json]
+		}
+
+		#>>>
+		proc _sso_load_token {path start_url cache_key} { #<<<
+			if {![file readable $path]} {
+				throw {AWS SSO_NO_TOKEN} "no cached SSO token at $path — run 'aws sso login' first"
+			}
+			set fh [open $path r]
+			try {
+				fconfigure $fh -encoding utf-8
+				set j [read $fh]
+			} finally {
+				close $fh
+			}
+			foreach k {accessToken expiresAt} {
+				if {![json exists $j $k]} {
+					throw {AWS SSO_TOKEN_INVALID} "SSO token cache at $path is missing $k — re-run 'aws sso login'"
+				}
+			}
+			set out [dict create \
+				accessToken		[json get $j accessToken] \
+				expires_at		[clock scan [json get $j expiresAt] \
+									-timezone :UTC \
+									-format {%Y-%m-%dT%H:%M:%SZ}] \
+				cache_path		$path \
+			]
+			foreach k {refreshToken clientId clientSecret region startUrl registrationExpiresAt} {
+				if {[json exists $j $k]} {
+					dict set out $k [json get $j $k]
+				}
+			}
+			return $out
+		}
+
+		#>>>
+		proc _sso_refresh_token {region token token_path} { #<<<
+			# Call sso-oidc:CreateToken with grant_type=refresh_token,
+			# write the new token back to the cache file so the next
+			# process can use it too.
+			set body [json template {
+				{
+					"clientId":		"~S:clientId",
+					"clientSecret":	"~S:clientSecret",
+					"grantType":	"refresh_token",
+					"refreshToken":	"~S:refreshToken"
+				}
+			} $token]
+			set url "https://oidc.$region.amazonaws.com/token"
+			set ca_bundle [_ca_bundle]
+			set extra [expr {$ca_bundle ne "" ? [list -cafile $ca_bundle] : {}}]
+			rl_http instvar h POST $url \
+				-stats_cx AWS \
+				-timeout 10 \
+				-headers [list Content-Type application/json Accept application/json] \
+				-data $body \
+				{*}$extra
+			if {[$h code] != 200} {
+				throw {AWS SSO_REFRESH_FAILED} "sso-oidc:CreateToken returned [$h code]: [$h body] — run 'aws sso login' to start a new session"
+			}
+			set resp [$h body]
+			set new_token [dict create \
+				accessToken		[json get $resp accessToken] \
+				expires_at		[expr {[clock seconds] + [json get $resp expiresIn]}] \
+				cache_path		$token_path]
+			# Preserve registration details we still need for future refreshes.
+			foreach k {clientId clientSecret region startUrl registrationExpiresAt} {
+				if {[dict exists $token $k]} {
+					dict set new_token $k [dict get $token $k]
+				}
+			}
+			# Some servers rotate refreshToken; prefer the new one if present.
+			if {[json exists $resp refreshToken]} {
+				dict set new_token refreshToken [json get $resp refreshToken]
+			} elseif {[dict exists $token refreshToken]} {
+				dict set new_token refreshToken [dict get $token refreshToken]
+			}
+			_sso_write_token_cache $token_path $new_token
+			return $new_token
+		}
+
+		#>>>
+		proc _sso_write_token_cache {path token} { #<<<
+			# Write the token back using the CLI's field names and ISO-8601
+			# expiresAt so `aws sso login` and other SDKs continue to see it.
+			set doc {{}}
+			json set doc accessToken [json string [dict get $token accessToken]]
+			json set doc expiresAt   [json string \
+				[clock format [dict get $token expires_at] -timezone :UTC -format {%Y-%m-%dT%H:%M:%SZ}]]
+			foreach fld {refreshToken clientId clientSecret region startUrl registrationExpiresAt} {
+				if {[dict exists $token $fld]} {
+					json set doc $fld [json string [dict get $token $fld]]
+				}
+			}
+			set dir [file dirname $path]
+			if {![file isdirectory $dir]} {file mkdir $dir}
+			set tmp $path.tmp[pid]
+			set fh [open $tmp {WRONLY CREAT TRUNC} 0600]
+			try {
+				fconfigure $fh -encoding utf-8 -translation lf
+				puts -nonewline $fh $doc
+			} finally {
+				close $fh
+			}
+			file rename -force $tmp $path
+		}
+
+		#>>>
+		proc _sso_get_role_credentials {region access_token account_id role_name} { #<<<
+			# sso:GetRoleCredentials is REST-JSON, smithy.api#noAuth. The
+			# access token rides as x-amz-sso_bearer_token (the header name
+			# SSO expects — lowercased for canonicalization is fine).
+			set url		https://portal.sso.$region.amazonaws.com/federation/credentials
+			reuri query set url account_id $account_id
+			reuri query set url role_name  $role_name
+			set ca_bundle	[_ca_bundle]
+			set extra		[expr {$ca_bundle ne "" ? [list -cafile $ca_bundle] : {}}]
+			rl_http instvar h GET $url \
+				-stats_cx	AWS \
+				-timeout	10 \
+				-headers	[list \
+					x-amz-sso_bearer_token	$access_token \
+					Accept					application/json] \
+				{*}$extra
+			if {[$h code] != 200} {
+				throw {AWS SSO_GET_ROLE_CREDS_FAILED} "sso:GetRoleCredentials returned [$h code]: [$h body]"
+			}
+			set resp	[$h body]
+			if {![json exists $resp roleCredentials]} {
+				throw {AWS SSO_GET_ROLE_CREDS_FAILED} "sso:GetRoleCredentials response missing roleCredentials: [$h body]"
+			}
+			json extract $resp roleCredentials
+		}
+
+		#>>>
+		proc _container_creds {} { #<<<
+			# Fetch container credentials from either AWS_CONTAINER_CREDENTIALS_RELATIVE_URI
+			# (old ECS task role mechanism) or AWS_CONTAINER_CREDENTIALS_FULL_URI
+			# (newer, used by EKS Pod Identity Agent). FULL_URI may carry an
+			# authorization token in AWS_CONTAINER_AUTHORIZATION_TOKEN or
+			# _TOKEN_FILE.
+			#
+			# Returns a JSON doc with AccessKeyId / SecretAccessKey / Token and
+			# an added expires_sec field (epoch seconds parsed from Expiration).
 			global env
 			variable cached_role_creds
 
 			if {
-				![info exists cached_role_creds] ||
-				[clock seconds] > [json get $cached_role_creds expires_sec] - 60
+				[info exists cached_role_creds] &&
+				[clock seconds] < [json get $cached_role_creds expires_sec] - 60
 			} {
-				#set cached_role_creds	[_metadata meta-data/identity-credentials/ec2/security-credentials/ec2-instance]
-				if {[info exists env(AWS_CONTAINER_CREDENTIALS_RELATIVE_URI)]} {
-					set cached_role_creds	[_metadata_req http://169.254.170.2$env(AWS_CONTAINER_CREDENTIALS_RELATIVE_URI)]
-				} else {
-					set role				[_metadata meta-data/iam/security-credentials]
-					set cached_role_creds	[_metadata meta-data/iam/security-credentials/$role]
-				}
-
-				json set cached_role_creds expires_sec	[clock scan [json get $cached_role_creds Expiration] -timezone :UTC -format {%Y-%m-%dT%H:%M:%SZ}]
+				return $cached_role_creds
 			}
-			set cached_role_creds
+
+			set headers {}
+			if {[info exists env(AWS_CONTAINER_CREDENTIALS_RELATIVE_URI)]} {
+				set url http://169.254.170.2$env(AWS_CONTAINER_CREDENTIALS_RELATIVE_URI)
+			} elseif {[info exists env(AWS_CONTAINER_CREDENTIALS_FULL_URI)]} {
+				set url $env(AWS_CONTAINER_CREDENTIALS_FULL_URI)
+				if {[info exists env(AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE)]} {
+					set fh [open $env(AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE) r]
+					try { set tok [string trim [read $fh]] } finally { close $fh }
+					lappend headers Authorization $tok
+				} elseif {[info exists env(AWS_CONTAINER_AUTHORIZATION_TOKEN)]} {
+					lappend headers Authorization $env(AWS_CONTAINER_AUTHORIZATION_TOKEN)
+				}
+			} else {
+				throw {AWS NO_CREDENTIALS} "no container credentials env var set"
+			}
+
+			rl_http instvar h GET $url -stats_cx AWS -timeout 2 -headers $headers
+			if {[$h code] != 200} {
+				throw [list AWS [$h code]] [$h body]
+			}
+			set cached_role_creds [$h body]
+			json set cached_role_creds expires_sec [clock scan [json get $cached_role_creds Expiration] -timezone :UTC -format {%Y-%m-%dT%H:%M:%SZ}]
+			return $cached_role_creds
+		}
+
+		#>>>
+		proc _imds_disabled {} { #<<<
+			global env
+			if {
+				[info exists env(AWS_EC2_METADATA_DISABLED)] &&
+				[string tolower $env(AWS_EC2_METADATA_DISABLED)] eq "true"
+			} {return 1}
+			return 0
+		}
+
+		#>>>
+		proc _imds_base {} { #<<<
+			global env
+			if {
+				[info exists env(AWS_EC2_METADATA_SERVICE_ENDPOINT)] &&
+				$env(AWS_EC2_METADATA_SERVICE_ENDPOINT) ne ""
+			} {
+				return [string trimright $env(AWS_EC2_METADATA_SERVICE_ENDPOINT) /]/latest
+			}
+			return http://169.254.169.254/latest
+		}
+
+		#>>>
+		proc _imds_timeout {} { #<<<
+			global env
+			if {[info exists env(AWS_METADATA_SERVICE_TIMEOUT)]} {
+				return $env(AWS_METADATA_SERVICE_TIMEOUT)
+			}
+			return 1
+		}
+
+		#>>>
+		proc _imds_attempts {} { #<<<
+			global env
+			if {[info exists env(AWS_METADATA_SERVICE_NUM_ATTEMPTS)]} {
+				return $env(AWS_METADATA_SERVICE_NUM_ATTEMPTS)
+			}
+			return 1
+		}
+
+		#>>>
+		proc _imds_v1_disabled {} { #<<<
+			global env
+			if {
+				[info exists env(AWS_EC2_METADATA_V1_DISABLED)] &&
+				[string tolower $env(AWS_EC2_METADATA_V1_DISABLED)] eq "true"
+			} {return 1}
+			return 0
+		}
+
+		#>>>
+		proc _imds_token {} { #<<<
+			# Fetch or return a cached IMDSv2 session token. TTL 21600s.
+			# A return of "" means v2 is unavailable and v1 should be tried
+			# (unless _imds_v1_disabled).
+			variable _imds_token_cache
+			if {
+				[info exists _imds_token_cache] &&
+				[clock seconds] < [dict get $_imds_token_cache expires]
+			} {
+				return [dict get $_imds_token_cache token]
+			}
+			try {
+				rl_http instvar h PUT "[_imds_base]/api/token" \
+					-stats_cx AWS \
+					-timeout [_imds_timeout] \
+					-headers [list X-aws-ec2-metadata-token-ttl-seconds 21600]
+				if {[$h code] == 200} {
+					set token [$h body]
+					set _imds_token_cache [dict create \
+						token	$token \
+						expires	[expr {[clock seconds] + 21000}]]
+					return $token
+				}
+			} on error {} {}
+			return ""
+		}
+
+		#>>>
+		proc _imds_req path { #<<<
+			# IMDS fetch with v2 preferred. Tries to obtain a session token;
+			# if that fails and v1 is not disabled, retries without the token.
+			set base	[_imds_base]
+			if {$path eq "/" || $path eq ""} {
+				set url $base
+			} else {
+				set url $base/[string trimleft $path /]
+			}
+			set token [_imds_token]
+			set headers {}
+			if {$token ne ""} {
+				lappend headers X-aws-ec2-metadata-token $token
+			} elseif {[_imds_v1_disabled]} {
+				throw {AWS IMDS_UNAVAILABLE} "IMDSv2 token fetch failed and v1 is disabled"
+			}
+			set attempts [_imds_attempts]
+			set last_err {}
+			for {set i 0} {$i < $attempts} {incr i} {
+				try {
+					rl_http instvar h GET $url \
+						-stats_cx AWS \
+						-timeout [_imds_timeout] \
+						-headers $headers
+					if {[$h code] == 200} {return [$h body]}
+					if {[$h code] == 401 && $token ne ""} {
+						# Token expired between fetch and use — drop cache and retry.
+						variable _imds_token_cache
+						unset -nocomplain _imds_token_cache
+						set token [_imds_token]
+						set headers [list X-aws-ec2-metadata-token $token]
+						continue
+					}
+					set last_err [list [$h code] [$h body]]
+				} on error {msg opts} {
+					set last_err [list error $msg]
+				}
+			}
+			throw {AWS IMDS_ERROR} "IMDS request failed ($url): $last_err"
+		}
+
+		#>>>
+		proc instance_role_creds {} { #<<<
+			variable cached_role_creds
+
+			if {
+				[info exists cached_role_creds] &&
+				[json exists $cached_role_creds expires_sec] &&
+				[clock seconds] < [json get $cached_role_creds expires_sec] - 60
+			} {
+				return $cached_role_creds
+			}
+
+			set role				[_imds_req meta-data/iam/security-credentials]
+			set cached_role_creds	[_imds_req meta-data/iam/security-credentials/$role]
+			json set cached_role_creds expires_sec \
+				[clock scan [json get $cached_role_creds Expiration] -timezone :UTC -format {%Y-%m-%dT%H:%M:%SZ}]
+			return $cached_role_creds
 		}
 
 		#>>>
 
 		proc _metadata_req url { #<<<
+			# Legacy compatibility wrapper: unauthenticated GET against the
+			# v1 metadata endpoint. Used for ECS metadata URIs (which are
+			# not v2-tokened) and some ad-hoc callers.
 			rl_http instvar h GET $url -stats_cx AWS -timeout 1
 			if {[$h code] != 200} {
 				throw [list AWS [$h code]] [$h body]
@@ -1531,6 +2410,9 @@ namespace eval aws {
 
 		#>>>
 		proc _metadata path { #<<<
+			# EC2 / ECS metadata fetch. For EC2 this now uses IMDSv2 when
+			# available (falling back to v1 unless disabled). ECS metadata
+			# URIs are always unauthenticated.
 			global env
 
 			if {[identify] eq "ECS"} {
@@ -1548,14 +2430,13 @@ namespace eval aws {
 					# Try v2
 					set base	http://169.254.170.2/v2
 				}
-			} else {
-				set base	http://169.254.169.254/latest
+				if {$path eq "/"} {
+					return [_metadata_req $base]
+				}
+				return [_metadata_req $base/[string trimleft $path /]]
 			}
-			if {$path eq "/"} {
-				_metadata_req $base
-			} else {
-				_metadata_req $base/[string trimleft $path /]
-			}
+			# EC2 — use IMDSv2-aware path
+			_imds_req $path
 		}
 
 		#>>>
@@ -1593,6 +2474,21 @@ namespace eval aws {
 		::chantricks
 		helpers
 	}
+
+	# Region resolution (mirrors AWS CLI):
+	#   AWS_REGION → AWS_DEFAULT_REGION → active profile's region= → us-east-1
+	variable default_region	[if {[info exists ::env(AWS_REGION)] && $::env(AWS_REGION) ne ""} {
+		set ::env(AWS_REGION)
+	} elseif {[info exists ::env(AWS_DEFAULT_REGION)] && $::env(AWS_DEFAULT_REGION) ne ""} {
+		set ::env(AWS_DEFAULT_REGION)
+	} else {
+		set _profile_keys	[helpers::_config_profile_keys]
+		if {[dict exists $_profile_keys region]} {
+			dict get $_profile_keys region
+		} else {
+			return -level 0 us-east-1
+		}
+	}]
 
 	proc identify {} { # Attempt to identify the AWS platform: EC2, Lambda, ECS, or none - not on AWS <<<
 		_cache identify {
@@ -1772,6 +2668,35 @@ namespace eval aws {
 				AWS::Region {
 					if {![uplevel 1 [list info exists $v]]} {
 						uplevel 1 [list set $v $::aws::default_region]
+					}
+				}
+				AWS::UseFIPS {
+					if {![uplevel 1 [list info exists $v]]} {
+						uplevel 1 [list set $v [expr {
+							[helpers::_config_bool USE_FIPS_ENDPOINT 0] ? "true" : "false"
+						}]]
+					}
+				}
+				AWS::UseDualStack {
+					if {![uplevel 1 [list info exists $v]]} {
+						uplevel 1 [list set $v [expr {
+							[helpers::_config_bool USE_DUALSTACK_ENDPOINT 0] ? "true" : "false"
+						}]]
+					}
+				}
+				AWS::STS::UseGlobalEndpoint {
+					# CLI's sts_regional_endpoints=legacy means "use the
+					# global endpoint" — the endpoint rule expects the
+					# inverted sense: UseGlobalEndpoint=true ⇒ legacy.
+					if {![uplevel 1 [list info exists $v]]} {
+						set raw [expr {
+							[info exists ::env(AWS_STS_REGIONAL_ENDPOINTS)]
+							? $::env(AWS_STS_REGIONAL_ENDPOINTS)
+							: [helpers::_profile_value sts_regional_endpoints]
+						}]
+						uplevel 1 [list set $v [expr {
+							[string tolower $raw] eq "legacy" ? "true" : "false"
+						}]]
 					}
 				}
 				default {
@@ -2083,6 +3008,7 @@ namespace eval aws {
 		}
 
 		set endpoint_info	[{*}$ei $region]
+		helpers::_apply_endpoint_override endpoint_info [namespace tail $service_ns]
 		_debug {log notice "endpoint_info:\n\t[join [lmap {k v} $endpoint_info {format {%20s: %s} $k $v}] \n\t]"}
 		set uri_map_out	{}
 		foreach {pat arg} $uri_map {
@@ -3497,7 +4423,7 @@ namespace eval aws {
 					signatureVersions		[list $sigver] \
 					disableDoubleEncoding	[json get $authscheme disableDoubleEncoding] \
 					signingRegion			[json get $authscheme signingRegion] \
-			}] $endpoint]
+			} ::aws::helpers] $endpoint]
 
 			set path	[string trimright [reuri extract [json get $endpoint url] path] /]
 			append path	%requestUri%

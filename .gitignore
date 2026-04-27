@@ -1,4 +1,26 @@
 *.swp
 alpine-tcl-test
-tm
+# tm/ held the pre-meson Makefile's build output. Now that build
+# outputs live under build*/, the only in-tree tm/ content is
+# tm/meson.build — keep it tracked.
+tm/*
+!tm/meson.build
 aws-lambda-rie-*
+build9g/
+build9/
+build86/
+build-fallback/
+buildwin/
+# Everything under subprojects/ except the *.wrap files is derived:
+# cloned checkouts, packagecache downloads, extracted tarballs, and
+# the meson .wraplock. Track only the wraps.
+subprojects/*/
+subprojects/.wraplock
+# Auto-generated wrap-redirect files. Meson writes these when a
+# cloned subproject itself has subprojects — they point into the
+# cloned tree and aren't meaningful until we clone the parent.
+subprojects/hedley.wrap
+subprojects/re2c.wrap
+subprojects/libtommath.wrap
+subprojects/clogs.wrap
+subprojects/tcl.wrap

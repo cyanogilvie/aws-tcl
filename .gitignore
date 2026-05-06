@@ -14,13 +14,12 @@ buildwin/
 # Everything under subprojects/ except the *.wrap files is derived:
 # cloned checkouts, packagecache downloads, extracted tarballs, and
 # the meson .wraplock. Track only the wraps.
-subprojects/*/
-subprojects/.wraplock
+/subprojects/*/
+/subprojects/.wraplock
 # Auto-generated wrap-redirect files. Meson writes these when a
 # cloned subproject itself has subprojects — they point into the
 # cloned tree and aren't meaningful until we clone the parent.
-subprojects/hedley.wrap
-subprojects/re2c.wrap
-subprojects/libtommath.wrap
-subprojects/clogs.wrap
-subprojects/tcl.wrap
+/subprojects/hedley.wrap
+/subprojects/re2c.wrap
+/subprojects/clogs.wrap
+/subprojects/expat.wrap

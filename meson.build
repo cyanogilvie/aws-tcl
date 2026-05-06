@@ -1,5 +1,5 @@
 project('aws',
-  version:            '2.0a21',
+  version:            '2.0a22',
   meson_version:      '>=1.3.0',
 )
 # Pure-Tcl module. No C sources — the implicit 'c' project language stays
@@ -26,22 +26,27 @@ exec_prefix = tcl_dep.get_variable('exec_prefix')
 # the C-extension teabase we don't need a build_tclsh distinct from the
 # runtime tclsh — the build-time generator (build.tcl) runs in the same
 # Tcl we'll ship against.
-tclsh_search = []
-foreach name : [exec_prefix / 'bin/tclsh', exec_prefix / 'tclsh', 'tclsh']
-  tclsh_search += [name + tclver, name]
-endforeach
-tclsh = find_program(tclsh_search, required: true)
+if tcl_dep.type_name() == 'internal'
+  tcl_subproj = subproject('tcl')
+  tclsh = tcl_subproj.get_variable('tclsh_exe')
+else
+  tclsh_search = []
+  foreach name : [exec_prefix / 'bin/tclsh', exec_prefix / 'tclsh', 'tclsh']
+    tclsh_search += [name + tclver, name]
+  endforeach
+  tclsh = find_program(tclsh_search, required: true)
 
-# Defensive version check. `dependency('tcl')` + `find_program('tclsh')`
-# can legally pick different Tcls if PATH and pkg-config disagree —
-# reject that up front rather than letting build.tcl fail obscurely.
-tclsh_patchlevel = run_command(tclsh,
-  files('tools/print_patchlevel.tcl'),
-  check: true,
-).stdout()
-if tclsh_patchlevel.split('.')[0] + '.' + tclsh_patchlevel.split('.')[1] != tclver
-  error('Tcl mismatch: pkg-config found @0@, tclsh reports @1@. Set PKG_CONFIG_PATH to point at the same Tcl install.'
-    .format(tclver_full, tclsh_patchlevel))
+  # Defensive version check. `dependency('tcl')` + `find_program('tclsh')`
+  # can legally pick different Tcls if PATH and pkg-config disagree —
+  # reject that up front rather than letting build.tcl fail obscurely.
+  tclsh_patchlevel = run_command(tclsh,
+    files('tools/print_patchlevel.tcl'),
+    check: true,
+  ).stdout()
+  if tclsh_patchlevel.split('.')[0] + '.' + tclsh_patchlevel.split('.')[1] != tclver
+    error('Tcl mismatch: pkg-config found @0@, tclsh reports @1@. Set PKG_CONFIG_PATH to point at the same Tcl install.'
+      .format(tclver_full, tclsh_patchlevel))
+  endif
 endif
 
 # .tm install path. A .tm file named foo-X.Y.tm under tcl<MAJOR>/site-tcl
@@ -110,12 +115,24 @@ deps_spec = [
   ['chantricks', 'tm',  true],
   ['brotli',     'pkg', get_option('tm_mode') == 'brlet'],
   # --- Test / runtime deps ---
+  # gc_class is a transitive dep of rl_http (`package require gc_class`
+  # at the top of rl_http.tcl). Listed here so its tm path is added to
+  # AWSTCL_EXTRA_TM_PATH for build.tcl + tests under the fallback build.
+  ['gc_class',   'tm',  get_option('build_tests')],
   ['rl_http',    'tm',  get_option('build_tests')],
   ['tomcrypt',   'pkg', get_option('build_tests')],
+  # dedup is a transitive C-extension dep of reuri.  Same wasted-clone
+  # tradeoff as gc_class for system builds (no .pc means meson always
+  # resolves via the wrap), but listing it here is the simplest way to
+  # get its build dir onto TCLLIBPATH for the fallback path.
+  ['dedup',      'pkg', get_option('build_tests')],
   ['reuri',      'pkg', get_option('build_tests')],
   ['tdom',       'pkg', get_option('build_tests')],
   ['tcl-s2n',    'pkg', false],
 ]
+if tcl_dep.type_name() == 'internal'
+  deps_spec += [['thread', 'pkg', true]]
+endif
 
 foreach spec : deps_spec
   _name     = spec[0]
@@ -123,8 +140,16 @@ foreach spec : deps_spec
   _required = spec[2]
   _var      = (_kind == 'tm') ? 'tcl_tm_path' : 'tcl_pkg_path'
 
+  # Wrap-file naming convention is lowercase + dashes-to-underscores:
+  # the subproject identifier (the .wrap filename basename and meson
+  # variable name) doesn't necessarily match the dependency name a
+  # consumer asks for.  Thread is the canonical example (dep is
+  # 'Thread' but the wrap is thread.wrap).  Lowercasing is a no-op for
+  # the all-lowercase deps already in this list.
+  _subproj  = _name.to_lower()
+  _var_name = _subproj.replace('-', '_') + '_dep'
   _dep = dependency(_name,
-    fallback: [_name, _name + '_dep'],
+    fallback: [_subproj, _var_name],
     required: _required,
   )
   if not _dep.found()
@@ -150,8 +175,10 @@ foreach spec : deps_spec
   else
     dep_builddirs_trad += _path
     # Record the underlying shared_module so meson sequences its
-    # build before the tm_master target runs.
-    dep_targets += subproject(_name).get_variable('pkg_so')
+    # build before the tm_master target runs.  Pure-Tcl auto_path
+    # subprojects (e.g. tcllib) have nothing to compile and expose
+    # an empty list as the fallback, which += is happy to absorb.
+    dep_targets += subproject(_subproj).get_variable('pkg_so', [])
   endif
   message('dep @0@: subproject at @1@'.format(_name, _path))
 endforeach
@@ -181,6 +208,26 @@ awstcl_extra_tm    = ':'.join([tm_build_dir] + dep_builddirs_tm)
 # variables above.
 subdir('tm')
 
+# pkg-config metadata so consumers can locate the install via
+# `pkg-config --variable=tcl_tm_path aws` or
+# `dependency('aws').get_variable('tcl_tm_path')`.
+pc_conf = configuration_data()
+pc_conf.set('PACKAGE_NAME',     meson.project_name())
+pc_conf.set('PACKAGE_VERSION',  meson.project_version())
+pc_conf.set('TCL_MAJOR',        tclver_major)
+configure_file(
+  input:          'aws.pc.in',
+  output:         'aws.pc',
+  configuration:  pc_conf,
+  install:        true,
+  # Match the convention used by Tcl-extension subprojects: install
+  # alongside the resolving Tcl's pkgconfig dir.  In wrap-fallback
+  # this resolves to ${prefix}/lib/pkgconfig; in system builds, to
+  # the system Tcl's pkgconfig dir.
+  install_dir:    tcl_dep.get_variable('libdir') / 'pkgconfig',
+  install_tag:    meson.is_subproject() ? 'deps' : 'runtime',
+)
+
 # The per-service modules are written into $builddir/tm/aws/ by
 # build.tcl. We use an install script rather than listing all 400+
 # outputs: the script runs at `meson install` time, after the build,
@@ -190,6 +237,7 @@ meson.add_install_script(
   files('tools/install_tm.tcl'),
   meson.project_build_root() / 'tm/aws',
   tm_install_dir / 'aws',
+  install_tag: meson.is_subproject() ? 'deps' : 'runtime',
 )
 
 subdir('tests')

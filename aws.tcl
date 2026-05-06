@@ -212,17 +212,30 @@ namespace eval aws {
 			# Return a dict of key→value for the given INI section, or {} if
 			# the file is unreadable or the section is absent.
 			if {$path eq "" || ![file readable $path]} {return {}}
-			package require inifile
-			set ini	[::ini::open $path r]
+			set in_sect	0
+			set result	{}
+			set h	[open $path r]
 			try {
-				if {$section ni [::ini::sections $ini]} {return {}}
-				set result	{}
-				foreach k [::ini::keys $ini $section] {
-					dict set result $k [::ini::value $ini $section $k]
+				chan configure $h -translation auto
+				while {[gets $h line] >= 0} {
+					switch -regexp -matchvar m -- [string trim $line] {
+						"^;#"			continue
+						{^\[(.*)\]$}	{
+							set in_sect		[expr {[lindex $m 1] eq $section}]
+						}
+						{^([^=]+)\s*=\s*(.*?)(?:\s+[#;].*)?$} {
+							if {$in_sect} {
+								lassign $m - k v
+								set k	[string trim $k]
+								set v	[string trim $v]
+								dict set result $k $v
+							}
+						}
+					}
 				}
-				return $result
+				set result
 			} finally {
-				::ini::close $ini
+				close $h
 			}
 		}
 

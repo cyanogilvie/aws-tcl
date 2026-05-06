@@ -1,8 +1,1 @@
-[wrap-git]
-clone-recursive = true
-url = https://github.com/RubyLane/rl_http
-revision = 1.25
-depth = 1
-
-[provide]
-dependency_names = rl_http
+../teabase/subprojects/rl_http.wrap

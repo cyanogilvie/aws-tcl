@@ -40,4 +40,5 @@ tm_master = custom_target('tm_master',
   build_by_default:  true,
   install:           true,
   install_dir:       tm_install_dir,
+  install_tag:       meson.is_subproject() ? 'deps' : 'runtime',
 )

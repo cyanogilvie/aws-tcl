@@ -15,7 +15,6 @@ test('tcltest', tclsh,
     # files live there and we don't want the build root on tm::path
     # (would conflict with subproject dirs under subprojects/*).
     meson.project_build_root() / 'tm',
-    tclsh.full_path(),
   ],
   depends:  [tm_master],
   env:      test_env,

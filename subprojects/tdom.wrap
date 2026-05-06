@@ -1,8 +1,1 @@
-[wrap-git]
-clone-recursive = true
-url = https://github.com/RubyLane/tdom
-revision = cyan-0.9.6.6
-depth = 1
-
-[provide]
-dependency_names = tdom
+../teabase/subprojects/tdom.wrap

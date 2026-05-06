@@ -1,6 +1,7 @@
 tcltest::loadTestedCommands
 package require aws
 package require rl_json
+::tcl::tm::path add [file dirname [file normalize [info script]]]
 package require rltest
 
 proc readfile fn {

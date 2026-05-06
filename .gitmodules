@@ -5,3 +5,6 @@
 [submodule "aws-c-auth"]
 	path = aws-c-auth
 	url = https://github.com/awslabs/aws-c-auth
+[submodule "teabase"]
+	path = teabase
+	url = https://github.com/cyanogilvie/teabase

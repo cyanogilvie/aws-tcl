@@ -1,8 +1,1 @@
-[wrap-git]
-clone-recursive = true
-url = https://github.com/cyanogilvie/reuri
-revision = v0.16.1
-depth = 1
-
-[provide]
-dependency_names = reuri
+../teabase/subprojects/reuri.wrap

@@ -6,12 +6,16 @@
 # Args:
 #   argv0 = source_root (where tests/ lives)
 #   argv1 = build_dir   (where aws-VER.tm and aws/*.tm live)
-#   argv2 = tclsh       (the interpreter to actually run the tests in)
 
-lassign $argv source_root build_dir tclsh
+set argv	[lassign $argv source_root build_dir]
 
-if {$source_root eq "" || $build_dir eq "" || $tclsh eq ""} {
-	puts stderr "runtests.tcl: usage: runtests.tcl <source_root> <build_dir> <tclsh>"
+if {[info exists env(TESTFLAGS)]} {
+    lappend argv {*}$env(TESTFLAGS)
+}
+if {"-singleproc" ni $argv} {lappend argv -singleproc 1}
+
+if {$source_root eq "" || $build_dir eq ""} {
+	puts stderr "runtests.tcl: usage: runtests.tcl <source_root> <build_dir>"
 	exit 2
 }
 
@@ -31,7 +35,7 @@ if {$source_root eq "" || $build_dir eq "" || $tclsh eq ""} {
 # The -load block also pulls subproject build dirs (from TCLLIBPATH) into
 # tcl::tm::path so the test interp finds .tm-format deps (chantricks,
 # rl_http) from the build tree when they aren't system-installed.
-set loadarg [list apply {{p} {
+set loadarg [list apply {p {
 	tcl::tm::path add $p
 	# Subproject .tm dirs come through AWSTCL_EXTRA_TM_PATH (colon-
 	# separated, matching build.tcl's hook of the same name). C-ext
@@ -45,7 +49,7 @@ set loadarg [list apply {{p} {
 	}
 	if {![info exists ::_awstcl_path_primed]} {
 		foreach pkg [package names] {
-			if {$pkg eq "aws" || [string match "aws::*" $pkg]} {
+			if {$pkg eq "aws" || [string match aws::* $pkg]} {
 				package forget $pkg
 			}
 		}
@@ -53,18 +57,8 @@ set loadarg [list apply {{p} {
 	}
 }} $build_dir]
 
-# Forward TESTFLAGS through so callers can still filter
-# (`TESTFLAGS="-file credentials.test"`).
-set testflags [if {[info exists ::env(TESTFLAGS)]} {set ::env(TESTFLAGS)}]
+set argv	[list -load $loadarg {*}$argv]
 
-set rc [catch {
-	exec $tclsh \
-		[file join $source_root tests/all.tcl] \
-		{*}$testflags \
-		-load $loadarg \
-		>@ stdout 2>@ stderr
-} errmsg]
-if {$rc} {
-	puts stderr "test run failed: $errmsg"
-	exit 1
-}
+# Make [info script] / $argv0 look like the test script was invoked
+# directly, so any relative-path idioms in it keep working.
+source [file join $source_root tests/all.tcl]

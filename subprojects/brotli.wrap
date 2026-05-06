@@ -1,8 +1,1 @@
-[wrap-git]
-clone-recursive = true
-url = https://github.com/cyanogilvie/tcl-brotli
-revision = v0.4.1
-depth = 1
-
-[provide]
-dependency_names = brotli
+../teabase/subprojects/brotli.wrap

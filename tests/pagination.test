@@ -12,7 +12,6 @@ if {[lsearch [namespace children] ::tcltest] == -1} {
 tcltest::loadTestedCommands
 package require aws 2
 package require rl_json 0.17
-package require rltest
 interp alias {} json {} ::rl_json::json
 
 # Fake-service harness <<<

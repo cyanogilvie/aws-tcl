@@ -1,8 +1,1 @@
-[wrap-git]
-clone-recursive = true
-url = https://github.com/RubyLane/rl_json
-revision = v0.17.1
-depth = 1
-
-[provide]
-dependency_names = rl_json
+../teabase/subprojects/rl_json.wrap

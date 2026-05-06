@@ -1,8 +1,1 @@
-[wrap-git]
-clone-recursive = true
-url = https://github.com/cyanogilvie/tcl-s2n
-revision = v0.8.2
-depth = 1
-
-[provide]
-dependency_names = tcl-s2n
+../teabase/subprojects/tcl-s2n.wrap

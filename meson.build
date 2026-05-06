@@ -1,5 +1,5 @@
 project('aws',
-  version:            '2.0a22',
+  version:            '2.0a23',
   meson_version:      '>=1.3.0',
 )
 # Pure-Tcl module. No C sources — the implicit 'c' project language stays

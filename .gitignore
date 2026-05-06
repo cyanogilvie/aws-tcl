@@ -16,6 +16,7 @@ buildwin/
 # the meson .wraplock. Track only the wraps.
 /subprojects/*/
 /subprojects/.wraplock
+!/subprojects/packagefiles/
 # Auto-generated wrap-redirect files. Meson writes these when a
 # cloned subproject itself has subprojects — they point into the
 # cloned tree and aren't meaningful until we clone the parent.

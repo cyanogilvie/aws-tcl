@@ -6,7 +6,8 @@ if {[info exists ::env(AWSTCL_EXTRA_TM_PATH)]} {
 		if {$p ne ""} {tcl::tm::path add $p}
 	}
 }
-set aws_ver	[package require aws 2]
+
+source [file join [file dirname [file normalize [info script]]] aws.tcl]
 
 package require rl_json 0.17
 package require parse_args
@@ -1234,11 +1235,10 @@ proc build_aws_services args { #<<<
 		if {[json get $service_def metadata service_name] in {}} {
 			puts stderr [highlight -regexp {^proc (create_bucket|list_buckets|delete_bucket)%.*$} $service_code]
 		}
-		set aws_ver	[package require aws 2]
 		switch -exact -- $output_mode {
-			ziplet  { writebin  [file join $prefix aws/[string map {- _} [json get $service_def metadata service_name]]-$aws_ver.tm] $ziplet       }
-			brlet   { writebin  [file join $prefix aws/[string map {- _} [json get $service_def metadata service_name]]-$aws_ver.tm] $brlet        }
-			plain   { writefile [file join $prefix aws/[string map {- _} [json get $service_def metadata service_name]]-$aws_ver.tm] [aws::_reconstruct {} $service_code] }
+			ziplet  { writebin  [file join $prefix aws/[string map {- _} [json get $service_def metadata service_name]]-$ver.tm] $ziplet       }
+			brlet   { writebin  [file join $prefix aws/[string map {- _} [json get $service_def metadata service_name]]-$ver.tm] $brlet        }
+			plain   { writefile [file join $prefix aws/[string map {- _} [json get $service_def metadata service_name]]-$ver.tm] [aws::_reconstruct {} $service_code] }
 			default { error "Unknown output mode \"$output_mode\"" }
 		}
 	}
@@ -1289,14 +1289,13 @@ namespace eval ::aws::%service_name% {
 		}]]
 
 		incr total_raw	[string length $service_code]
-		set aws_ver	[package require aws 2]
 		switch -exact -- $output_mode {
 			ziplet {
 				set zipped				[zlib gzip [encoding convertto utf-8 $service_code] -level 9]
 				set ziplet				[encoding convertto utf-8 {package require aws 2;::aws::_load_ziplet}]\x1A$zipped
 				set compressed_size		[string length $ziplet]
 				incr total_compressed	$compressed_size
-				writebin  [file join $prefix aws/[string map {- _} [json get $service_def metadata service_name]]-$aws_ver.tm] $ziplet
+				writebin  [file join $prefix aws/[string map {- _} [json get $service_def metadata service_name]]-$ver.tm] $ziplet
 			}
 			brlet {
 				package require brotli
@@ -1304,10 +1303,10 @@ namespace eval ::aws::%service_name% {
 				set compressed_size		[string length $brlet]
 				incr total_compressed	$compressed_size
 				#puts stderr "[json get $service_def metadata service_name] ([string length $service_code] chars, [string length $zipped] gzipped bytes), brlet: [string length $brlet]"
-				writebin  [file join $prefix aws/[string map {- _} [json get $service_def metadata service_name]]-$aws_ver.tm] $brlet
+				writebin  [file join $prefix aws/[string map {- _} [json get $service_def metadata service_name]]-$ver.tm] $brlet
 			}
 			plain {
-				writefile [file join $prefix aws/[string map {- _} [json get $service_def metadata service_name]]-$aws_ver.tm] [aws::_reconstruct {} $service_code]
+				writefile [file join $prefix aws/[string map {- _} [json get $service_def metadata service_name]]-$ver.tm] [aws::_reconstruct {} $service_code]
 			}
 			default { error "Unknown output mode \"$output_mode\"" }
 		}

@@ -32,21 +32,11 @@ if {$source_root eq "" || $build_dir eq ""} {
 # Drop the stale entries once, the first time this script is invoked
 # — subsequent calls are no-ops because aws is already `provide`d.
 #
-# The -load block also pulls subproject build dirs (from TCLLIBPATH) into
-# tcl::tm::path so the test interp finds .tm-format deps (chantricks,
-# rl_http) from the build tree when they aren't system-installed.
-set loadarg [list apply {p {
-	tcl::tm::path add $p
-	# Subproject .tm dirs come through AWSTCL_EXTRA_TM_PATH (colon-
-	# separated, matching build.tcl's hook of the same name). C-ext
-	# subprojects are already on auto_path via TCLLIBPATH → tclsh init.
-	if {[info exists ::env(AWSTCL_EXTRA_TM_PATH)]} {
-		foreach _p [split $::env(AWSTCL_EXTRA_TM_PATH) :] {
-			if {$_p ne "" && $_p ne $p} {
-				tcl::tm::path add $_p
-			}
-		}
-	}
+# The -load block also pulls subproject build dirs (from TCLLIBPATH /
+# TCLX_Y_TM_PATH) into tcl::tm::path so the test interp finds .tm-format deps
+# (chantricks, rl_http) from the build tree when they aren't system-installed.
+set loadarg [list apply {build_dir {
+	tcl::tm::path add $build_dir
 	if {![info exists ::_awstcl_path_primed]} {
 		foreach pkg [package names] {
 			if {$pkg eq "aws" || [string match aws::* $pkg]} {

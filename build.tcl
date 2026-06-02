@@ -788,6 +788,7 @@ proc compile_paginators {definitions service_def} { #<<<
 proc build_aws_services args { #<<<
 	parse_args $args {
 		-ver			{-required}
+		-source			{-required}
 		-definitions	{-required -# {Directory containing the service definitions from botocore}}
 		-prefix			{-default tm -# {Where to write the service tms}}
 		-services		{-default {} -# {Supply a list of services to only build those, default is to build all}}
@@ -1313,10 +1314,33 @@ namespace eval ::aws::%service_name% {
 	}
 	# rest-xml protocol services >>>
 
+	set tmsource	[file join $source aws.tcl]
+	set tmfile		[file join $prefix aws-$ver.tm]
+	chantricks with_chan h {file tempfile tmpfn} {
+		puts -nonewline $h	[string map [list %ver% $ver] {
+			apply {{} {
+				zipfs mount [info script] aws-%ver%
+				::tcl::tm::path add [file join [zipfs root] aws-%ver%]
+				source [file join [zipfs root] aws-%ver%/aws.tcl]
+			}}
+		}]
+		puts -nonewline $h \x1A
+		set contents [list $tmsource aws.tcl]
+		foreach f [glob -directory $prefix -tails aws/*.tm] {
+			lappend contents	[file join $prefix $f]	$f
+		}
+		flush $h
+
+		zipfs lmkimg $tmfile $contents {} $tmpfn
+		file delete $tmpfn
+		file delete -force [file join $prefix aws]
+	}
+
 	puts "total_raw: $total_raw"
 	if {[info exists total_compressed]} {
 		puts "total_compressed: $total_compressed"
 	}
+	puts "$tmfile: [file size $tmfile]"
 }
 
 #>>>

@@ -1133,6 +1133,22 @@ proc build_aws_services args { #<<<
 
 				set m		[json get $opdef http method]
 				set p		[json get $opdef http requestUri]
+				set z		[json get -default {} $opdef requestcompression encodings]
+
+				# Operation endpoint trait (hostPrefix). Rewrite {memberName}
+				# placeholders to {argName} so _service_req can substitute the
+				# upvar'd _a_<arg> at request time.
+				set hp	[json get -default {} $opdef endpoint hostPrefix]
+				if {$hp ne "" && [json exists $opdef input shape]} {
+					set _hpshape	[json get $opdef input shape]
+					if {[json exists $def shapes $_hpshape members]} {
+						json foreach {_hpmn _hpmd} [json extract $def shapes $_hpshape members] {
+							if {[json get -default false $_hpmd hostLabel]} {
+								set hp	[string map [list \{$_hpmn\} \{[aws from_camel $_hpmn]\}] $hp]
+							}
+						}
+					}
+				}
 
 				if {$protocol in {query ec2} && $m eq "POST"} {
 					set c	{application/x-www-form-urlencoded; charset=utf-8}
@@ -1156,6 +1172,8 @@ proc build_aws_services args { #<<<
 					u		{}
 					w		{}
 					x		{}
+					z		{}
+					hp		{}
 				}
 				foreach v {
 					b
@@ -1163,6 +1181,7 @@ proc build_aws_services args { #<<<
 					e
 					h
 					hm
+					hp
 					m
 					o
 					p
@@ -1174,6 +1193,7 @@ proc build_aws_services args { #<<<
 					u
 					w
 					x
+					z
 				} {
 					if {[info exists $v] && (![dict exists $defaults $v] || [set $v] ne [dict get $defaults $v])} {
 						lappend service_args -$v [set $v]
@@ -1331,6 +1351,7 @@ namespace eval ::aws::%service_name% {
 		flush $h
 
 		zipfs lmkimg $tmfile $contents {} $tmpfn
+		file attributes $tmfile -permissions a-x	;# mkimg sets the output executable
 		file delete $tmpfn
 		file delete -force [file join $prefix aws]
 	}

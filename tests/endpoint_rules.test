@@ -3,11 +3,8 @@ if {"::tcltest" ni [namespace children]} {
 	namespace import ::tcltest::*
 }
 
-tcltest::loadTestedCommands
-
 set here	[file dirname [file normalize [info script]]]
 source [file join $here common.tcl]
-package require rltest
 #set ::aws::debug 1
 
 try {

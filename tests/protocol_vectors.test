@@ -57,6 +57,8 @@ proc compile_case {entry case} { #<<<
 		return [dict create \
 			params_spec	$params \
 			query_map	$query_map \
+			uri_map		{} \
+			header_map	{} \
 			template_obj	{} \
 			transforms	$transforms \
 			body		{} \
@@ -95,6 +97,8 @@ proc compile_case {entry case} { #<<<
 	return [dict create \
 		params_spec	$params \
 		query_map	$query_map \
+		uri_map		$uri_map \
+		header_map	$header_map \
 		template_obj	$t \
 		transforms	$transforms \
 		body		$payload \
@@ -317,61 +321,326 @@ proc query_body_to_dict body { #<<<
 }
 #>>>
 
+# Build the uncompressed request body for any protocol (dispatches to the
+# per-protocol assemblers) — used by the request-compression cases.
+proc assemble_body_for_protocol {compiled entry case op_name apiVersion} { #<<<
+	set pdict	[if {[json exists $case params]} {json extract $case params} else {return -level 0 {{}}}]
+	switch -exact -- [json get $entry metadata protocol] {
+		query - ec2 {
+			assemble_query_body $compiled $op_name $apiVersion [if {[json exists $case params]} {json get $case params}]
+		}
+		json - rest-json - json_1_0 {
+			assemble_json_body $compiled $pdict
+		}
+		rest-xml {
+			set xml_input	[if {[json exists $case given input]} {
+				aws::build::compile_xml_input \
+					-shapes	[json extract [synth_service $entry] shapes] \
+					-input	[json extract $case given input]
+			}]
+			assemble_xml_body $compiled $entry $case $xml_input
+		}
+		default {return ""}
+	}
+}
+#>>>
+
+# Build the request headers from the compiled header_map and the case params,
+# matching what _service_req does for header-located members (used to seed an
+# existing Content-Encoding before compression).
+proc assemble_headers {compiled pdict} { #<<<
+	set headers	{}
+	foreach {hdr arg} [dict get $compiled header_map] {
+		if {[string index $hdr end] eq "*"} continue ;# headers-map prefix
+		json foreach {k v} $pdict {
+			if {[aws::from_camel $k] eq $arg} {
+				lappend headers $hdr [json get $v]
+				break
+			}
+		}
+	}
+	return $headers
+}
+#>>>
+
+# Verify the requestCompression behaviour: gzip the assembled body, then check
+# the resulting Content-Encoding header against the vector and that the body
+# round-trips through gunzip. Returns "match" or errors.
+proc verify_compression {compiled case body encodings} { #<<<
+	set pdict	[if {[json exists $case params]} {json extract $case params} else {return -level 0 {{}}}]
+	set headers	[assemble_headers $compiled $pdict]
+	set original	$body
+	::aws::_compress_request body headers $encodings
+	set errs	{}
+	set exp_ce	[json get -default {} $case serialized headers Content-Encoding]
+	set got_ce	[if {[dict exists $headers Content-Encoding]} {dict get $headers Content-Encoding}]
+	if {$got_ce ne $exp_ce} {
+		lappend errs "Content-Encoding: got ($got_ce) want ($exp_ce)"
+	}
+	if {[zlib gunzip $body] ne $original} {
+		lappend errs "body did not round-trip through gunzip"
+	}
+	if {[llength $errs]} {error [join $errs "; "]}
+	return match
+}
+#>>>
+
+# --- idempotency-token auto-fill ----------------------------------------
+# The SDK fills an absent idempotencyToken member with a UUIDv4; the Smithy
+# vectors mock the generator to the fixed value 00000000-0000-4000-8000-
+# 000000000000 (see autofill_idempotency).
+
+# True if the operation's input has a member with the idempotencyToken trait.
+proc case_has_idempotency {entry case} { #<<<
+	set ish	[json get -default {} $case given input shape]
+	if {$ish eq "" || ![json exists $entry shapes $ish members]} {return 0}
+	json foreach {mn md} [json extract $entry shapes $ish members] {
+		if {[json get -default false $md idempotencyToken]} {return 1}
+	}
+	return 0
+}
+#>>>
+
+# Return the case params with any absent idempotencyToken member filled in with
+# the fixed test UUID (mirrors _auto_idempotency_token, which the runtime runs
+# after parse_args).
+proc autofill_idempotency {entry case} { #<<<
+	set pdict	[if {[json exists $case params]} {json extract $case params} else {return -level 0 {{}}}]
+	set ish		[json get -default {} $case given input shape]
+	if {$ish eq "" || ![json exists $entry shapes $ish members]} {return $pdict}
+	json foreach {mn md} [json extract $entry shapes $ish members] {
+		if {[json get -default false $md idempotencyToken] && ![json exists $pdict $mn]} {
+			json set pdict $mn [json string 00000000-0000-4000-8000-000000000000]
+		}
+	}
+	return $pdict
+}
+#>>>
+
+# Build the request URI (path with {label} substitutions + query string) the
+# way _service_req / _aws_req would, from the compiled uri_map / query_map and
+# the (autofilled) params. For query/ec2 the params ride in the body, so only
+# the path is used.
+proc assemble_uri {compiled entry case params} { #<<<
+	set uri	[json get $case given http requestUri]
+	foreach {label arg} [dict get $compiled uri_map] {
+		set val	""
+		json foreach {k v} $params {
+			if {[aws::from_camel $k] eq $arg} {set val [json get $v]; break}
+		}
+		set uri	[string map [list "{$label}" [reuri encode path $val] "{$label+}" $val] $uri]
+	}
+	if {[json get $entry metadata protocol] in {rest-json rest-xml}} {
+		set qs	{}
+		foreach {name arg spec} [dict get $compiled query_map] {
+			json foreach {k v} $params {
+				if {[aws::from_camel $k] eq $arg} {
+					lappend qs $name=[reuri encode query [json get $v]]
+					break
+				}
+			}
+		}
+		if {[llength $qs]} {append uri ?[join $qs &]}
+	}
+	return $uri
+}
+#>>>
+
+# Compare the assembled request body (for the given params) against the
+# vector's serialized.body, dispatching on protocol. Returns "" on match.
+proc check_body {compiled entry case op_name apiVersion params} { #<<<
+	set exp_body	[json get -default {} $case serialized body]
+	switch -exact -- [json get $entry metadata protocol] {
+		query - ec2 {
+			diff_query_body [assemble_query_body $compiled $op_name $apiVersion [json get $params]] $exp_body
+		}
+		json - rest-json - json_1_0 {
+			# An operation with no input shape (empty template) has no body.
+			if {[dict get $compiled template_obj] eq ""} {
+				diff_json_body "" $exp_body
+			} else {
+				diff_json_body [assemble_json_body $compiled $params] $exp_body
+			}
+		}
+		rest-xml {
+			set xml_input	[if {[json exists $case given input]} {
+				aws::build::compile_xml_input \
+					-shapes	[json extract [synth_service $entry] shapes] \
+					-input	[json extract $case given input]
+			}]
+			diff_xml_body [assemble_xml_body $compiled $entry $case $xml_input] $exp_body
+		}
+		default {return "unsupported protocol"}
+	}
+}
+#>>>
+
+# Verify an idempotency-token case: auto-fill the token, then check both the
+# serialized body and the URI (the token lands in the body for query/ec2, in
+# the query string for rest-json/rest-xml).
+proc verify_idempotency {compiled entry case op_name apiVersion} { #<<<
+	set params	[autofill_idempotency $entry $case]
+	set diff	[check_body $compiled $entry $case $op_name $apiVersion $params]
+	if {$diff ne ""} {error "body: $diff"}
+	set uri		[assemble_uri $compiled $entry $case $params]
+	set exp_uri	[json get -default / $case serialized uri]
+	if {$uri ne $exp_uri} {error "uri: got ($uri) want ($exp_uri)"}
+	return match
+}
+#>>>
+
+# Verify an endpoint-hostPrefix (host-label) case: the labelled member also
+# serializes normally (body), and the substituted hostPrefix prepends the host.
+# We don't resolve the base host here, so we check the computed prefix is a
+# prefix of the vector's expected host.
+proc verify_host_label {compiled entry case op_name apiVersion} { #<<<
+	set params	[if {[json exists $case params]} {json extract $case params} else {return -level 0 {{}}}]
+	set diff	[check_body $compiled $entry $case $op_name $apiVersion $params]
+	if {$diff ne ""} {error "body: $diff"}
+	set hp		[json get $case given endpoint hostPrefix]
+	set prefix	$hp
+	foreach {- name} [regexp -all -inline {\{(\w+)\}} $hp] {
+		set prefix	[string map [list \{$name\} [json get -default {} $params $name]] $prefix]
+	}
+	set exp_host	[json get $case serialized host]
+	if {![string match $prefix* $exp_host]} {
+		error "host: computed prefix ($prefix) is not a prefix of expected host ($exp_host)"
+	}
+	return match
+}
+#>>>
+
+# rest-xml: assemble the request body the same way ::aws::_service_req does —
+# build the body doc (template + transforms + null-strip for the no-payload
+# case, or the raw payload member value for the payload-trait case), then walk
+# it into XML via ::aws::_build_xml_body using the compiled xml_input.
+proc assemble_xml_body {compiled entry case xml_input} { #<<<
+	set payload	[dict get $compiled body]
+	set pdict	[if {[json exists $case params]} {json extract $case params} else {return -level 0 {{}}}]
+	if {$payload ne ""} {
+		# payload trait: the body is the payload member's value.
+		set match_camel	""
+		json foreach {k _} $pdict {
+			if {[aws::from_camel $k] eq $payload} {set match_camel $k; break}
+		}
+		if {$match_camel eq ""} {return ""}
+		set pv	[json extract $pdict $match_camel]
+		if {$xml_input in {{} {Body {} {}}}} {
+			# Raw blob/string payload — body is the value verbatim.
+			return [json get $pv]
+		}
+		# Structure payload: apply the member's rewriter (locationName renames /
+		# nested transforms) the way _service_req walks the _tx_ value.
+		foreach tfm [dict get $compiled transforms] {
+			lassign $tfm kind var spec
+			if {$kind eq "rewrite" && $var eq $payload} {
+				set pv	[::aws::_tx_rewrite $pv $spec]
+				break
+			}
+		}
+		return [encoding convertfrom utf-8 [::aws::_build_xml_body $xml_input $pv]]
+	}
+	# No payload trait: assemble the full body doc then wrap.
+	if {$xml_input in {{} {Body {} {}}}} {return ""}
+	set bodydoc	[assemble_json_body $compiled $pdict]
+	return [encoding convertfrom utf-8 [::aws::_build_xml_body $xml_input $bodydoc]]
+}
+#>>>
+
+# Compare two XML request bodies structurally (element names, attributes, text,
+# child order; whitespace between elements and attribute order ignored). "" on
+# match, else a diff description.
+proc diff_xml_body {actual expected} { #<<<
+	set ae	[expr {[string trim $actual] eq ""}]
+	set ee	[expr {[string trim $expected] eq ""}]
+	if {$ae && $ee} {return ""}
+	if {$ae}        {return "expected a body, got none; expected: $expected"}
+	if {$ee}        {return "expected no body, got: $actual"}
+	set ca	[xml_canon $actual]
+	set ce	[xml_canon $expected]
+	if {$ca eq $ce} {return ""}
+	return "actual:   $ca\nexpected: $ce"
+}
+#>>>
+proc xml_canon {xmlstr} { #<<<
+	# Normalise by parsing, dropping the inter-element indentation whitespace
+	# the vectors (and tdom's asXML) add, and re-serialising. Namespace
+	# declarations and attributes round-trip faithfully through tdom, so two
+	# semantically equal documents produce identical strings.
+	set doc	[dom parse $xmlstr]
+	try {
+		_xml_strip_ws [$doc documentElement]
+		[$doc documentElement] asXML -indent none
+	} finally {
+		$doc delete
+	}
+}
+#>>>
+proc _xml_strip_ws node { #<<<
+	foreach c [$node childNodes] {
+		switch -- [$c nodeType] {
+			TEXT_NODE - CDATA_SECTION_NODE {
+				if {[string trim [$c nodeValue]] eq ""} {$c delete}
+			}
+			ELEMENT_NODE {_xml_strip_ws $c}
+		}
+	}
+}
+#>>>
+
 # ------------------------------------------------------------------
 # Test driver
 
-# Some cases test SDK-level features we don't implement (request compression,
-# idempotency-token auto-fill, empty-list sentinels, host-label URI rewriting).
-# They're excluded by id so they don't pollute the signal.
-set unsupported_cases {
-	SDKAppliedContentEncoding_awsQuery
-	SDKAppendsGzipAndIgnoresHttpProvidedEncoding_awsQuery
-	SDKAppliedContentEncoding_ec2Query
-	SDKAppendsGzipAndIgnoresHttpProvidedEncoding_ec2Query
-	SDKAppliedContentEncoding_awsJson1_1
-	SDKAppendsGzipAndIgnoresHttpProvidedEncoding_awsJson1_1
-	SDKAppliedContentEncoding_restJson1
-	SDKAppendsGzipAndIgnoresHttpProvidedEncoding_restJson1
-	SDKAppendedGzipAfterProvidedEncoding_restJson1
-	SDKAppliedContentEncoding_awsJson1_0
-	SDKAppendsGzipAndIgnoresHttpProvidedEncoding_awsJson1_0
-	QueryProtocolIdempotencyTokenAutoFill
-	QueryProtocolIdempotencyTokenAutoFillIsSet
-	Ec2ProtocolIdempotencyTokenAutoFill
-	Ec2ProtocolIdempotencyTokenAutoFillIsSet
-	AwsJson11ProtocolIdempotencyTokenAutoFill
-	AwsJson11ProtocolIdempotencyTokenAutoFillIsSet
-	AwsJson10ProtocolIdempotencyTokenAutoFill
-	AwsJson10ProtocolIdempotencyTokenAutoFillIsSet
-	RestJsonIdempotencyTokenAutoFill
-	RestJsonIdempotencyTokenAutoFillIsSet
-	EmptyQueryLists
-	AwsQueryEndpointTraitWithHostLabel
-	AwsEc2EndpointTraitWithHostLabel
-	AwsJson11EndpointTraitWithHostLabel
-	AwsJson10EndpointTraitWithHostLabel
-	RestJsonEndpointTraitWithHostLabel
+# Cases for SDK features not yet implemented. These are gated behind the
+# `not_implemented` test constraint (always false) rather than silently
+# skipped, so they stay visible in the run summary ("skipped by constraint")
+# — the intent is to cover the full SDK surface, so each entry here is a TODO,
+# not a deliberate omission. When a feature lands, delete its ids from this
+# list and the vectors start exercising it.
+tcltest::testConstraint not_implemented 0
+
+set not_implemented_cases {
 }
 
 # Run all input cases from a protocol vector file.
 proc run_input_file {path} { #<<<
-	global unsupported_cases
+	global not_implemented_cases
 	set entries	[chantricks::readfile $path]
 	set protocol	[file rootname [file tail $path]]
 	json foreach entry $entries {
 		set desc	[json get $entry description]
 		json foreach case [json extract $entry cases] {
 			set case_id	[json get $case id]
-			if {$case_id in $unsupported_cases} continue
+			# Not-yet-implemented features are kept visible via a (false)
+			# constraint rather than dropped, so the run summary shows them.
+			set constraints	[if {$case_id in $not_implemented_cases} {list not_implemented}]
 			# Derive a per-case test name
 			set name		protocol-input-$protocol-$case_id
 			set serialized	[json extract $case serialized]
 			set expected_body	[json get -default {} $serialized body]
 			set expected_method	[json get -default POST $serialized method]
 			set expected_uri	[json get -default / $serialized uri]
-			test $name $desc -body {
+			test $name $desc -constraints $constraints -body {
 				set compiled	[compile_case $entry $case]
 				lassign [case_op_version $entry $case] op_name apiVersion
+				set req_enc	[json get -default {} $case given requestcompression encodings]
+				if {$req_enc ne ""} {
+					# requestCompression op: assemble the body, gzip it, and
+					# verify the Content-Encoding header + gunzip round-trip.
+					return [verify_compression $compiled $case \
+						[assemble_body_for_protocol $compiled $entry $case $op_name $apiVersion] \
+						$req_enc]
+				}
+				if {[case_has_idempotency $entry $case]} {
+					# idempotencyToken member: auto-fill it and verify both the
+					# body and the URI (token lands in one or the other).
+					return [verify_idempotency $compiled $entry $case $op_name $apiVersion]
+				}
+				if {[json exists $case given endpoint hostPrefix]} {
+					# endpoint hostPrefix (host-label): verify the body and the
+					# substituted host prefix.
+					return [verify_host_label $compiled $entry $case $op_name $apiVersion]
+				}
 				switch -exact -- [json get $entry metadata protocol] {
 					query - ec2 {
 						set pdict	[if {[json exists $case params]} {json get $case params}]
@@ -430,11 +699,33 @@ proc run_input_file {path} { #<<<
 						if {$diff ne ""} {error $diff}
 						return "match"
 					}
+					rest-xml {
+						# The xml_input triple (root element / xmlns / steps) is
+						# what _service_req carries; compile it from the synthetic
+						# input shape the same way the build does.
+						set xml_input	[if {[json exists $case given input]} {
+							aws::build::compile_xml_input \
+								-shapes	[json extract [synth_service $entry] shapes] \
+								-input	[json extract $case given input]
+						}]
+						set body	[assemble_xml_body $compiled $entry $case $xml_input]
+						if {[dict get $compiled body] ne "" && $xml_input in {{} {Body {} {}}}} {
+							# Raw blob/string/enum payload — the body is the value
+							# verbatim, not XML; compare bytes.
+							if {$body ne $expected_body} {
+								error "raw payload actual=($body) expected=($expected_body)"
+							}
+							return "match"
+						}
+						set diff	[diff_xml_body $body $expected_body]
+						if {$diff ne ""} {error $diff}
+						return "match"
+					}
 					default {
 						return -code break "unsupported protocol"
 					}
 				}
-			} -cleanup {unset -nocomplain compiled op_name apiVersion pdict body diff} -result match
+			} -cleanup {unset -nocomplain compiled op_name apiVersion pdict body diff xml_input req_enc} -result match
 		}
 	}
 }
@@ -443,7 +734,7 @@ proc run_input_file {path} { #<<<
 # Kick off
 set protocol_dir	[file join [file dirname [info script]] .. botocore tests unit protocols]
 if {[file isdirectory $protocol_dir]} {
-	foreach proto {query ec2 json json_1_0 rest-json} {
+	foreach proto {query ec2 json json_1_0 rest-json rest-xml} {
 		set path	[file join $protocol_dir input $proto.json]
 		if {[file exists $path]} {
 			run_input_file $path

@@ -3,12 +3,9 @@ if {[lsearch [namespace children] ::tcltest] == -1} {
     namespace import ::tcltest::*
 }
 
-tcltest::loadTestedCommands
-package require aws 2
-package require rl_json 0.17
-interp alias {} json {} ::rl_json::json
+source [file join [file dirname [file normalize [info script]]] common.tcl]
 
-test account-get_contact_information-1.1 {} -body { #<<<
+test account-get_contact_information-1.1 {} -constraints aws_creds -body { #<<<
 	json exists [aws account get_contact_information] ContactInformation
 } -result 1
 #>>>

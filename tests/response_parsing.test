@@ -1,0 +1,100 @@
+# Hermetic response-parsing tests.
+#
+# A mock ::aws::helpers::_req returns a canned HTTP response so we exercise the
+# XML/JSON result decoding without credentials or network. The motivating case:
+# empty collections must decode to [] / {} (matching the AWS CLI / botocore),
+# not null.
+
+if {[lsearch [namespace children] ::tcltest] == -1} {
+	package require tcltest
+	namespace import ::tcltest::*
+}
+
+source [file join [file dirname [file normalize [info script]]] common.tcl]
+
+namespace eval ::test_resp { #<<<
+	variable body	{}
+	variable status	200
+
+	# Swap in a mock _req that replies with $body / $status. Mirrors the
+	# retry.test mock's option list so parse_args accepts everything
+	# _service_req forwards.
+	proc install {} {
+		rename ::aws::helpers::_req ::aws::helpers::_req_orig
+		proc ::aws::helpers::_req {method endpoint path args} {
+			parse_args::parse_args $args {
+				-scheme                      {-default http}
+				-headers                     {-default {}}
+				-params                      {-default {}}
+				-content_type                {-default {}}
+				-body                        {-default {}}
+				-xml_ns                      {-default {}}
+				-response_headers            {-alias}
+				-status                      {-alias}
+				-sig_service                 {-default {}}
+				-version                     {-default v4}
+				-region                      {-required}
+				-credential_scope            {-default ""}
+				-disable_double_encoding     {-default 0}
+				-signing_region              {-default {}}
+				-expecting_status            {-default 200}
+				-timeout                     {-default {}}
+				-connect_timeout             {-default {}}
+				-read_timeout                {-default {}}
+				-max_keepalive_age           {-default {}}
+				-max_keepalive_count         {-default {}}
+			}
+			set response_headers	{x-amzn-requestid test-req-id}
+			set status				$::test_resp::status
+			return $::test_resp::body
+		}
+	}
+
+	proc uninstall {} {
+		if {[info commands ::aws::helpers::_req_orig] ne ""} {
+			rename ::aws::helpers::_req {}
+			rename ::aws::helpers::_req_orig ::aws::helpers::_req
+		}
+	}
+
+	# Run $script (an aws op) against a canned $body response and return the
+	# decoded result.
+	proc with {body script {status 200}} {
+		set ::test_resp::body	$body
+		set ::test_resp::status	$status
+		install
+		try {uplevel 1 $script} finally {uninstall}
+	}
+}
+#>>>
+
+test resp-empty-list-1.1 {empty non-flattened list decodes to [] not null (query protocol)} -body { #<<<
+	# IAM ListAccountAliases on an account with no alias: <AccountAliases/>.
+	set r	[::test_resp::with {<ListAccountAliasesResponse xmlns="https://iam.amazonaws.com/doc/2010-05-08/"><ListAccountAliasesResult><IsTruncated>false</IsTruncated><AccountAliases/></ListAccountAliasesResult><ResponseMetadata><RequestId>r</RequestId></ResponseMetadata></ListAccountAliasesResponse>} {
+		aws iam list_account_aliases -region us-east-1
+	}]
+	list [json type $r AccountAliases] [json get $r AccountAliases]
+} -cleanup {unset -nocomplain r} -result {array {}}
+#>>>
+test resp-empty-list-1.2 {a list member is always an array — absent element also decodes to [], never null} -body { #<<<
+	# No AccountAliases element at all in the result. We deliberately normalise
+	# list/map members to []/{} so callers never have to null-check a collection.
+	set r	[::test_resp::with {<ListAccountAliasesResponse xmlns="https://iam.amazonaws.com/doc/2010-05-08/"><ListAccountAliasesResult><IsTruncated>false</IsTruncated></ListAccountAliasesResult><ResponseMetadata><RequestId>r</RequestId></ResponseMetadata></ListAccountAliasesResponse>} {
+		aws iam list_account_aliases -region us-east-1
+	}]
+	json type $r AccountAliases
+} -cleanup {unset -nocomplain r} -result array
+#>>>
+test resp-nonempty-list-1.3 {a populated list still decodes correctly} -body { #<<<
+	set r	[::test_resp::with {<ListAccountAliasesResponse xmlns="https://iam.amazonaws.com/doc/2010-05-08/"><ListAccountAliasesResult><IsTruncated>false</IsTruncated><AccountAliases><member>alpha</member><member>beta</member></AccountAliases></ListAccountAliasesResult><ResponseMetadata><RequestId>r</RequestId></ResponseMetadata></ListAccountAliasesResponse>} {
+		aws iam list_account_aliases -region us-east-1
+	}]
+	json get $r AccountAliases
+} -cleanup {unset -nocomplain r} -result {alpha beta}
+#>>>
+
+# cleanup
+::tcltest::cleanupTests
+return
+
+# vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4

@@ -9,10 +9,7 @@ if {[lsearch [namespace children] ::tcltest] == -1} {
     namespace import ::tcltest::*
 }
 
-tcltest::loadTestedCommands
-package require aws 2
-package require rl_json 0.17
-interp alias {} json {} ::rl_json::json
+source [file join [file dirname [file normalize [info script]]] common.tcl]
 
 # Fake-service harness <<<
 # Each test sets: ::aws::fake::paginators (dict op->meta) and
@@ -502,15 +499,6 @@ test paginate-dispatch-9.2 {missing iteration body script errors} -setup { #<<<
 # Dispatch errors >>>
 
 # Integration tests — live AWS, gated by the fixture stack <<<
-tcltest::testConstraint aws_creds [try { #<<<
-	aws::helpers::get_creds
-	return -level 0 true
-} trap {AWS NO_CREDENTIALS} {} {
-	return -level 0 false
-} on error {} {
-	return -level 0 false
-}]
-#>>>
 
 source [file join [file dirname [info script]] fixtures.tcl]
 
@@ -630,16 +618,6 @@ test paginate-live-s3-signing-10.6 {sigv4 signing on keys with spaces, reserved 
 
 # Legacy (Ruby-Lane only) — kept so the existing gated test still runs when
 # deploying the fixture stack isn't an option. Skipped otherwise.
-tcltest::testConstraint rl_aws_account [expr { #<<<
-	[tcltest::testConstraint aws_creds] &&
-	[try {
-		set aliases	[json get [aws iam list_account_aliases] AccountAliases]
-		expr {"rubylane" in $aliases}
-	} on error {} {
-		return -level 0 false
-	}]
-}]
-#>>>
 test paginate-live-cloudformation-11.1 {live cloudformation list_stacks iterates stacks} -constraints rl_aws_account -body { #<<<
 	# Rubylane has many stacks; fixture account only has our one fixture stack,
 	# so this test can't deterministically force >1 page. Left gated on

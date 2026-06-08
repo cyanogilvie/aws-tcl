@@ -346,9 +346,10 @@ namespace eval aws {
 			# rl_http's -cafile option (1.24+).
 			global env
 			if {[info exists env(AWS_CA_BUNDLE)] && $env(AWS_CA_BUNDLE) ne ""} {
-				return $env(AWS_CA_BUNDLE)
+				set env(AWS_CA_BUNDLE)
+			} else {
+				_profile_value ca_bundle
 			}
-			return [_profile_value ca_bundle]
 		}
 
 		#>>>
@@ -1847,7 +1848,7 @@ namespace eval aws {
 				set out [dict create \
 					access_key	[dict get $merged aws_access_key_id] \
 					secret		[dict get $merged aws_secret_access_key] \
-					source		"profile:$profile" \
+					source		profile:$profile \
 				]
 				if {[dict exists $merged aws_session_token]} {
 					dict set out token [dict get $merged aws_session_token]
@@ -1878,13 +1879,13 @@ namespace eval aws {
 					if {[info exists env(AWS_SESSION_TOKEN)]} {
 						dict set out token $env(AWS_SESSION_TOKEN)
 					}
-					return $out
+					set out
 				}
 				Ec2InstanceMetadata {
-					return [_creds_from_sts_json [instance_role_creds] instance_role]
+					_creds_from_sts_json [instance_role_creds] instance_role
 				}
 				EcsContainer {
-					return [_creds_from_sts_json [_container_creds] container]
+					_creds_from_sts_json [_container_creds] container
 				}
 				default {
 					throw {AWS PROFILE_INVALID} "unknown credential_source: $source"
@@ -1901,12 +1902,12 @@ namespace eval aws {
 			# Tcl's exec with {*}[split ...] would be wrong for quoted args, so
 			# we go via `sh -c` to match CLI behaviour on POSIX.
 			try {
-				set out [exec sh -c $command 2>/dev/null]
+				exec sh -c $command 2> /dev/null
+			} on ok j {
 			} on error {msg opts} {
 				throw {AWS CREDENTIAL_PROCESS} "credential_process failed: $msg"
 			}
 			try {
-				set j $out
 				if {[json get $j Version] != 1} {
 					throw {AWS CREDENTIAL_PROCESS} "credential_process returned Version != 1"
 				}
@@ -1921,7 +1922,7 @@ namespace eval aws {
 				if {[json exists $j Expiration]} {
 					dict set result expires [clock scan [json get $j Expiration] -timezone :UTC -format {%Y-%m-%dT%H:%M:%SZ}]
 				}
-				return $result
+				set result
 			} on error {msg opts} {
 				throw {AWS CREDENTIAL_PROCESS} "credential_process output unparseable: $msg"
 			}
@@ -1933,53 +1934,40 @@ namespace eval aws {
 			# normal operation dispatcher so endpoint rules, retries, etc. all
 			# still apply; _with_creds short-circuits the credential chain
 			# while this runs.
-			variable ::aws::default_region
-			package require aws::sts
-			set args [list \
-				-RoleArn $role_arn \
-				-RoleSessionName $session_name \
-				-DurationSeconds $duration \
-				-region $::aws::default_region]
-			if {$external_id ne ""} {lappend args -ExternalId $external_id}
 			_with_creds $source_creds {
-				set resp [aws sts assume_role {*}$args]
+				set resp	[aws sts assume_role \
+					-role_arn			$role_arn \
+					-role_session_name	$session_name \
+					-duration_seconds	$duration \
+					{*}[if {$external_id ne ""} {
+						list -external_id	$external_id
+					}]]
 			}
-			set j [json extract $resp Credentials]
-			return [dict create \
-				access_key	[json get $j AccessKeyId] \
-				secret		[json get $j SecretAccessKey] \
-				token		[json get $j SessionToken] \
-				expires		[clock scan [json get $j Expiration] -timezone :UTC -format {%Y-%m-%dT%H:%M:%SZ}] \
-				source		"assume-role:$role_arn" \
-			]
+
+			dict create \
+				access_key	[json get $resp Credentials AccessKeyId] \
+				secret		[json get $resp Credentials SecretAccessKey] \
+				token		[json get $resp Credentials SessionToken] \
+				expires		[clock scan [json get $resp Credentials Expiration] -timezone :UTC -format {%Y-%m-%dT%H:%M:%SZ}] \
+				source		assume-role:$role_arn
 		}
 
 		#>>>
 		proc _web_identity_creds {role_arn token_file session_name} { #<<<
 			# Nest-call sts:AssumeRoleWithWebIdentity. This operation is
 			# anonymous (noAuth) so no source credentials are needed.
-			variable ::aws::default_region
-			package require aws::sts
-			set fh [open $token_file r]
-			try {
-				set token [read $fh]
-			} finally {
-				close $fh
-			}
-			set token [string trim $token]
-			set resp [aws sts assume_role_with_web_identity \
-				-RoleArn $role_arn \
-				-RoleSessionName $session_name \
-				-WebIdentityToken $token \
-				-region $::aws::default_region]
-			set j [json extract $resp Credentials]
-			return [dict create \
-				access_key	[json get $j AccessKeyId] \
-				secret		[json get $j SecretAccessKey] \
-				token		[json get $j SessionToken] \
-				expires		[clock scan [json get $j Expiration] -timezone :UTC -format {%Y-%m-%dT%H:%M:%SZ}] \
-				source		"web-identity:$role_arn" \
+			set resp	[aws sts assume_role_with_web_identity \
+				-role_arn			$role_arn \
+				-roleSession_name	$session_name \
+				-web_identity_token	[string trim [chantricks readfile $token_file]] \
 			]
+
+			dict create \
+				access_key	[json get $resp Credentials AccessKeyId] \
+				secret		[json get $resp Credentials SecretAccessKey] \
+				token		[json get $resp Credentials SessionToken] \
+				expires		[clock scan [json get $resp Credentials Expiration] -timezone :UTC -format {%Y-%m-%dT%H:%M:%SZ}] \
+				source		web-identity:$role_arn
 		}
 
 		#>>>
@@ -2071,13 +2059,13 @@ namespace eval aws {
 				secret		[json get $rc secretAccessKey] \
 				token		[json get $rc sessionToken] \
 				expires		$expires_sec \
-				source		"sso:$profile" \
+				source		sso:$profile \
 			]
 			if {![info exists _sso_role_creds_cache]} {
 				set _sso_role_creds_cache {}
 			}
 			dict set _sso_role_creds_cache $profile $out
-			return $out
+			set out
 		}
 
 		#>>>
@@ -2089,8 +2077,8 @@ namespace eval aws {
 			if {![info exists env(HOME)]} {
 				throw {AWS SSO_NO_HOME} "HOME not set — cannot locate SSO token cache"
 			}
-			set digest [binary encode hex [tomcrypt::hash sha1 $key]]
-			return [file join $env(HOME) .aws/sso/cache $digest.json]
+			set digest	[binary encode hex [tomcrypt::hash sha1 $key]]
+			file join $env(HOME) .aws/sso/cache $digest.json
 		}
 
 		#>>>
@@ -2098,12 +2086,12 @@ namespace eval aws {
 			if {![file readable $path]} {
 				throw {AWS SSO_NO_TOKEN} "no cached SSO token at $path — run 'aws sso login' first"
 			}
-			set fh [open $path r]
+			set h	[open $path r]
 			try {
-				fconfigure $fh -encoding utf-8
-				set j [read $fh]
+				chan configure $h -encoding utf-8
+				set j	[read $h]
 			} finally {
-				close $fh
+				close $h
 			}
 			foreach k {accessToken expiresAt} {
 				if {![json exists $j $k]} {
@@ -2112,17 +2100,14 @@ namespace eval aws {
 			}
 			set out [dict create \
 				accessToken		[json get $j accessToken] \
-				expires_at		[clock scan [json get $j expiresAt] \
-									-timezone :UTC \
-									-format {%Y-%m-%dT%H:%M:%SZ}] \
+				expires_at		[clock scan [json get $j expiresAt] -timezone :UTC -format {%Y-%m-%dT%H:%M:%SZ}] \
 				cache_path		$path \
 			]
 			foreach k {refreshToken clientId clientSecret region startUrl registrationExpiresAt} {
-				if {[json exists $j $k]} {
-					dict set out $k [json get $j $k]
-				}
+				if {![json exists $j $k]} continue
+				dict set out $k [json get $j $k]
 			}
-			return $out
+			set out
 		}
 
 		#>>>
@@ -2130,36 +2115,32 @@ namespace eval aws {
 			# Call sso-oidc:CreateToken with grant_type=refresh_token,
 			# write the new token back to the cache file so the next
 			# process can use it too.
-			set body [json template {
-				{
-					"clientId":		"~S:clientId",
-					"clientSecret":	"~S:clientSecret",
-					"grantType":	"refresh_token",
-					"refreshToken":	"~S:refreshToken"
-				}
-			} $token]
-			set url "https://oidc.$region.amazonaws.com/token"
-			set ca_bundle [_ca_bundle]
-			set extra [expr {$ca_bundle ne "" ? [list -cafile $ca_bundle] : {}}]
-			rl_http instvar h POST $url \
-				-stats_cx AWS \
-				-timeout 10 \
-				-headers [list Content-Type application/json Accept application/json] \
-				-data $body \
-				{*}$extra
+			set ca_bundle	[_ca_bundle]
+
+			rl_http instvar h POST https://oidc.$region.amazonaws.com/token \
+				-stats_cx	AWS \
+				-timeout	10 \
+				-headers	{Content-Type application/json Accept application/json} \
+				{*}[if {$ca_bundle ne {}} {list -cafile $ca_bundle}] \
+				-data		[encoding convertto utf-8 [json template {
+					{
+						"grantType":	"refresh_token",
+						"refreshToken":	"~S:token"
+					}
+				}]]
+
 			if {[$h code] != 200} {
 				throw {AWS SSO_REFRESH_FAILED} "sso-oidc:CreateToken returned [$h code]: [$h body] — run 'aws sso login' to start a new session"
 			}
-			set resp [$h body]
+			set resp	[$h body]
 			set new_token [dict create \
 				accessToken		[json get $resp accessToken] \
 				expires_at		[expr {[clock seconds] + [json get $resp expiresIn]}] \
 				cache_path		$token_path]
 			# Preserve registration details we still need for future refreshes.
 			foreach k {clientId clientSecret region startUrl registrationExpiresAt} {
-				if {[dict exists $token $k]} {
-					dict set new_token $k [dict get $token $k]
-				}
+				if {![dict exists $token $k]} continue
+				dict set new_token $k [dict get $token $k]
 			}
 			# Some servers rotate refreshToken; prefer the new one if present.
 			if {[json exists $resp refreshToken]} {
@@ -2168,31 +2149,32 @@ namespace eval aws {
 				dict set new_token refreshToken [dict get $token refreshToken]
 			}
 			_sso_write_token_cache $token_path $new_token
-			return $new_token
+
+			set new_token
 		}
 
 		#>>>
 		proc _sso_write_token_cache {path token} { #<<<
 			# Write the token back using the CLI's field names and ISO-8601
 			# expiresAt so `aws sso login` and other SDKs continue to see it.
-			set doc {{}}
-			json set doc accessToken [json string [dict get $token accessToken]]
-			json set doc expiresAt   [json string \
-				[clock format [dict get $token expires_at] -timezone :UTC -format {%Y-%m-%dT%H:%M:%SZ}]]
-			foreach fld {refreshToken clientId clientSecret region startUrl registrationExpiresAt} {
-				if {[dict exists $token $fld]} {
-					json set doc $fld [json string [dict get $token $fld]]
+			set accessToken	[dict get $token accessToken]
+			set expiresAt	[clock format [dict get $token expires_at] -timezone :UTC -format {%Y-%m-%dT%H:%M:%SZ}]
+			set doc	[json template {
+				{
+					"accessToken":	"~S:accessToken",
+					"expiresAt":	"~S:expiresAt"
 				}
+			}]
+			foreach fld {refreshToken clientId clientSecret region startUrl registrationExpiresAt} {
+				if {![dict exists $token $fld]} continue
+				json set doc $fld [json string [dict get $token $fld]]
 			}
-			set dir [file dirname $path]
+			set dir	[file dirname $path]
 			if {![file isdirectory $dir]} {file mkdir $dir}
-			set tmp $path.tmp[pid]
-			set fh [open $tmp {WRONLY CREAT TRUNC} 0600]
-			try {
-				fconfigure $fh -encoding utf-8 -translation lf
-				puts -nonewline $fh $doc
-			} finally {
-				close $fh
+			set tmp	$path.tmp[pid][expr {int(rand()*1e6)}]
+			chantricks with_chan h {open $tmp {WRONLY CREAT EXCL TRUNC} 0o600} {
+				chan configure $h -encoding utf-8 -translation lf
+				puts -nonewline $h $doc
 			}
 			file rename -force $tmp $path
 		}
@@ -2206,22 +2188,22 @@ namespace eval aws {
 			reuri query set url account_id $account_id
 			reuri query set url role_name  $role_name
 			set ca_bundle	[_ca_bundle]
-			set extra		[expr {$ca_bundle ne "" ? [list -cafile $ca_bundle] : {}}]
 			rl_http instvar h GET $url \
 				-stats_cx	AWS \
 				-timeout	10 \
 				-headers	[list \
 					x-amz-sso_bearer_token	$access_token \
-					Accept					application/json] \
-				{*}$extra
+					Accept					application/json \
+				] \
+				{*}[if {$ca_bundle ne {}} {list -cafile $ca_bundle}]
+
 			if {[$h code] != 200} {
 				throw {AWS SSO_GET_ROLE_CREDS_FAILED} "sso:GetRoleCredentials returned [$h code]: [$h body]"
 			}
-			set resp	[$h body]
-			if {![json exists $resp roleCredentials]} {
+			if {![json exists [$h body] roleCredentials]} {
 				throw {AWS SSO_GET_ROLE_CREDS_FAILED} "sso:GetRoleCredentials response missing roleCredentials: [$h body]"
 			}
-			json extract $resp roleCredentials
+			json extract [$h body] roleCredentials
 		}
 
 		#>>>
@@ -2246,12 +2228,13 @@ namespace eval aws {
 
 			set headers {}
 			if {[info exists env(AWS_CONTAINER_CREDENTIALS_RELATIVE_URI)]} {
-				set url http://169.254.170.2$env(AWS_CONTAINER_CREDENTIALS_RELATIVE_URI)
+				set url	$env(AWS_CONTAINER_CREDENTIALS_RELATIVE_URI)
+				reuri set url scheme	http
+				reuri set url host		169.254.170.2
 			} elseif {[info exists env(AWS_CONTAINER_CREDENTIALS_FULL_URI)]} {
-				set url $env(AWS_CONTAINER_CREDENTIALS_FULL_URI)
+				set url	$env(AWS_CONTAINER_CREDENTIALS_FULL_URI)
 				if {[info exists env(AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE)]} {
-					set fh [open $env(AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE) r]
-					try { set tok [string trim [read $fh]] } finally { close $fh }
+					set tok	[chantricks readfile $env(AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE)]
 					lappend headers Authorization $tok
 				} elseif {[info exists env(AWS_CONTAINER_AUTHORIZATION_TOKEN)]} {
 					lappend headers Authorization $env(AWS_CONTAINER_AUTHORIZATION_TOKEN)
@@ -2266,17 +2249,16 @@ namespace eval aws {
 			}
 			set cached_role_creds [$h body]
 			json set cached_role_creds expires_sec [clock scan [json get $cached_role_creds Expiration] -timezone :UTC -format {%Y-%m-%dT%H:%M:%SZ}]
-			return $cached_role_creds
+			set cached_role_creds
 		}
 
 		#>>>
 		proc _imds_disabled {} { #<<<
 			global env
-			if {
+			expr {
 				[info exists env(AWS_EC2_METADATA_DISABLED)] &&
 				[string tolower $env(AWS_EC2_METADATA_DISABLED)] eq "true"
-			} {return 1}
-			return 0
+			}
 		}
 
 		#>>>
@@ -2294,29 +2276,30 @@ namespace eval aws {
 		#>>>
 		proc _imds_timeout {} { #<<<
 			global env
-			if {[info exists env(AWS_METADATA_SERVICE_TIMEOUT)]} {
-				return $env(AWS_METADATA_SERVICE_TIMEOUT)
+			expr {
+				[info exists env(AWS_METADATA_SERVICE_TIMEOUT)]
+					? $env(AWS_METADATA_SERVICE_TIMEOUT)
+					: 1
 			}
-			return 1
 		}
 
 		#>>>
 		proc _imds_attempts {} { #<<<
 			global env
-			if {[info exists env(AWS_METADATA_SERVICE_NUM_ATTEMPTS)]} {
-				return $env(AWS_METADATA_SERVICE_NUM_ATTEMPTS)
+			expr {
+				[info exists env(AWS_METADATA_SERVICE_NUM_ATTEMPTS)]
+					? $env(AWS_METADATA_SERVICE_NUM_ATTEMPTS)
+					: 1
 			}
-			return 1
 		}
 
 		#>>>
 		proc _imds_v1_disabled {} { #<<<
 			global env
-			if {
+			expr {
 				[info exists env(AWS_EC2_METADATA_V1_DISABLED)] &&
 				[string tolower $env(AWS_EC2_METADATA_V1_DISABLED)] eq "true"
-			} {return 1}
-			return 0
+			}
 		}
 
 		#>>>
@@ -2325,26 +2308,28 @@ namespace eval aws {
 			# A return of "" means v2 is unavailable and v1 should be tried
 			# (unless _imds_v1_disabled).
 			variable _imds_token_cache
+
 			if {
 				[info exists _imds_token_cache] &&
 				[clock seconds] < [dict get $_imds_token_cache expires]
 			} {
 				return [dict get $_imds_token_cache token]
 			}
+
 			try {
-				rl_http instvar h PUT "[_imds_base]/api/token" \
-					-stats_cx AWS \
-					-timeout [_imds_timeout] \
-					-headers [list X-aws-ec2-metadata-token-ttl-seconds 21600]
+				rl_http instvar h PUT [_imds_base]/api/token \
+					-stats_cx	AWS \
+					-timeout	[_imds_timeout] \
+					-headers	{X-aws-ec2-metadata-token-ttl-seconds 21600}
+
 				if {[$h code] == 200} {
-					set token [$h body]
+					set token	[$h body]
 					set _imds_token_cache [dict create \
 						token	$token \
 						expires	[expr {[clock seconds] + 21000}]]
 					return $token
 				}
 			} on error {} {}
-			return ""
 		}
 
 		#>>>
@@ -2352,38 +2337,42 @@ namespace eval aws {
 			# IMDS fetch with v2 preferred. Tries to obtain a session token;
 			# if that fails and v1 is not disabled, retries without the token.
 			set base	[_imds_base]
-			if {$path eq "/" || $path eq ""} {
-				set url $base
+			if {$path in {/ {}}} {
+				set url	$base
 			} else {
-				set url $base/[string trimleft $path /]
+				set url	$base/[string trimleft $path /]
 			}
-			set token [_imds_token]
-			set headers {}
+
+			set token	[_imds_token]
+
+			set headers	{}
 			if {$token ne ""} {
 				lappend headers X-aws-ec2-metadata-token $token
 			} elseif {[_imds_v1_disabled]} {
 				throw {AWS IMDS_UNAVAILABLE} "IMDSv2 token fetch failed and v1 is disabled"
 			}
-			set attempts [_imds_attempts]
-			set last_err {}
+
+			set attempts	[_imds_attempts]
+			set last_err	{}
 			for {set i 0} {$i < $attempts} {incr i} {
 				try {
 					rl_http instvar h GET $url \
-						-stats_cx AWS \
-						-timeout [_imds_timeout] \
-						-headers $headers
+						-stats_cx	AWS \
+						-timeout	[_imds_timeout] \
+						-headers	$headers
+
 					if {[$h code] == 200} {return [$h body]}
 					if {[$h code] == 401 && $token ne ""} {
 						# Token expired between fetch and use — drop cache and retry.
 						variable _imds_token_cache
 						unset -nocomplain _imds_token_cache
-						set token [_imds_token]
-						set headers [list X-aws-ec2-metadata-token $token]
+						set token	[_imds_token]
+						set headers	[list X-aws-ec2-metadata-token $token]
 						continue
 					}
-					set last_err [list [$h code] [$h body]]
+					set last_err	[list [$h code] [$h body]]
 				} on error {msg opts} {
-					set last_err [list error $msg]
+					set last_err	[list error $msg]
 				}
 			}
 			throw {AWS IMDS_ERROR} "IMDS request failed ($url): $last_err"
@@ -2405,7 +2394,8 @@ namespace eval aws {
 			set cached_role_creds	[_imds_req meta-data/iam/security-credentials/$role]
 			json set cached_role_creds expires_sec \
 				[clock scan [json get $cached_role_creds Expiration] -timezone :UTC -format {%Y-%m-%dT%H:%M:%SZ}]
-			return $cached_role_creds
+
+			set cached_role_creds
 		}
 
 		#>>>
@@ -2913,6 +2903,15 @@ namespace eval aws {
 			}
 			list {
 				lassign $spec - member_name flat subspec
+				if {[llength $value] == 0} {
+					# A non-flattened empty list serializes as the bare member
+					# name with an empty value ("ListArg="). Flattened lists
+					# (always the case for ec2) emit nothing when empty.
+					if {!$flat} {
+						lappend query $prefix {}
+					}
+					return
+				}
 				set base	[expr {$flat ? $prefix : "$prefix.$member_name"}]
 				set i	0
 				foreach item $value {
@@ -2957,6 +2956,7 @@ namespace eval aws {
 			-e			{-default 200 -name expected_status}
 			-h			{-default {} -name headers}
 			-hm			{-default {} -name header_map}
+			-hp			{-default {} -name host_prefix}
 			-m			{-default POST -name method}
 			-o			{-default {} -name out_headers_map}
 			-p			{-default / -name path}
@@ -2969,6 +2969,7 @@ namespace eval aws {
 			-u			{-default {} -name uri_map}
 			-w			{-default {} -name resultWrapper}
 			-x			{-default {} -name xml_input}
+			-z			{-default {} -name compression_encodings}
 			-handleresp	{}
 			-payload	{-alias -name resp_payload}
 		}
@@ -3071,27 +3072,20 @@ namespace eval aws {
 			set query	{}
 		} elseif {$payload ne ""} {
 			#puts "exists: [info exists _a_$payload]"
-			if {[info exists _a_$payload]} {
-				if {$xml_input in {{} {Body {} {}}}} {
-					set body	[set _a_$payload]
-				} else {
-					set rest	[lassign $xml_input rootelem xmlns]
-					set doc	[dom createDocument $rootelem]
-					try {
-						set src		[set _a_$payload]
-						set root	[$doc documentElement]
-						_xml_add_input_nodes $root $rest $src
-						if {$xmlns ne ""} {
-							set doc	[$root setAttribute xmlns $xmlns]
-						}
-					} on ok {} {
-						set body	[encoding convertto utf-8 [$root asXML]]
-					} finally {
-						$doc delete
-					}
-				}
-			} else {
+			if {![info exists _a_$payload]} {
 				set body	{}
+			} elseif {$xml_input in {{} {Body {} {}}}} {
+				# Raw blob / string / enum payload — sent verbatim.
+				set body	[set _a_$payload]
+			} else {
+				# Structure payload. Walk the rewritten (locationName-keyed)
+				# value when a rewriter was registered for renames/transforms,
+				# else the raw value.
+				set body	[_build_xml_body $xml_input [if {[info exists _a__tx_$payload]} {
+					set _a__tx_$payload
+				} else {
+					set _a_$payload
+				}]]
 			}
 			#puts stderr "body: ($body)"
 		} elseif {$template ne {}} {
@@ -3122,9 +3116,17 @@ namespace eval aws {
 				}
 			}
 			# Strip null object keys and array elements >>>
-			if {0 && [json length $bodydoc] == 0} {
-				set body	""
-				set content_type	""
+			if {$protocol eq "rest-xml"} {
+				# rest-xml with no payload trait. When the input has body members
+				# the assembled doc (keyed by locationName via the rewriter) is
+				# walked into the XML document rooted at the input element;
+				# otherwise (all members are uri/query/header) there is no body.
+				if {$xml_input ni {{} {Body {} {}}}} {
+					set body	[_build_xml_body $xml_input $bodydoc]
+				} else {
+					set body			""
+					set content_type	""
+				}
 			} else {
 				set body	[encoding convertto utf-8 $bodydoc]
 			}
@@ -3133,12 +3135,32 @@ namespace eval aws {
 			set content_type	""
 		}
 
+		# SDK request compression (requestCompression trait): gzip the body and
+		# set/append Content-Encoding when the operation opts in and the body is
+		# large enough.
+		if {$compression_encodings ne ""} {
+			_compress_request body headers $compression_encodings
+		}
+
 		#set scheme	[lindex [dict get $endpoint_info protocols] end]
 		set scheme	[lindex [dict get $endpoint_info protocols] 0]
 		if {[string tolower $scheme] eq "https" && [dict exists $endpoint_info sslCommonName]} {
 			set hostname	[dict get $endpoint_info sslCommonName]
 		} else {
 			set hostname	[dict get $endpoint_info hostname]
+		}
+
+		# Operation endpoint trait: prepend the (label-substituted) hostPrefix.
+		# Placeholders are rewritten to arg names at compile time, so each
+		# {arg} resolves against the upvar'd _a_<arg>.
+		if {$host_prefix ne ""} {
+			set prefix	$host_prefix
+			foreach {- arg} [regexp -all -inline {\{(\w+)\}} $host_prefix] {
+				if {[info exists _a_$arg]} {
+					set prefix	[string map [list \{$arg\} [set _a_$arg]] $prefix]
+				}
+			}
+			set hostname	$prefix$hostname
 		}
 
 		try {
@@ -3614,7 +3636,7 @@ namespace eval aws {
 			}
 
 			boolean {
-				if {[json get $src]} {set val 1} else {set val 0}
+				if {[json get $src]} {set val true} else {set val false}
 			}
 
 			null {
@@ -3635,43 +3657,136 @@ namespace eval aws {
 	}
 
 	#>>>
+	proc _min_compression_size {} { #<<<
+		# Minimum request-body size (bytes) before gzip compression kicks in.
+		# Mirrors the AWS SDK default (10240) and the
+		# AWS_REQUEST_MIN_COMPRESSION_SIZE_BYTES override (0..10485760).
+		global env
+		if {[info exists env(AWS_REQUEST_MIN_COMPRESSION_SIZE_BYTES)]} {
+			set v	$env(AWS_REQUEST_MIN_COMPRESSION_SIZE_BYTES)
+			if {[string is integer -strict $v] && $v >= 0 && $v <= 10485760} {
+				return $v
+			}
+		}
+		return 10240
+	}
+
+	#>>>
+	proc _compress_request {bodyVar headersVar encodings} { #<<<
+		# Apply the operation's requestCompression trait. If gzip is among the
+		# encodings and the body meets the minimum size, gzip it and add/append
+		# "gzip" to the Content-Encoding header. $headers is a flat {k v ...}
+		# list; $body is (UTF-8) bytes.
+		upvar 1 $bodyVar body $headersVar headers
+		if {"gzip" ni $encodings} return
+		if {[string length $body] < [_min_compression_size]} return
+		set body	[zlib gzip $body]
+		set out		{}
+		set found	0
+		foreach {k v} $headers {
+			if {[string equal -nocase $k Content-Encoding]} {
+				set found	1
+				lappend out $k "$v, gzip"
+			} else {
+				lappend out $k $v
+			}
+		}
+		if {!$found} {
+			lappend out Content-Encoding gzip
+		}
+		set headers	$out
+	}
+
+	#>>>
+	proc _build_xml_body {xml_input src} { #<<<
+		# Serialize $src (a JSON body doc keyed by locationName) into an XML
+		# request body using the compiled {rootElement nsattr steps} from
+		# compile_xml_input, where nsattr is an {attrName value} pair declaring
+		# the root namespace ({} if none). Returns UTF-8 bytes.
+		lassign $xml_input rootelem nsattr rest
+		set doc	[dom createDocument $rootelem]
+		try {
+			set root	[$doc documentElement]
+			if {[llength $nsattr]} {
+				$root setAttribute {*}$nsattr
+			}
+			_xml_add_input_nodes $root $rest $src
+			encoding convertto utf-8 [$root asXML]
+		} finally {
+			$doc delete
+		}
+	}
+
+	#>>>
 	proc _xml_add_input_nodes {node steps data} { #<<<
 		#puts "_xml_add_input_nodes steps: ($steps), data: [json pretty $data]"
-		foreach step $steps {
-			lassign $step elem children
-
+		foreach {elem children} $steps {
 			switch -glob -- $elem {
-				"\\**" - =* - %* {
+				!* { # static attribute, e.g. an xmlns / xmlns:<prefix> decl
+					set spec	[string range $elem 1 end]
+					set eq		[string first = $spec]
+					$node setAttribute [string range $spec 0 $eq-1] [string range $spec $eq+1 end]
+				}
+				@* { # xmlAttribute member: an attribute on this element
 					set elemname	[string range $elem 1 end]
+					if {![json exists $data $elemname]} continue
+					$node setAttribute $elemname [_xml_scalar [json extract $data $elemname]]
 				}
-				default {
-					set elemname	$elem
-				}
-			}
-
-			switch -glob -- $elem {
-				"\\**" { # list
+				"\\**" { # list (the wrapped value is already the array)
+					set elemname	[string range $elem 1 end]
 					json foreach e $data {
 						_xml_add_elem $node $elemname $e $children
 					}
 				}
-				=* { # map
-					lassign $children keyname valuename children
+				=* { # map (the wrapped value is already the object)
+					set elemname	[string range $elem 1 end]
+					lassign $children keyname keychildren valuename valchildren
+					set doc		[$node ownerDocument]
 					json foreach {k v} $data {
-						set doc		[$node ownerDocument]
 						set entry	[$doc createElement $elemname]
 						$node appendChild $entry
-						_xml_add_elem $entry $keyname [json string $k]
-						_xml_add_elem $entry $valuename $v $children
+						_xml_add_elem $entry $keyname [json string $k] $keychildren
+						_xml_add_elem $entry $valuename $v $valchildren
+					}
+				}
+				+* { # flattened list: repeat <elemname> per item, no wrapper
+					set elemname	[string range $elem 1 end]
+					if {![json exists $data $elemname]} continue
+					json foreach e [json extract $data $elemname] {
+						_xml_add_elem $node $elemname $e $children
+					}
+				}
+				~* { # flattened map: repeat <elemname> per entry, no <entry>
+					set elemname	[string range $elem 1 end]
+					if {![json exists $data $elemname]} continue
+					lassign $children keyname keychildren valuename valchildren
+					set doc	[$node ownerDocument]
+					json foreach {k v} [json extract $data $elemname] {
+						set entry	[$doc createElement $elemname]
+						$node appendChild $entry
+						_xml_add_elem $entry $keyname [json string $k] $keychildren
+						_xml_add_elem $entry $valuename $v $valchildren
 					}
 				}
 				%* { # structure
 					error "structure not implemented yet, children: $children"
 				}
-				default { # leaf
-					_xml_add_elem $node $elemname [json extract $data $elemname] $children
+				default { # leaf / nested structure
+					# Optional members the caller didn't supply are absent from
+					# the assembled body doc — skip them rather than erroring.
+					if {![json exists $data $elem]} continue
+					_xml_add_elem $node $elem [json extract $data $elem] $children
 				}
 			}
+		}
+	}
+
+	#>>>
+	proc _xml_scalar src { #<<<
+		# Wire text for a scalar JSON value (booleans as true/false).
+		switch -exact -- [json type $src] {
+			boolean	{expr {[json get $src] ? "true" : "false"}}
+			default	{json get $src}
 		}
 	}
 
@@ -3691,7 +3806,14 @@ namespace eval aws {
 		} else {
 			set matches	[$node selectNodes $xpath]
 			if {[llength $matches] == 0} {
-				throw null "Found nothing for $xpath"
+				# Collections with no matching elements serialize as an empty
+				# list / map (matching the AWS CLI / botocore), rather than
+				# being dropped to null the way an absent scalar is.
+				switch -exact -- $type {
+					list	{return {[]}}
+					map		{return {{}}}
+					default	{throw null "Found nothing for $xpath"}
+				}
 			}
 		}
 		# Atomic types: make sure there is exactly 1 match
@@ -4362,9 +4484,11 @@ namespace eval aws {
 		set q			{}
 		set b			{}
 		set x			{}
+		set t			{}
+		set _transforms	{}
 		#puts stderr -----------------------------------------------------------------------------------
 		if {[json exists $opdef input]} {
-			aws::build::compile_input \
+			set t	[aws::build::compile_input \
 				-argname_transform	{} \
 				-protocol			[json get $service_def metadata protocol] \
 				-params				params \
@@ -4378,7 +4502,8 @@ namespace eval aws {
 				-shapes				[json extract $service_def shapes] \
 				-shape				[json get $opdef input shape] \
 				-endpoint_params	$endpoint_params \
-				-builtins			_builtins
+				-builtins			_builtins \
+				-transforms			_transforms]
 
 			# TODO: check that _cxparams, _copy_to_cx, _cx_supporess matches with what the code above generated, and remove that code if it does
 
@@ -4386,6 +4511,20 @@ namespace eval aws {
 				-shapes	[json extract $service_def shapes] \
 				-input	[json extract $opdef input]]
 			#puts stderr "x: ($x)"
+		}
+
+		# Per-member body-value transforms (blob base64, float NaN, timestamp
+		# formats, nested rewriter renames). Applied in the request apply scope
+		# after `dict with params {}` exposes the member vars, before the
+		# template substitution in _service_req reads ~{S,J,N}:_tx_<member>.
+		set tx_code	""
+		foreach tfm $_transforms {
+			lassign $tfm kind var spec
+			if {$kind eq "rewrite"} {
+				append tx_code "\t\t\t::aws::_apply_tx rewrite [list $var] [list $spec]\n"
+			} else {
+				append tx_code "\t\t\t::aws::_apply_tx [list $kind] [list $var]\n"
+			}
 		}
 
 		regsub {^/{Bucket}} [json get $opdef http requestUri] {} requestUri	;# Endpoint rules takes care of this
@@ -4399,6 +4538,10 @@ namespace eval aws {
 			%query_map%		[list $q] \
 			%uri_map%		[list $u] \
 			%xml_input%		[list $x] \
+			%template%		[list $t] \
+			%transforms%	$tx_code \
+			%compression%	[list [json get -default {} $opdef requestcompression encodings]] \
+			%host_prefix%	[list [json get -default {} $opdef endpoint hostPrefix]] \
 			%resultWrapper%	[list [if {[info exists w]} {set w}]] \
 			%op%			[list $op] \
 		] {
@@ -4441,8 +4584,8 @@ namespace eval aws {
 			set path	[string trimright [reuri extract [json get $endpoint url] path] /]
 			append path	%requestUri%
 			dict with params {}		;# The unpacked key variables are accessed by the request procs through upvar
-			# Newer endpoint rules omit signingName when it matches the service's
-			# endpointPrefix; fall back to that.
+%transforms%
+			# Newer endpoint rules omit signingName when it matches the service's endpointPrefix; fall back to that.
 			set signingName	[if {[json exists $endpoint properties authSchemes 0 signingName]} {
 				json get $endpoint properties authSchemes 0 signingName
 			} else {
@@ -4460,6 +4603,9 @@ namespace eval aws {
 				-u			%uri_map% \
 				-w			%resultWrapper% \
 				-x			%xml_input% \
+				-t			%template% \
+				-z			%compression% \
+				-hp			%host_prefix% \
 				-handleresp	[list ::aws::_handle_xml_resp $service_def %op%] \
 				-payload	payload
 		}]
@@ -5294,51 +5440,136 @@ namespace eval aws {
 		}
 
 		#>>>
-		proc _compile_xml_shape {shapes shape} { #<<<
+		proc _xml_ns_decl {jval args} { #<<<
+			# Return a static-attribute step token declaring the xmlNamespace at
+			# path $args under $jval — "!xmlns=<uri>" or "!xmlns:<prefix>=<uri>"
+			# — or "" if there's no xmlNamespace. Tolerates both the {"uri":…}
+			# / {"prefix":…,"uri":…} object form and the bare-string form.
+			if {![json exists $jval {*}$args xmlNamespace]} {return {}}
+			set ns	[json extract $jval {*}$args xmlNamespace]
+			if {[json type $ns] eq "string"} {
+				return "!xmlns=[json get $ns]"
+			}
+			set uri	[json get -default {} $ns uri]
+			if {$uri eq ""} {return {}}
+			if {[json exists $ns prefix]} {
+				return "!xmlns:[json get $ns prefix]=$uri"
+			}
+			return "!xmlns=$uri"
+		}
+
+		#>>>
+		proc _xml_member_ns {shapes inf shape} { #<<<
+			# The xmlNamespace applying to an element: the member reference's own
+			# declaration wins, else the target shape's.
+			set decl	[_xml_ns_decl $inf]
+			if {$decl ne ""} {return $decl}
+			_xml_ns_decl $shapes $shape
+		}
+
+		#>>>
+		proc _xml_ns_prepend {nsdecl children} { #<<<
+			if {$nsdecl eq ""} {return $children}
+			linsert $children 0 $nsdecl {}
+		}
+
+		#>>>
+		proc _xml_ns_attrpair {nsdecl} { #<<<
+			# Convert a "!xmlns=uri" / "!xmlns:<prefix>=uri" token (from
+			# _xml_ns_decl) into an {attrName value} pair for the root element's
+			# namespace slot, or {} when there's none.
+			if {$nsdecl eq ""} {return {}}
+			set spec	[string range $nsdecl 1 end]
+			set eq		[string first = $spec]
+			list [string range $spec 0 $eq-1] [string range $spec $eq+1 end]
+		}
+
+		#>>>
+		proc _compile_xml_member {shapes name inf seen} { #<<<
+			# Compile one structure member into a {step children} pair for
+			# _xml_add_input_nodes. The wire element name is the member's
+			# locationName (xmlName), falling back to the member name; the body
+			# doc is keyed the same way because build_rewriter_spec renames
+			# members to locationName. Step prefixes:
+			#   <name>   leaf / nested structure
+			#   @<name>  xmlAttribute member (an attribute on the parent element)
+			#   +<name>  flattened list  (items repeat <name>, no wrapper)
+			#   ~<name>  flattened map   (entries repeat <name>, no <entry>)
+			#   !attr=v  static attribute (xmlNamespace declaration; injected as
+			#            the head of an element's children)
+			# Non-flattened list/map wrappers are produced by _compile_xml_shape
+			# for the member's own shape (the * and = step kinds). A member's own
+			# xmlNamespace is injected as a leading !-step into its children.
+			set membershape	[json get $inf shape]
+			set membertype	[resolve_shape_type $shapes $membershape]
+			set elemname	[json get -default $name $inf locationName]
+
+			if {[json get -default false $inf xmlAttribute]} {
+				return [list @$elemname {}]
+			}
+
+			set ns		[_xml_member_ns $shapes $inf $membershape]
+			set flat	[expr {
+				[json get -default false $inf flattened] ||
+				[json get -default false $shapes $membershape flattened]
+			}]
+			if {$flat && $membertype eq "list"} {
+				set itemshape	[json get $shapes $membershape member shape]
+				set itemns		[_xml_member_ns $shapes [json extract $shapes $membershape member] $itemshape]
+				list +$elemname [_xml_ns_prepend $itemns [_compile_xml_shape $shapes $itemshape $seen]]
+			} elseif {$flat && $membertype eq "map"} {
+				list ~$elemname [_compile_xml_map_children $shapes $membershape $seen]
+			} elseif {$membertype in {structure union list map}} {
+				list $elemname [_xml_ns_prepend $ns [_compile_xml_shape $shapes $membershape $seen]]
+			} else {
+				list $elemname [_xml_ns_prepend $ns {}]
+			}
+		}
+
+		#>>>
+		proc _compile_xml_map_children {shapes mapshape seen} { #<<<
+			# {keyname keychildren valuename valchildren} for a map's entries,
+			# carrying any per-key / per-value xmlNamespace declarations.
+			set keydef		[json extract $shapes $mapshape key]
+			set valdef		[json extract $shapes $mapshape value]
+			set keyname		[json get -default key   $keydef locationName]
+			set valuename	[json get -default value $valdef locationName]
+			set keychildren	[_xml_ns_prepend [_xml_member_ns $shapes $keydef [json get $keydef shape]] {}]
+			set valchildren	[_xml_ns_prepend [_xml_member_ns $shapes $valdef [json get $valdef shape]] \
+								[_compile_xml_shape $shapes [json get $valdef shape] $seen]]
+			list $keyname $keychildren $valuename $valchildren
+		}
+
+		#>>>
+		proc _compile_xml_shape {shapes shape {seen {}}} { #<<<
+			# seen bounds recursive shapes (e.g. RecursiveShapesInputOutputNested1
+			# -> ...Nested2 -> ...Nested1) to a fixed depth, mirroring
+			# compile_query_spec / build_rewriter_spec.
+			if {[llength [lsearch -all $seen $shape]] >= 5} {return {}}
+			lappend seen $shape
 			set res	{}
 			set type	[resolve_shape_type $shapes $shape]
 			switch -exact -- $type {
-				structure {
+				structure - union {
 					json foreach {member inf} [json extract $shapes $shape members] {
-						set membershape	[json get $inf shape]
-						set membertype	[resolve_shape_type $shapes $membershape]
-						if {$membertype in {structure list map}} {
-							set children	[_compile_xml_shape $shapes $membershape]
-						} else {
-							set children	{}
-						}
-						lappend res $member $children
+						lappend res {*}[_compile_xml_member $shapes $member $inf $seen]
 					}
 				}
 
 				map {
-					set member	[json extract $shapes $shape]
-					if {[json exists $member locationName]} {
-						set locationName	[json get $member locationName]
-					} else {
-						set locationName	entry
-					}
-					if {[json exists $member key locationName]} {
-						set keyname			[json get $member key locationName]
-					} else {
-						set keyname			key
-					}
-					if {[json exists $member value locationName]} {
-						set valuename		[json get $member value locationName]
-					} else {
-						set valuename		value
-					}
-					lappend res =$locationName [list $keyname $valuename [_compile_xml_shape $shapes [json get $member value shape]]]
+					# Non-flattened map: each entry wraps in an <entry> element
+					# (overridable via the map shape's locationName).
+					set locationName	[json get -default entry $shapes $shape locationName]
+					lappend res =$locationName [_compile_xml_map_children $shapes $shape $seen]
 				}
 
 				list {
-					set member	[json extract $shapes $shape member]
-					if {[json exists $member locationName]} {
-						set locationName	[json get $member locationName]
-					} else {
-						set locationName	[json get $member shape]
-					}
-					lappend res *$locationName [_compile_xml_shape $shapes [json get $member shape]]
+					set member		[json extract $shapes $shape member]
+					# Default list-member element name is "member" (botocore);
+					# real services override it with a locationName.
+					set locationName	[json get -default member $member locationName]
+					set itemns		[_xml_member_ns $shapes $member [json get $member shape]]
+					lappend res *$locationName [_xml_ns_prepend $itemns [_compile_xml_shape $shapes [json get $member shape] $seen]]
 				}
 
 				default {
@@ -5349,38 +5580,67 @@ namespace eval aws {
 
 		#>>>
 		proc compile_xml_input args { #<<<
+			# Compile the rest-xml request-body serialization for an operation
+			# input into a {rootElement nsattr steps} triple consumed at runtime
+			# by _xml_add_input_nodes (via _build_xml_body). Two shapes of input:
+			#
+			#  - payload trait: one member carries the body. The root element is
+			#    that member's locationName; its value (a structure → XML, or a
+			#    blob/string → raw bytes) is the body. Runtime walks _a_<payload>.
+			#
+			#  - no payload trait: every non-location member is serialised as a
+			#    child of a root element named after the operation's input
+			#    reference (locationName / xmlNamespace), falling back to the
+			#    input shape name. Runtime assembles the body doc from the op's
+			#    template, then walks it.
 			parse_args $args {
 				-shapes		{-required}
 				-input		{-required}
 			}
 
 			set shape	[json get $input shape]
-			if {[json exists $input locationName]} {
-				set locationName	[json get $input locationName]
-				set xmlns			[json get $input xmlNamespace uri]
-				set bodyshape		[json get $input shape]
-			} else {
-				json foreach {name member} [json extract $shapes $shape members] {
-					if {![json exists $member location]} {
-						if {[json exists $member locationName]} {
-							set locationName	[json get $member locationName]
-						} else {
-							set locationName	$name
-						}
 
-						if {[json exists $member xmlNamespace uri]} {
-							set xmlns		[json get $member xmlNamespace uri]
-						} else {
-							set xmlns		{}
-						}
-						set bodyshape	[json get $member shape]
-						break
-					}
+			if {[json exists $shapes $shape payload]} {
+				set pmember		[json get $shapes $shape payload]
+				set pdef		[json extract $shapes $shape members $pmember]
+				set pshape		[json get $pdef shape]
+				# Root element for a structure payload: an explicit xmlName on the
+				# payload member wins (locationName that actually renames), else
+				# the payload shape's own locationName, else the shape name.
+				set member_ln	[json get -default {} $pdef locationName]
+				if {$member_ln ne "" && $member_ln ne $pmember} {
+					set locationName	$member_ln
+				} else {
+					set locationName	[json get -default $pshape $shapes $pshape locationName]
 				}
+				set nsattr			[_xml_ns_attrpair [_xml_member_ns $shapes $pdef $pshape]]
+				if {[resolve_shape_type $shapes $pshape] in {structure union}} {
+					return [list $locationName $nsattr [_compile_xml_shape $shapes $pshape]]
+				}
+				# Raw blob/string payload: body is the value verbatim, no XML
+				# wrapper. The {Body {} {}} sentinel tells _service_req so.
+				return {Body {} {}}
 			}
-			if {[info exists bodyshape]} {
-				list $locationName $xmlns [_compile_xml_shape $shapes $bodyshape]
+
+			# No payload trait: wrap all non-location body members.
+			set steps	{}
+			json foreach {name member} [json extract $shapes $shape members] {
+				if {[json exists $member location]} continue
+				lappend steps	{*}[_compile_xml_member $shapes $name $member {}]
 			}
+			if {[llength $steps] == 0} {
+				return {}
+			}
+			# Root element name: the input shape's own xmlName (locationName)
+			# wins, else the operation input reference's locationName, else the
+			# shape name. (Smithy auto-names the input ref but @xmlName on the
+			# shape overrides it.)
+			set rootname	[json get -default {} $shapes $shape locationName]
+			if {$rootname eq ""} {
+				set rootname	[json get -default $shape $input locationName]
+			}
+			set nsattr		[_xml_ns_attrpair [_xml_member_ns $shapes $input $shape]]
+			list $rootname $nsattr $steps
 		}
 
 		#>>>

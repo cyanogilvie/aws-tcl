@@ -3,12 +3,11 @@ if {[lsearch [namespace children] ::tcltest] == -1} {
     namespace import ::tcltest::*
 }
 
-tcltest::loadTestedCommands
-package require aws
-package require rl_json 0.17
-interp alias {} json {} ::rl_json::json
+source [file join [file dirname [file normalize [info script]]] common.tcl]
 
-test sqs-list_queues-1.1 {} -body { #<<<
+# Asserts the account has at least one queue — account-specific state, so
+# gated on rl_aws_account rather than bare aws_creds.
+test sqs-list_queues-1.1 {} -constraints rl_aws_account -body { #<<<
 	expr {[json length [aws sqs list_queues] QueueUrls] > 0}
 } -result 1
 #>>>

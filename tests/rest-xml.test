@@ -3,12 +3,171 @@ if {[lsearch [namespace children] ::tcltest] == -1} {
     namespace import ::tcltest::*
 }
 
-tcltest::loadTestedCommands
-package require aws 2
-package require rl_json 0.17
-interp alias {} json {} ::rl_json::json
+source [file join [file dirname [file normalize [info script]]] common.tcl]
 
-test rest-xml_route53-list_hosted_zones-1.1 {} -body { #<<<
+# Request-body (input) serialization for the rest-xml protocol.
+#
+# These tests exercise the real operation dispatch — compile_xml_input's
+# step list, _service_req's xml_input unpacking, and the _xml_add_input_nodes
+# DOM walk — but stop short of signing or sending by swapping in a mock
+# ::aws::helpers::_req that captures the serialized body and aborts with a
+# non-retryable AWS error. No credentials, network, or live account state
+# are involved. protocol_vectors.test does not cover rest-xml, so this is
+# the input-serialization coverage for that protocol.
+namespace eval ::test_restxml { #<<<
+	variable captured {}
+
+	# Replace _req with a capturing mock. The mock records the request and
+	# throws {AWS TestCapture ...}; that code isn't in the retry classifier's
+	# throttle/transient tables, so _aws_req unwinds after a single attempt.
+	proc install {} {
+		variable captured {}
+		rename ::aws::helpers::_req ::aws::helpers::_req_orig
+		proc ::aws::helpers::_req {method endpoint path args} {
+			set raw	[dict get $args -body]
+			# Decode as text for the plain-body tests; a compressed body isn't
+			# valid UTF-8, so fall back to {} and let the caller use raw_body.
+			set text	[if {[catch {encoding convertfrom utf-8 $raw} d]} {} else {set d}]
+			set ::test_restxml::captured [dict create \
+				method			$method \
+				endpoint		$endpoint \
+				path			$path \
+				content_type	[dict get $args -content_type] \
+				headers			[if {[dict exists $args -headers]} {dict get $args -headers}] \
+				raw_body		$raw \
+				body			$text]
+			throw {AWS TestCapture test-req-id} {request captured}
+		}
+	}
+
+	proc uninstall {} {
+		rename ::aws::helpers::_req {}
+		rename ::aws::helpers::_req_orig ::aws::helpers::_req
+		variable captured {}
+	}
+
+	# Evaluate $script (an aws operation expected to be intercepted) and
+	# return the captured request dict, failing loudly if the mock wasn't
+	# the thing that unwound the call.
+	proc capture {script} {
+		variable captured
+		set rc	[catch {uplevel 1 $script} e o]
+		if {!($rc == 1 && [lrange [dict get $o -errorcode] 0 1] eq {AWS TestCapture})} {
+			error "expected capture interception, got rc=$rc errorcode=([dict get $o -errorcode]): $e"
+		}
+		return $captured
+	}
+}
+#>>>
+
+test rest-xml-input-create_invalidation-1.1 {nested structure + list whose member has a locationName serialize to the right XML body} -setup { #<<<
+	::test_restxml::install
+} -body {
+	set req	[::test_restxml::capture {
+		aws cloudfront create_invalidation -region us-east-1 \
+			-distribution_id E2R4RHYW3FOCFL -invalidation_batch [json template {
+				{
+					"Paths": {
+						"Quantity":	2,
+						"Items":	["/", "/site/index.html"]
+					},
+					"CallerReference": "ref-123"
+				}
+			}]
+	}]
+	dict get $req body
+} -cleanup {
+	::test_restxml::uninstall
+	unset -nocomplain req
+} -result {<InvalidationBatch xmlns="http://cloudfront.amazonaws.com/doc/2020-05-31/">
+    <Paths>
+        <Quantity>2</Quantity>
+        <Items>
+            <Path>/</Path>
+            <Path>/site/index.html</Path>
+        </Items>
+    </Paths>
+    <CallerReference>ref-123</CallerReference>
+</InvalidationBatch>
+}
+#>>>
+test rest-xml-input-create_invalidation-1.2 {the intercepted request targets the modeled method and URI path} -setup { #<<<
+	::test_restxml::install
+} -body {
+	set req	[::test_restxml::capture {
+		aws cloudfront create_invalidation -region us-east-1 \
+			-distribution_id E2R4RHYW3FOCFL -invalidation_batch [json template {
+				{
+					"Paths": {"Quantity": 1, "Items": ["/"]},
+					"CallerReference": "ref-1"
+				}
+			}]
+	}]
+	list [dict get $req method] [dict get $req path]
+} -cleanup {
+	::test_restxml::uninstall
+	unset -nocomplain req
+} -result {POST /2020-05-31/distribution/E2R4RHYW3FOCFL/invalidation}
+#>>>
+
+# End-to-end check of the requestCompression wiring (op compiler -> -z ->
+# _service_req -> _compress_request). No real rest-xml op carries the trait,
+# so inject it into a fresh copy of an op def, drop any compiled proc so the
+# lazy compiler re-reads it, and drive a >10240-byte body through the real
+# dispatch. The mock _req captures the (already-compressed) body and headers.
+test rest-xml-input-gzip-1.3 {requestCompression gzips the body and sets Content-Encoding} -setup { #<<<
+	set ::test_restxml::saved_def	$::aws::cloudfront::service_def
+	json set ::aws::cloudfront::service_def operations CreateInvalidation requestcompression {{"encodings": ["gzip"]}}
+	catch {rename ::aws::cloudfront::create_invalidation {}}
+	::test_restxml::install
+} -body {
+	# 2000 paths → an XML body well over the 10240-byte compression threshold.
+	set paths	[lmap i [lrepeat 2000 x] {format {"/asset/%05d/index.html"} [incr n]}]
+	set req	[::test_restxml::capture {
+		aws cloudfront create_invalidation -region us-east-1 \
+			-distribution_id E2R4RHYW3FOCFL -invalidation_batch [json template [format {
+				{"Paths": {"Quantity": 2000, "Items": [%s]}, "CallerReference": "ref-z"}
+			} [join $paths ,]]]
+	}]
+	# Content-Encoding must be gzip, and the gzipped body must inflate back to
+	# the expected XML root.
+	set ce		[dict get $req headers Content-Encoding]
+	set inflated	[encoding convertfrom utf-8 [zlib gunzip [dict get $req raw_body]]]
+	list $ce [string match {<InvalidationBatch *<CallerReference>ref-z</CallerReference>*} $inflated]
+} -cleanup {
+	::test_restxml::uninstall
+	set ::aws::cloudfront::service_def	$::test_restxml::saved_def
+	catch {rename ::aws::cloudfront::create_invalidation {}}
+	unset -nocomplain req paths n ce inflated ::test_restxml::saved_def
+} -result {gzip 1}
+#>>>
+
+# End-to-end check of the endpoint-hostPrefix (host-label) wiring (op compiler
+# -> -hp -> _service_req prefix substitution + prepend). Injected into a fresh
+# op def (no real rest-xml op carries a labelled hostPrefix in the test set).
+test rest-xml-input-hostprefix-1.4 {endpoint hostPrefix is label-substituted and prepended to the host} -setup { #<<<
+	set ::test_restxml::saved_def	$::aws::cloudfront::service_def
+	json set ::aws::cloudfront::service_def operations CreateInvalidation endpoint {{"hostPrefix": "acct-{DistributionId}."}}
+	catch {rename ::aws::cloudfront::create_invalidation {}}
+	::test_restxml::install
+} -body {
+	set req	[::test_restxml::capture {
+		aws cloudfront create_invalidation -region us-east-1 \
+			-distribution_id E2R4RHYW3FOCFL -invalidation_batch [json template {
+				{"Paths": {"Quantity": 1, "Items": ["/"]}, "CallerReference": "r"}
+			}]
+	}]
+	# The resolved endpoint host should carry the substituted prefix.
+	string match acct-E2R4RHYW3FOCFL.* [dict get $req endpoint]
+} -cleanup {
+	::test_restxml::uninstall
+	set ::aws::cloudfront::service_def	$::test_restxml::saved_def
+	catch {rename ::aws::cloudfront::create_invalidation {}}
+	unset -nocomplain req ::test_restxml::saved_def
+} -result 1
+#>>>
+
+test rest-xml_route53-list_hosted_zones-1.1 {} -constraints aws_creds -body { #<<<
 	json exists [aws route53 list_hosted_zones] HostedZones
 } -result 1
 #>>>

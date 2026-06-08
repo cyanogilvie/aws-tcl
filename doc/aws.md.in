@@ -50,9 +50,7 @@ package require aws
 aws s3 list_buckets
 ~~~
 
-is sufficient. Explicit `package require aws::s3` works too and is
-useful when you want a hard dependency declaration near the top of a
-file.
+is sufficient.
 
 ### Option format
 

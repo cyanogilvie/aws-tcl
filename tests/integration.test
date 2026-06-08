@@ -8,34 +8,7 @@ if {[lsearch [namespace children] ::tcltest] == -1} {
     namespace import ::tcltest::*
 }
 
-tcltest::loadTestedCommands
-package require aws 2
-package require rl_json 0.17
-interp alias {} json {} ::rl_json::json
-
-# Credential / account gates <<<
-tcltest::testConstraint aws_creds [try { #<<<
-	aws::helpers::get_creds
-	return -level 0 true
-} trap {AWS NO_CREDENTIALS} {} {
-	return -level 0 false
-} on error {errmsg options} {
-	puts stderr "Error checking for AWS credentials: [dict get $options -errorinfo]"
-	return -level 0 false
-}]
-#>>>
-tcltest::testConstraint rl_aws_account [expr { #<<<
-	[tcltest::testConstraint aws_creds] &&
-	[try {
-		# list_account_aliases is an IAM call, never charges, read-only.
-		set aliases	[json get [aws iam list_account_aliases] AccountAliases]
-		expr {"rubylane" in $aliases}
-	} on error {} {
-		return -level 0 false
-	}]
-}]
-#>>>
-# Credential / account gates >>>
+source [file join [file dirname [file normalize [info script]]] common.tcl]
 
 # Reusable smoke tests: work against any account with credentials. These
 # assert only structural invariants — nothing account-specific — so they stay

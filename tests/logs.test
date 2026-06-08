@@ -3,11 +3,9 @@ if {[lsearch [namespace children] ::tcltest] == -1} {
     namespace import ::tcltest::*
 }
 
-tcltest::loadTestedCommands
-package require aws::logs
-package require rl_json 0.17
-interp alias {} json {} ::rl_json::json
+source [file join [file dirname [file normalize [info script]]] common.tcl]
 
+# Pure code-generation inspection — no AWS call, so no constraint.
 test logs-code_gen-1.1 {} -body { #<<<
 	set body		[string map {; \n} [info body ::aws::logs::create_log_stream]]
 	set args_schema	[lindex [split $body \n] 0 2]
@@ -16,7 +14,8 @@ test logs-code_gen-1.1 {} -body { #<<<
 	unset -nocomplain body args_schema
 } -result 2
 #>>>
-test logs-describe_log_groups-1.1 {} -body { #<<<
+# Asserts the account has at least one log group — account-specific state.
+test logs-describe_log_groups-1.1 {} -constraints rl_aws_account -body { #<<<
 	expr {[json length [aws logs describe_log_groups] logGroups] > 0}
 } -result 1
 #>>>

@@ -1,8 +1,3 @@
-if {[lsearch [namespace children] ::tcltest] == -1} {
-    package require tcltest
-    namespace import ::tcltest::*
-}
-
 source [file join [file dirname [file normalize [info script]]] common.tcl]
 
 test account-get_contact_information-1.1 {} -constraints aws_creds -body { #<<<

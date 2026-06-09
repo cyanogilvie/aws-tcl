@@ -7,15 +7,20 @@ if {[info exists ::env(AWSTCL_EXTRA_TM_PATH)]} {
 	}
 }
 
-source [file join [file dirname [file normalize [info script]]] aws.tcl]
+# At build time aws isn't installed, so source the package directly. When
+# build.tcl is sourced by a test that already loaded the package (to reuse
+# compile_op etc.), skip this to avoid double-loading aws.tcl.
+if {![namespace exists ::aws::build]} {
+	source [file join [file dirname [file normalize [info script]]] aws.tcl]
+}
 
 package require rl_json 0.17
 package require parse_args
 package require chantricks
 
-namespace import rl_json::json
-namespace import parse_args::*
-namespace import chantricks::*
+namespace import -force rl_json::json
+namespace import -force parse_args::*
+namespace import -force chantricks::*
 
 proc colour args { #<<<
 	package require cflib
@@ -153,143 +158,6 @@ proc typekey type { #<<<
 }
 
 #>>>
-proc compile_xml_transforms args { #<<<
-	parse_args $args {
-		-shapes		{-required}
-		-fetchlist	{-alias}
-		-shape		{-required}
-		-source		{-default {}}
-		-path		{-default {}}
-	}
-
-	try {
-		set nextkey	[expr {[llength $fetchlist] + 1}]
-		set rshape	[json extract $shapes $shape]
-		set type	[resolve_shape_type $shapes $shape]
-		lappend path	${shape}($type)
-
-		switch -exact -- $type {
-			list {
-				if 0 {
-				set typekey	[string toupper [typekey [resolve_shape_type $shapes [json get $rshape member shape]]]]
-				#lappend fetchlist [list $nextkey $typekey $source]
-				lappend fetchlist [list $nextkey [typekey $type] $source $membertype]
-				}
-
-				set membershape	[json get $rshape member shape]
-				#set membertype	[resolve_shape_type $shapes $membershape]
-				set subfetchlist	{}
-				set valuetemplate	[compile_xml_transforms \
-					-shapes		$shapes \
-					-fetchlist	subfetchlist \
-					-shape		$membershape \
-					-source		{} \
-					-path		$path \
-				]
-				# Non-flattened AWS lists wrap each element in <member> by
-				# default. Flattened lists inline the elements under the list's
-				# own tag (our $source), so the xpath collapses to just
-				# $source.
-				set flat	[json get -default false $rshape flattened]
-				if {[json exists $rshape member locationName]} {
-					set elemname	[json get $rshape member locationName]
-				} elseif {$flat} {
-					set elemname	{}
-				} else {
-					set elemname	member
-				}
-				set xpath	[expr {$elemname eq "" ? $source : "$source/$elemname"}]
-				lappend fetchlist [list $nextkey [typekey $type] $xpath $subfetchlist $valuetemplate]
-
-				set template	"~J:$nextkey"
-			}
-
-			structure {
-				set template	{{}}
-				json foreach {name member} [json extract $rshape members] {
-					if {[json exists $member locationName]} {
-						set subsource	[json get $member locationName]
-					} else {
-						set subsource	$name
-					}
-					if {$source ne ""} {
-						set subsource	$source/$subsource
-					} else {
-						set subsource	$subsource
-					}
-					json set template $name [compile_xml_transforms \
-						-shapes		$shapes \
-						-fetchlist	fetchlist \
-						-shape		[json get $member shape] \
-						-source		$subsource \
-						-path		$path \
-					]
-				}
-			}
-
-			map {
-				set keytype	[resolve_shape_type $shapes [json get $rshape key shape]]
-				if {$keytype ne "string"} {
-					error "Unhandled case: map with key type $keytype"
-				}
-				set valueshape	[json get $rshape value shape]
-				#set valuetype	[resolve_shape_type $shapes $valueshape]
-				set subfetchlist	{}
-				set valuetemplate	[compile_xml_transforms \
-					-shapes		$shapes \
-					-fetchlist	subfetchlist \
-					-shape		$valueshape \
-					-source		$valueshape \
-					-path		$path \
-				]
-				lappend fetchlist [list $nextkey [typekey $type] $source [json get $rshape key shape] $subfetchlist $valuetemplate]
-				set template	[json string "~J:$nextkey"]
-			}
-
-			blob {
-				lappend fetchlist [list $nextkey [typekey $type] {*}[if {$source ne {}} {list $source}]]
-				set template	[json string "~J:$nextkey"]
-			}
-
-			string {
-				lappend fetchlist [list $nextkey [typekey $type] {*}[if {$source ne {}} {list $source}]]
-				set template	[json string "~J:$nextkey"]
-			}
-
-			boolean {
-				lappend fetchlist [list $nextkey [typekey $type] {*}[if {$source ne {}} {list $source}]]
-				set template	[json string "~J:$nextkey"]
-			}
-
-			timestamp {
-				lappend fetchlist [list $nextkey [typekey $type] {*}[if {$source ne {}} {list $source}]]
-				set template	[json string "~J:$nextkey"]
-			}
-
-			integer -
-			long -
-			double -
-			float {
-				lappend fetchlist [list $nextkey [typekey $type] {*}[if {$source ne {}} {list $source}]]
-				set template	[json string "~J:$nextkey"]
-			}
-
-			default {
-				error "Unhandled type \"$shape\" -> \"$type\""
-			}
-		}
-
-		set template
-	} trap unwind_compile_xml_transforms {errmsg options} {
-		return -options $options $errmsg
-	} on error {errmsg options} {
-		set prefix	"Error in compile_xml_transforms([join $path ->]):"
-		set errmsg	$prefix\n$errmsg
-		dict set options -errorinfo $prefix\n[dict get $options -errorinfo]
-		dict set options -errorcode [list unwind_compile_xml_transforms [dict get $options -errorcode]]
-		return -options $options $errmsg
-	}
-}
 
 #>>>
 
@@ -786,6 +654,360 @@ proc compile_paginators {definitions service_def} { #<<<
 #>>>
 # Paginator metadata compilation >>>
 
+# Compile one operation into its `proc <cmd> …` source line (the same string
+# build_aws_services bakes into a service .tm). Factored out so the protocol-
+# vector test can reify a synthetic service through the real codegen + dispatch
+# rather than reimplementing _service_req. Updates the per-service responses /
+# exceptions accumulators by name.
+proc compile_op {def op opdef protocol endpoint_params responsesVar exceptionsVar} {
+	upvar 1 $responsesVar responses $exceptionsVar exceptions
+	set service_code	{}
+		try {
+			set static		{}
+			set params		{}
+			set cxparams	{}
+			set copy_to_cx	{}
+			set cx_suppress	{
+				UseObjectLambdaEndpoint	1
+			}
+			set builtins	{}
+
+			if {[json exists $opdef staticContextParams]} {
+				json foreach {k v} [json extract $opdef staticContextParams] {
+					dict set cxparams		$k [json get $v value]
+					dict set cx_suppress	$k 1
+				}
+			}
+
+			set cmd		[aws from_camel $op]
+			#puts stderr "[json get $def metadata service_name]: op: ($op) -> cmd: ($cmd), opdef: [json pretty $opdef]"
+
+			unset -nocomplain w
+			switch -exact -- [json get -default 1.1 $def metadata jsonVersion] {
+				1.0 {
+					# Copilot hint: perhaps it knows something I don't:
+					#if {[json exists $opdef input]} {
+					#	set w	[json get $opdef input wrapper]
+					#}
+					set c	{application/x-amz-json-1.0}
+				}
+				1.1 {
+					# Copilot hint: perhaps it knows something I don't:
+					#if {[json exists $opdef input]} {
+					#	set w	[json get $opdef input payload]
+					#}
+					set c	{application/x-amz-json-1.1}
+				}
+				default {
+					error "Unknown jsonVersion: [json get $def metadata jsonVersion]"
+				}
+			}
+			# rest-json carries application/json, not the aws-json target media
+			# type (the jsonVersion switch above defaults to x-amz-json-*).
+			if {$protocol eq "rest-json"} {
+				set c	application/json
+			}
+			# An httpPayload blob/string member overrides the protocol media
+			# type with its @mediaType (or octet-stream / text/plain).
+			if {[json exists $opdef input shape]} {
+				set _csh	[json get $opdef input shape]
+				if {[json exists $def shapes $_csh payload]} {
+					set _cps	[json get $def shapes $_csh members [json get $def shapes $_csh payload] shape]
+					set _cpt	[json get -default {} $def shapes $_cps type]
+					if {[json exists $def shapes $_cps mediaType]} {
+						set c	[json get $def shapes $_cps mediaType]
+					} elseif {$_cpt eq "blob"} {
+						set c	application/octet-stream
+					} elseif {$_cpt eq "string"} {
+						set c	text/plain
+					}
+				}
+			}
+			set u			{}
+			set hm			{}
+			set q			{}
+			if {$protocol in {query ec2}} {
+				lappend q		Action _a {}
+				lappend static	[list set _a $op]
+			}
+
+			set b			{}
+			set transforms	{}
+			if {[json exists $opdef input]} {
+				set t	[aws::build::compile_input \
+					-protocol			$protocol \
+					-params				params \
+					-cxparams			cxparams \
+					-copy_to_cx			copy_to_cx \
+					-cx_suppress		cx_suppress \
+					-uri_map			u \
+					-query_map			q \
+					-header_map			hm \
+					-payload			b \
+					-shapes				[json extract $def shapes] \
+					-shape				[json get $opdef input shape] \
+					-endpoint_params	$endpoint_params \
+					-builtins			builtins \
+					-transforms			transforms \
+				]
+			} else {
+				# No input shape: the op still needs the endpoint-context params
+				# (-region / -use_dual_stack / …) injected, otherwise the
+				# generated "_service_req -r $region" references an undefined
+				# variable and the op crashes the moment it's called. Run
+				# compile_input over a synthetic empty input to get exactly the
+				# same endpoint wiring as an input-bearing op; the (empty) body
+				# template is discarded.
+				set _empty_shapes	[json extract $def shapes]
+				json set _empty_shapes __aws_no_input__ {{"type":"structure","members":{}}}
+				aws::build::compile_input \
+					-protocol			$protocol \
+					-params				params \
+					-cxparams			cxparams \
+					-copy_to_cx			copy_to_cx \
+					-cx_suppress		cx_suppress \
+					-uri_map			u \
+					-query_map			q \
+					-header_map			hm \
+					-payload			b \
+					-shapes				$_empty_shapes \
+					-shape				__aws_no_input__ \
+					-endpoint_params	$endpoint_params \
+					-builtins			builtins \
+					-transforms			transforms
+				set t	{}
+			}
+
+			# Auto-populate idempotency tokens (members with
+			# "idempotencyToken": true on the top-level input
+			# shape). Runs after parse_args so the user's value
+			# takes precedence. A freshly generated UUIDv4 is used
+			# if the caller didn't supply one, matching what the
+			# AWS SDK v2/v3 do so that an SDK-level retry is
+			# deduped by the service.
+			if {[json exists $opdef input shape]} {
+				set _ishape	[json get $opdef input shape]
+				if {[json exists $def shapes $_ishape members]} {
+					json foreach {_mname _mdef} [json extract $def shapes $_ishape members] {
+						if {[json exists $_mdef idempotencyToken] && [json get $_mdef idempotencyToken]} {
+							lappend static [list ::aws::_auto_idempotency_token [aws from_camel $_mname]]
+						}
+						# Optional booleans default to false and parse_args can't
+						# express "unset"; drop a false value before serialization
+						# so it isn't sent (matches the model default — boxed / no
+						# @default — and the Smithy spec). An explicit @default:true
+						# member is left to always serialize.
+						set _mshape	[json get $_mdef shape]
+						if {[resolve_shape_type [json extract $def shapes] $_mshape] eq "boolean"} {
+							set _bdef	[json get -default false $_mdef default]
+							if {[json exists $def shapes $_mshape default]} {
+								set _bdef	[json get $def shapes $_mshape default]
+							}
+							if {![string is true -strict $_bdef]} {
+								lappend static [list ::aws::_omit_bool_default [aws from_camel $_mname]]
+							}
+						}
+					}
+				}
+			}
+
+			# Per-member body-value transforms (blob base64, float NaN
+			# handling, timestamp-as-epoch for json/rest-json). Each
+			# becomes a set-if-exists line run before the template. The
+			# rewrite transform carries a spec (the walk over a nested JSON
+			# fragment) that must be forwarded — without it nested blob/
+			# timestamp/jsonName handling silently no-ops.
+			foreach tfm $transforms {
+				lassign $tfm kind var spec
+				if {$kind eq "rewrite"} {
+					lappend static [list ::aws::_apply_tx $kind $var $spec]
+				} else {
+					lappend static [list ::aws::_apply_tx $kind $var]
+				}
+			}
+
+			if {[llength $builtins]} {
+				lappend static	[list ::aws::_builtins {*}$builtins]
+			}
+
+			#lappend static	[list set cxparams $cxparams]
+			if {[llength $copy_to_cx] > 0} {
+				lappend static	[list _copy2cx {*}$copy_to_cx]
+			}
+			#lappend static {puts stderr "cxparams: ($cxparams)"}
+			#lappend static	[list dict set params service [list $service_name_orig]]
+			#lappend static	[list set op $op]
+			#lappend static {puts stderr "compute endpoint, first: [timerate {endpoint_rules $cxparams} 1 1]"}
+			#lappend static {puts stderr "compute endpoint: [timerate {endpoint_rules $cxparams}]"}
+			#lappend static {_debug {log notice "cx_params: ($cxparams)"}}
+			#lappend static {set endpoint	[endpoint_rules $cxparams]}
+			#lappend static {_debug {log notice "computed endpoint: endpoint_rules($cxparams) -> ($endpoint)"}}
+
+			set sm		{}
+			set o		{}
+			if {[json exists $opdef output]} {
+				if {[json exists $opdef errors]} {
+					set errors	[json lmap e [json extract $opdef errors] {json get $e shape}]
+				} else {
+					set errors	{}
+				}
+
+				if {$protocol in {query ec2 rest-xml}} {
+					if {[json exists $opdef output resultWrapper]} {
+						set resultWrapper	[json get $opdef output resultWrapper]
+					} else {
+						# Could be because the action returns nothing in the body, or that the context node is to be the root of the response document
+						#puts stderr "No resultWrapper for [json get $def metadata service_name] $op in [json pretty $opdef]"
+						set resultWrapper	{}
+					}
+					foreach exception $errors {
+						set rshape	[json extract $def shapes $exception]
+						if {[dict exists $exceptions $exception]} continue
+						# TODO: strip html from [json get $rshape documentation]
+						if {[json exists $rshape error code]} {
+							set code	[json get $rshape error code]
+						} else {
+							set code	none
+						}
+						if {[json exists $rshape error senderFault]} {
+							set type	[expr {[json get $rshape error senderFault] ? "Sender" : "Server"}]
+						} else {
+							set type	unknown
+						}
+						if {[json exists $rshape documentation]} {
+							set msg		[json get $rshape documentation]
+						} else {
+							set msg		""
+						}
+						dict set exceptions $exception [string map [list \
+							%SVC%	[list [string toupper [json get $def metadata service_name]]] \
+							%type%	[list $type] \
+							%code%	[list $code] \
+							%msg%	[list $msg] \
+						] {throw {AWS %SVC% %type% %code%} %msg%}]
+					}
+					set response	[json get $opdef output shape]
+					set rshape		[json extract $def shapes $response]
+					set w			$resultWrapper
+					set fetchlist	{}
+					set template	[aws::build::compile_xml_transforms \
+						-shape		$response \
+						-shapes		[json extract $def shapes] \
+						-fetchlist	fetchlist]
+
+					if {[llength $fetchlist]} {
+						set R	$response
+						dict set responses $response [list $fetchlist $template]
+					}
+				}
+
+				compile_output \
+					-protocol	$protocol \
+					-params		params \
+					-status_map	sm \
+					-header_map	o \
+					-def		$def \
+					-shape		[json get $opdef output shape]
+			}
+
+			if {[json exists $def metadata signingName]} {
+				set s	[json get $def metadata signingName]
+			} else {
+				set s	[json get $def metadata service_name_orig]
+			}
+
+			if {$protocol eq "json" && [json exists $def metadata targetPrefix]} {
+				set h	[list x-amz-target [json get $def metadata targetPrefix].$op]
+			} else {
+				set h	{}
+			}
+
+			if {[json exists $opdef http responseCode]} {
+				set e	[json get $opdef http responseCode]
+			} else {
+				set e	200
+			}
+
+			set m		[json get $opdef http method]
+			set p		[json get $opdef http requestUri]
+			set z		[json get -default {} $opdef requestcompression encodings]
+
+			# Operation endpoint trait (hostPrefix). Rewrite {memberName}
+			# placeholders to {argName} so _service_req can substitute the
+			# upvar'd _a_<arg> at request time.
+			set hp	[json get -default {} $opdef endpoint hostPrefix]
+			if {$hp ne "" && [json exists $opdef input shape]} {
+				set _hpshape	[json get $opdef input shape]
+				if {[json exists $def shapes $_hpshape members]} {
+					json foreach {_hpmn _hpmd} [json extract $def shapes $_hpshape members] {
+						if {[json get -default false $_hpmd hostLabel]} {
+							set hp	[string map [list \{$_hpmn\} \{[aws from_camel $_hpmn]\}] $hp]
+						}
+					}
+				}
+			}
+
+			if {$protocol in {query ec2} && $m eq "POST"} {
+				set c	{application/x-www-form-urlencoded; charset=utf-8}
+				set t	{}
+			}
+
+			set service_args	{}
+			set defaults {
+				b		{}
+				c		application/x-amz-json-1.1
+				e		200
+				h		{}
+				hm		{}
+				m		POST
+				o		{}
+				p		/
+				q		{}
+				R		{}
+				sm		{}
+				t		{}
+				u		{}
+				w		{}
+				x		{}
+				z		{}
+				hp		{}
+			}
+			foreach v {
+				b
+				c
+				e
+				h
+				hm
+				hp
+				m
+				o
+				p
+				q
+				R
+				s
+				sm
+				t
+				u
+				w
+				x
+				z
+			} {
+				if {[info exists $v] && (![dict exists $defaults $v] || [set $v] ne [dict get $defaults $v])} {
+					lappend service_args -$v [set $v]
+				}
+			}
+
+			if {[llength $static] != 0} {set static ";[join $static ";"]"}
+			append service_code "proc [list $cmd]%p$params\}$static%r$service_args\}" \n
+		} on error {errmsg options} {
+			set prefix	"Error compiling service [json get $def metadata service_name].$op:"
+			set errmsg	$prefix\n$errmsg
+			dict set options -errorinfo $prefix\n[dict get $options -errorinfo]
+			return -options $options $errmsg
+		}
+	return $service_code
+}
+
 proc build_aws_services args { #<<<
 	parse_args $args {
 		-ver			{-required}
@@ -932,282 +1154,7 @@ proc build_aws_services args { #<<<
 		set responses	{}
 		set exceptions	{}
 		json foreach {op opdef} [json extract $def operations] {
-			try {
-				set static		{}
-				set params		{}
-				set cxparams	{}
-				set copy_to_cx	{}
-				set cx_suppress	{
-					UseObjectLambdaEndpoint	1
-				}
-				set builtins	{}
-
-				if {[json exists $opdef staticContextParams]} {
-					json foreach {k v} [json extract $opdef staticContextParams] {
-						dict set cxparams		$k [json get $v value]
-						dict set cx_suppress	$k 1
-					}
-				}
-
-				set cmd		[aws from_camel $op]
-				#puts stderr "[json get $def metadata service_name]: op: ($op) -> cmd: ($cmd), opdef: [json pretty $opdef]"
-
-				unset -nocomplain w
-				switch -exact -- [json get -default 1.1 $def metadata jsonVersion] {
-					1.0 {
-						# Copilot hint: perhaps it knows something I don't:
-						#if {[json exists $opdef input]} {
-						#	set w	[json get $opdef input wrapper]
-						#}
-						set c	{application/x-amz-json-1.0}
-					}
-					1.1 {
-						# Copilot hint: perhaps it knows something I don't:
-						#if {[json exists $opdef input]} {
-						#	set w	[json get $opdef input payload]
-						#}
-						set c	{application/x-amz-json-1.1}
-					}
-					default {
-						error "Unknown jsonVersion: [json get $def metadata jsonVersion]"
-					}
-				}
-				set u			{}
-				set hm			{}
-				set q			{}
-				if {$protocol in {query ec2}} {
-					lappend q		Action _a {}
-					lappend static	[list set _a $op]
-				}
-
-				set b			{}
-				set transforms	{}
-				if {[json exists $opdef input]} {
-					set t	[aws::build::compile_input \
-						-protocol			$protocol \
-						-params				params \
-						-cxparams			cxparams \
-						-copy_to_cx			copy_to_cx \
-						-cx_suppress		cx_suppress \
-						-uri_map			u \
-						-query_map			q \
-						-header_map			hm \
-						-payload			b \
-						-shapes				[json extract $def shapes] \
-						-shape				[json get $opdef input shape] \
-						-endpoint_params	$endpoint_params \
-						-builtins			builtins \
-						-transforms			transforms \
-					]
-				} else {
-					set t	{}
-				}
-
-				# Auto-populate idempotency tokens (members with
-				# "idempotencyToken": true on the top-level input
-				# shape). Runs after parse_args so the user's value
-				# takes precedence. A freshly generated UUIDv4 is used
-				# if the caller didn't supply one, matching what the
-				# AWS SDK v2/v3 do so that an SDK-level retry is
-				# deduped by the service.
-				if {[json exists $opdef input shape]} {
-					set _ishape	[json get $opdef input shape]
-					if {[json exists $def shapes $_ishape members]} {
-						json foreach {_mname _mdef} [json extract $def shapes $_ishape members] {
-							if {[json exists $_mdef idempotencyToken] && [json get $_mdef idempotencyToken]} {
-								lappend static [list ::aws::_auto_idempotency_token [aws from_camel $_mname]]
-							}
-						}
-					}
-				}
-
-				# Per-member body-value transforms (blob base64, float NaN
-				# handling, timestamp-as-epoch for json/rest-json). Each
-				# becomes a set-if-exists line run before the template.
-				foreach tfm $transforms {
-					lassign $tfm kind var
-					lappend static [list ::aws::_apply_tx $kind $var]
-				}
-
-				if {[llength $builtins]} {
-					lappend static	[list ::aws::_builtins {*}$builtins]
-				}
-
-				#lappend static	[list set cxparams $cxparams]
-				if {[llength $copy_to_cx] > 0} {
-					lappend static	[list _copy2cx {*}$copy_to_cx]
-				}
-				#lappend static {puts stderr "cxparams: ($cxparams)"}
-				#lappend static	[list dict set params service [list $service_name_orig]]
-				#lappend static	[list set op $op]
-				#lappend static {puts stderr "compute endpoint, first: [timerate {endpoint_rules $cxparams} 1 1]"}
-				#lappend static {puts stderr "compute endpoint: [timerate {endpoint_rules $cxparams}]"}
-				#lappend static {_debug {log notice "cx_params: ($cxparams)"}}
-				#lappend static {set endpoint	[endpoint_rules $cxparams]}
-				#lappend static {_debug {log notice "computed endpoint: endpoint_rules($cxparams) -> ($endpoint)"}}
-
-				set sm		{}
-				set o		{}
-				if {[json exists $opdef output]} {
-					if {[json exists $opdef errors]} {
-						set errors	[json lmap e [json extract $opdef errors] {json get $e shape}]
-					} else {
-						set errors	{}
-					}
-
-					if {$protocol in {query ec2 rest-xml}} {
-						if {[json exists $opdef output resultWrapper]} {
-							set resultWrapper	[json get $opdef output resultWrapper]
-						} else {
-							# Could be because the action returns nothing in the body, or that the context node is to be the root of the response document
-							#puts stderr "No resultWrapper for [json get $def metadata service_name] $op in [json pretty $opdef]"
-							set resultWrapper	{}
-						}
-						foreach exception $errors {
-							set rshape	[json extract $def shapes $exception]
-							if {[dict exists $exceptions $exception]} continue
-							# TODO: strip html from [json get $rshape documentation]
-							if {[json exists $rshape error code]} {
-								set code	[json get $rshape error code]
-							} else {
-								set code	none
-							}
-							if {[json exists $rshape error senderFault]} {
-								set type	[expr {[json get $rshape error senderFault] ? "Sender" : "Server"}]
-							} else {
-								set type	unknown
-							}
-							if {[json exists $rshape documentation]} {
-								set msg		[json get $rshape documentation]
-							} else {
-								set msg		""
-							}
-							dict set exceptions $exception [string map [list \
-								%SVC%	[list [string toupper [json get $def metadata service_name]]] \
-								%type%	[list $type] \
-								%code%	[list $code] \
-								%msg%	[list $msg] \
-							] {throw {AWS %SVC% %type% %code%} %msg%}]
-						}
-						set response	[json get $opdef output shape]
-						set rshape		[json extract $def shapes $response]
-						set w			$resultWrapper
-						set fetchlist	{}
-						set template	[compile_xml_transforms \
-							-shape		$response \
-							-shapes		[json extract $def shapes] \
-							-fetchlist	fetchlist]
-
-						if {[llength $fetchlist]} {
-							set R	$response
-							dict set responses $response [list $fetchlist $template]
-						}
-					}
-
-					compile_output \
-						-protocol	$protocol \
-						-params		params \
-						-status_map	sm \
-						-header_map	o \
-						-def		$def \
-						-shape		[json get $opdef output shape]
-				}
-
-				if {[json exists $def metadata signingName]} {
-					set s	[json get $def metadata signingName]
-				} else {
-					set s	[json get $def metadata service_name_orig]
-				}
-
-				if {$protocol eq "json" && [json exists $def metadata targetPrefix]} {
-					set h	[list x-amz-target [json get $def metadata targetPrefix].$op]
-				} else {
-					set h	{}
-				}
-
-				if {[json exists $opdef http responseCode]} {
-					set e	[json get $opdef http responseCode]
-				} else {
-					set e	200
-				}
-
-				set m		[json get $opdef http method]
-				set p		[json get $opdef http requestUri]
-				set z		[json get -default {} $opdef requestcompression encodings]
-
-				# Operation endpoint trait (hostPrefix). Rewrite {memberName}
-				# placeholders to {argName} so _service_req can substitute the
-				# upvar'd _a_<arg> at request time.
-				set hp	[json get -default {} $opdef endpoint hostPrefix]
-				if {$hp ne "" && [json exists $opdef input shape]} {
-					set _hpshape	[json get $opdef input shape]
-					if {[json exists $def shapes $_hpshape members]} {
-						json foreach {_hpmn _hpmd} [json extract $def shapes $_hpshape members] {
-							if {[json get -default false $_hpmd hostLabel]} {
-								set hp	[string map [list \{$_hpmn\} \{[aws from_camel $_hpmn]\}] $hp]
-							}
-						}
-					}
-				}
-
-				if {$protocol in {query ec2} && $m eq "POST"} {
-					set c	{application/x-www-form-urlencoded; charset=utf-8}
-					set t	{}
-				}
-
-				set service_args	{}
-				set defaults {
-					b		{}
-					c		application/x-amz-json-1.1
-					e		200
-					h		{}
-					hm		{}
-					m		POST
-					o		{}
-					p		/
-					q		{}
-					R		{}
-					sm		{}
-					t		{}
-					u		{}
-					w		{}
-					x		{}
-					z		{}
-					hp		{}
-				}
-				foreach v {
-					b
-					c
-					e
-					h
-					hm
-					hp
-					m
-					o
-					p
-					q
-					R
-					s
-					sm
-					t
-					u
-					w
-					x
-					z
-				} {
-					if {[info exists $v] && (![dict exists $defaults $v] || [set $v] ne [dict get $defaults $v])} {
-						lappend service_args -$v [set $v]
-					}
-				}
-
-				if {[llength $static] != 0} {set static ";[join $static ";"]"}
-				append service_code "proc [list $cmd]%p$params\}$static%r$service_args\}" \n
-			} on error {errmsg options} {
-				set prefix	"Error compiling service [json get $service_def metadata service_name].$op:"
-				set errmsg	$prefix\n$errmsg
-				dict set options -errorinfo $prefix\n[dict get $options -errorinfo]
-				return -options $options $errmsg
-			}
+			append service_code [compile_op $def $op $opdef $protocol $endpoint_params responses exceptions]
 		}
 
 		# Write out the response handlers, if any (XML protocols)
@@ -1365,6 +1312,8 @@ namespace eval ::aws::%service_name% {
 
 #>>>
 
-build_aws_services {*}$argv
+if {[info exists ::argv0] && [file normalize $::argv0] eq [file normalize [info script]]} {
+	build_aws_services {*}$argv
+}
 
 # vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4

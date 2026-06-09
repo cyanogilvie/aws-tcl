@@ -2724,6 +2724,19 @@ namespace eval aws {
 	}
 
 	#>>>
+	proc _omit_bool_default var { #<<<
+		# Optional boolean members default to false (boxed / no @default), and
+		# parse_args -boolean can't express "unset" — absent simply means false.
+		# So drop a false boolean before serialization (it matches the model
+		# default and the Smithy spec omits it); an explicit true is kept. Emitted
+		# by compile_op for top-level boolean input members with a false default.
+		upvar 1 $var v
+		if {[info exists v] && !$v} {
+			unset v
+		}
+	}
+
+	#>>>
 	proc _apply_tx {kind var args} { #<<<
 		# Per-shape body-value transforms applied before json template substitution.
 		# compile_input emits an `if {[info exists X]} {set _tx_X [_tx_FOO $X]}` line
@@ -2942,6 +2955,25 @@ namespace eval aws {
 					_flatten_query_param query "$base.$i.$val_name" $v $val_spec
 				}
 			}
+			qlist {
+				# rest @httpQuery list: a JSON array serialized as repeated
+				# "name=item" params (not the indexed query/ec2 form).
+				lassign $spec - itemspec
+				json foreach item $value {
+					_flatten_query_param query $prefix [json get $item] $itemspec
+				}
+			}
+			qmap {
+				# rest @httpQueryParams: a JSON map expanded to "key=value"
+				# params; list-valued entries repeat the key.
+				json foreach {k v} $value {
+					if {[json type $v] eq "array"} {
+						json foreach item $v {lappend query $k [json get $item]}
+					} else {
+						lappend query $k [json get $v]
+					}
+				}
+			}
 			default {
 				error "Unhandled query spec: [list $spec]"
 			}
@@ -3036,15 +3068,26 @@ namespace eval aws {
 		#puts stderr "uri_map_out: ($uri_map_out)"
 
 		foreach {header arg} $header_map {
-			if {[info exists _a_$arg]} {
-				if {[string index $header end] eq "*"} {
-					set header_pref	[string range $header 0 end-1]
-					json foreach {k v} [set _a_$arg] {
-						lappend headers $header_pref$k $v
-					}
-				} else {
-					lappend headers $header [set _a_$arg]
+			if {![info exists _a_$arg]} continue
+			set v	[set _a_$arg]
+			if {[string index $header end] eq "*"} {
+				set header_pref	[string range $header 0 end-1]
+				json foreach {k mv} $v {
+					lappend headers $header_pref$k $mv
 				}
+			} elseif {[json valid $v] && [json type $v] eq "array"} {
+				# A list bound to a header serializes as a comma-separated
+				# value; elements containing a comma, a double-quote, or
+				# leading/trailing whitespace use HTTP quoted-string form.
+				lappend headers $header [join [json lmap item $v {
+					set s	[json get $item]
+					if {$s eq "" || $s ne [string trim $s] || [string match {*[",]*} $s]} {
+						set s	\"[string map [list \\ \\\\ \" \\\"] $s]\"
+					}
+					set s
+				}] {, }]
+			} else {
+				lappend headers $header $v
 			}
 		}
 
@@ -3310,7 +3353,7 @@ namespace eval aws {
 		#>>>
 		method xmlroot {} { #<<<
 			if {![info exists doc]} {
-				set doc	[dom parse -ignorexmlns $body]
+				set doc	[dom parse -ignorexmlns -keepEmpties $body]
 			}
 			$doc documentElement
 		}
@@ -3329,15 +3372,22 @@ namespace eval aws {
 			-header				{}
 			-headers			{}
 			-val				{}
+			-flat				{-boolean}
 			-suppress_fields	{-default {}}
 			-toplevel			{-boolean}
 		}
 
 		switch -exact -- [json get $shape type] {
-			boolean - integer - long - timestamp - string {
+			boolean - integer - long - double - float - timestamp - string - blob {
+				# A blob supplied via -val is the raw payload body; a blob read
+				# from an XML element or header is base64-encoded.
+				set blob_b64	[expr {![info exists val]}]
 				if {![info exists val]} {
 					if {[info exists cxnode]} {
-						set val	[string trim [domNode $cxnode asText]]
+						set val	[domNode $cxnode asText]
+						# Whitespace is significant for string values; other
+						# scalar types tolerate surrounding indentation.
+						if {[json get $shape type] ne "string"} {set val [string trim $val]}
 					} elseif {[info exists header]} {
 						if {![$cx header exists $header]} {
 							return null
@@ -3350,6 +3400,12 @@ namespace eval aws {
 				return [switch -exact -- [json get $shape type] {
 					boolean			{json boolean $val}
 					integer - long	{json number $val}
+					double - float	{
+						# NaN / Infinity have no JSON number form; AWS sends
+						# them as the literal strings.
+						if {$val in {NaN Infinity -Infinity}} {json string $val} else {json number $val}
+					}
+					blob			{if {$blob_b64} {json string [binary decode base64 $val]} else {set val}}
 					default			{json string $val}
 				}]
 			}
@@ -3409,18 +3465,54 @@ namespace eval aws {
 			list { #<<<
 				set membershapename	[json get $shape member shape]
 				set location		[json get -default {} $shape member location]
-				# For non-flattened lists the element tag defaults to "member"
-				# (the AWS query protocol convention); flattened lists inline
-				# each element under the parent's locationName.
-				set flat			[json get -default false $shape flattened]
-				if {[json exists $shape member locationName]} {
-					set name	[json get $shape member locationName]
-				} elseif {$flat && [info exists locationname]} {
+				set membershape		[json extract $def shapes $membershapename]
+				# A list bound to a header is a comma-separated value, not XML
+				# (only list-typed members split — singleton headers keep commas
+				# as data). botocore just does node.split(',') here and gives up on
+				# the httpDate case (it's on its protocol-tests-ignore-list); we go
+				# one better. An httpDate timestamp ("Mon, 16 Dec 2019 23:48:18
+				# GMT") is the only element form with an embedded comma — after the
+				# weekday — so rejoin a bare-weekday fragment with the next one.
+				# Other formats (iso8601, epoch-seconds) carry no comma and split
+				# cleanly, so this needs no timestampFormat lookup.
+				if {[info exists header]} {
+					if {![$cx header exists $header]} {return null}
+					set parts		[split [$cx header get $header] ,]
+					set timestamps	[expr {[json get $membershape type] eq "timestamp"}]
+					set itemlist	{}
+					for {set i 0} {$i < [llength $parts]} {incr i} {
+						set p	[string trim [lindex $parts $i]]
+						# Only a timestamp element can carry the httpDate weekday
+						# comma; gate on that so a string value of "Mon" isn't glued
+						# to the next element.
+						if {$timestamps && [regexp {^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)$} $p] && $i + 1 < [llength $parts]} {
+							lappend itemlist	"$p, [string trim [lindex $parts [incr i]]]"
+						} else {
+							lappend itemlist	$p
+						}
+					}
+					set res	{[]}
+					foreach item $itemlist {
+						json set res end+1 [_build_resp_frag \
+							-cx		$cx \
+							-def	$def \
+							-shape	$membershape \
+							-val	[string trim $item] \
+						]
+					}
+					return $res
+				}
+				# Flattened lists repeat the *member element name* (the parent's
+				# locationName); non-flattened lists wrap each element in the
+				# list member's locationName, defaulting to "member".
+				set flat			[expr {$flat || [json get -default false $shape flattened]}]
+				if {$flat && [info exists locationname]} {
 					set name	$locationname
+				} elseif {[json exists $shape member locationName]} {
+					set name	[json get $shape member locationName]
 				} else {
 					set name	member
 				}
-				set membershape		[json extract $def shapes $membershapename]
 				_debug { #<<<
 					json unset shape type
 					json unset shape member shape
@@ -3431,8 +3523,12 @@ namespace eval aws {
 					if {[json length $shape]} {puts stderr "Unhandled specification in list shape: [json pretty $shape]"}
 				}
 				#>>>
+				set nodes	[domNode $cxnode selectNodes $name]
+				# A flattened list with no elements is absent (no wrapper), so
+				# decode to null rather than an empty array.
+				if {$flat && [llength $nodes] == 0} {return null}
 				set res {[]}
-				foreach node [domNode $cxnode selectNodes $name] {
+				foreach node $nodes {
 					json set res end+1 [_build_resp_frag \
 						-cx		$cx \
 						-def	$def \
@@ -3453,14 +3549,25 @@ namespace eval aws {
 
 					set cxargs			{}
 					switch -exact -- $location {
-						{} {
+						{} - querystring - uri {
+							# uri / querystring locations are request-only; in a
+							# response such members are read from the body.
 							if {![info exists cxnode]} {
+								# No body → body members are absent.
+								if {[$cx body] eq ""} continue
 								set cxnode	[$cx xmlroot]
 							}
 							if {[json get -default false $info xmlAttribute]} {
-								lappend mlist	[list $member]	[list -val [domNode $cxnode getAttribute $locationName]]
+								lappend cxargs	-val [domNode $cxnode getAttribute $locationName]
 							} else {
-								if {![json get -default false $def shapes [json get $info shape] flattened]} {
+								# Flattened lists/maps inline their entries under
+								# the member element name (flag on the member ref
+								# or the target shape).
+								set memflat	[expr {
+									[json get -default false $info flattened] ||
+									[json get -default false $def shapes [json get $info shape] flattened]
+								}]
+								if {!$memflat} {
 									set node		[domNode $cxnode selectNodes "$locationName\[1\]"]
 									if {$node eq "" && $toplevel} {
 										set node	[domNode $cxnode selectNodes "/$locationName\[1\]"]
@@ -3470,13 +3577,15 @@ namespace eval aws {
 								}
 								if {$node eq ""} continue
 								lappend cxargs	-cxnode $node -locationname $locationName
+								if {$memflat} {lappend cxargs -flat}
 							}
 						}
 
-						header	{lappend cxargs -header $locationName}
-						headers	{lappend cxargs -headers $locationName}
+						header		{lappend cxargs -header $locationName}
+						headers		{lappend cxargs -headers $locationName}
+						statusCode	{lappend cxargs -val [$cx status]}
 
-						querystring - uri - default {
+						default {
 							error "Unexpected location for structure member \"$member\": \"$location\""
 						}
 					}
@@ -3551,6 +3660,31 @@ namespace eval aws {
 							json set res $key $val
 						}
 					}
+				} elseif {[info exists cxnode]} {
+					# XML body map. Non-flattened: <Map><entry><K>..</K><V>..</V>
+					# </entry>..</Map>; flattened: the member's locationName is
+					# repeated, each carrying one key/value pair.
+					set mapflat	[expr {$flat || [json get -default false $shape flattened]}]
+					set keyname	[json get -default key   $shape key   locationName]
+					set valname	[json get -default value $shape value locationName]
+					if {$mapflat && [info exists locationname]} {
+						set entries	[domNode $cxnode selectNodes $locationname]
+					} else {
+						set entries	[domNode $cxnode selectNodes entry]
+					}
+					# A flattened map has no wrapper, so no entries means absent.
+					if {$mapflat && [llength $entries] == 0} {return null}
+					foreach entry $entries {
+						set knode	[domNode $entry selectNodes "$keyname\[1\]"]
+						set vnode	[domNode $entry selectNodes "$valname\[1\]"]
+						if {$knode eq "" || $vnode eq ""} continue
+						json set res [string trim [domNode $knode asText]] [_build_resp_frag \
+							-cx		$cx \
+							-def	$def \
+							-shape	$valshape \
+							-cxnode	$vnode \
+						]
+					}
 				} else {
 					error "Location for map not implemented"
 				}
@@ -3607,8 +3741,8 @@ namespace eval aws {
 					-val	[$cx body] \
 				]
 			} else {
-				if {[dict exists [$cx headers] content-type] && [lindex [dict get [$cx headers] content-type] 0] in {text/xml application/xml}} {
-					set doc		[dom parse -ignorexmlns [$cx body]]
+				if {[$cx body] ne "" && [dict exists [$cx headers] content-type] && [lindex [dict get [$cx headers] content-type] 0] in {text/xml application/xml}} {
+					set doc		[dom parse -ignorexmlns -keepEmpties [$cx body]]
 					_debug {log debug "XML:\n[domDoc $doc asXML]"}
 					lappend cxargs	-cxnode [$doc documentElement]
 				}
@@ -3808,9 +3942,10 @@ namespace eval aws {
 			if {[llength $matches] == 0} {
 				# Collections with no matching elements serialize as an empty
 				# list / map (matching the AWS CLI / botocore), rather than
-				# being dropped to null the way an absent scalar is.
+				# being dropped to null the way an absent scalar is. Lists are
+				# handled in their own arm (wrapper-presence aware).
 				switch -exact -- $type {
-					list	{return {[]}}
+					list	{}
 					map		{return {{}}}
 					default	{throw null "Found nothing for $xpath"}
 				}
@@ -3826,19 +3961,28 @@ namespace eval aws {
 			}
 		}
 		switch -exact -- $type {
+			number		{if {$val_text in {NaN Infinity -Infinity}} {json string $val_text} else {json number $val_text}}
 			string		{json string  $val_text}
-			number		{json number  $val_text}
 			boolean		{json boolean $val_text}
-			blob		{json string  $val_text}
+			blob		{json string  [binary decode base64 $val_text]}
 			timestamp	{json string  $val_text}
 			list {
 				parse_args $rest {
+					wrapper			{-default {}}
+					flat			{-default 0}
 					subfetchlist	{-required}
 					subtemplate		{-required}
 				}
+				if {[llength $matches] == 0} {
+					# Present-but-empty wrapper -> []; absent -> null. A flattened
+					# list has no wrapper, so no elements means absent.
+					if {!$flat && $wrapper ne "" && [llength [$node selectNodes $wrapper]]} {
+						return {[]}
+					}
+					throw null "no elements for ($xpath)"
+				}
 				set val	{[]}
 				foreach match $matches {
-					# TODO: Handle attribs?
 					json set val end+1 [_assemble_json $match $subfetchlist $subtemplate]
 				}
 				set val
@@ -3864,7 +4008,7 @@ namespace eval aws {
 				if {[llength $matches] != 1} {
 					error "compiling structure, expected 1 match for ($xpath), got: [llength $matches]"
 				}
-				_assemble_json [lindex $match 0] $subfetchlist $subtemplate
+				_assemble_json [lindex $matches 0] $subfetchlist $subtemplate
 			}
 			default {
 				error "Unexpected type \"$type\""
@@ -3899,7 +4043,7 @@ namespace eval aws {
 	#>>>
 	proc _resp_xml {resultWrapper fetchlist template xml} { #<<<
 		package require tdom
-		set doc	[dom parse -ignorexmlns $xml]
+		set doc	[dom parse -ignorexmlns -keepEmpties $xml]
 		try {
 			set root	[$doc documentElement]
 			if {$resultWrapper eq {}} {
@@ -4527,8 +4671,27 @@ namespace eval aws {
 			}
 		}
 
+		# Content-Type: rest-xml bodies are application/xml; an httpPayload
+		# blob/string member uses its mediaType (or octet-stream / text/plain).
+		set content_type	application/xml
+		if {[json exists $opdef input shape]} {
+			set _csh	[json get $opdef input shape]
+			if {[json exists $service_def shapes $_csh payload]} {
+				set _cpm	[json get $service_def shapes $_csh payload]
+				set _cps	[json get $service_def shapes $_csh members $_cpm shape]
+				set _cpt	[json get -default {} $service_def shapes $_cps type]
+				if {[json exists $service_def shapes $_cps mediaType]} {
+					set content_type	[json get $service_def shapes $_cps mediaType]
+				} elseif {$_cpt eq "blob"} {
+					set content_type	application/octet-stream
+				} elseif {$_cpt eq "string"} {
+					set content_type	text/plain
+				}
+			}
+		}
 		regsub {^/{Bucket}} [json get $opdef http requestUri] {} requestUri	;# Endpoint rules takes care of this
 		append body [string map [list \
+			%content_type%	[list $content_type] \
 			%http_method%	[list [json get $opdef http method]] \
 			%requestUri%	[list $requestUri] \
 			%expect_status%	[list [expr {[json exists $opdef http responseCode] ? [json get $opdef http responseCode] : 200}]] \
@@ -4593,6 +4756,7 @@ namespace eval aws {
 			}]
 			::aws::_service_req \
 				-s			$signingName \
+				-c			%content_type% \
 				-m			%http_method% \
 				-p			$path \
 				-R			%response% \
@@ -4839,12 +5003,19 @@ namespace eval aws {
 				-shape		{-required}
 				-source		{-default {}}
 				-path		{-default {}}
+				-flat		{-default 0}
 			}
 
 			try {
 				set nextkey	[expr {[llength $fetchlist] + 1}]
 				set rshape	[json extract $shapes $shape]
 				set type	[resolve_shape_type $shapes $shape]
+				# Bound recursive shapes — the fetchlist is static, so cap the
+				# self-nesting depth (covers all real services); deeper nodes go
+				# undecoded.
+				if {[llength [lsearch -all -glob $path "${shape}(*)"]] >= 6} {
+					return [json string null]
+				}
 				lappend path	${shape}($type)
 				#puts stderr "compile_xml_transforms, type: ($type), path: ($path), payload exists? ([json exists $rshape payload]), location: ([if {[json exists $rshape location]} {json get $rshape location}])"
 
@@ -4871,40 +5042,61 @@ namespace eval aws {
 						# the list's own tag (which is the structure member's
 						# locationName, i.e. our $source), so the xpath collapses
 						# to just the source.
-						set flat	[json get -default false $rshape flattened]
-						if {[json exists $rshape member locationName]} {
-							set elemname	[json get $rshape member locationName]
-						} elseif {$flat} {
+						set flat	[expr {$flat || [json get -default false $rshape flattened]}]
+						if {$flat} {
 							set elemname	{}
+						} elseif {[json exists $rshape member locationName]} {
+							set elemname	[json get $rshape member locationName]
 						} else {
 							set elemname	member
 						}
-						set xpath	[expr {$elemname eq "" ? $source : "$source/$elemname"}]
-						lappend fetchlist [list $nextkey [typekey $type] $xpath $subfetchlist $valuetemplate]
+						set xpath	[if {$elemname eq ""} {
+							set source
+						} elseif {$source eq ""} {
+							set elemname
+						} else {
+							string cat $source / $elemname
+						}]
+						# A non-flattened list has a wrapper element ($source);
+						# carry it so the decoder can tell a present-but-empty list
+						# ([]) from an absent one (null).
+						lappend fetchlist [list $nextkey [typekey $type] $xpath [if {!$flat} {set source}] $flat $subfetchlist $valuetemplate]
 
-						set template	"~J:$nextkey"
+						set template	[json string ~J:$nextkey]
 					}
 
 					structure {
 						set template	{{}}
 						json foreach {name member} [json extract $rshape members] {
-							if {[json exists $member locationName]} {
-								set subsource	[json get $member locationName]
-							} else {
-								set subsource	$name
-							}
+							set subsource	[json get -default $name $member locationName]
 							if {$source ne ""} {
 								set subsource	$source/$subsource
-							} else {
-								set subsource	$subsource
 							}
-							json set template $name [compile_xml_transforms \
-								-shapes		$shapes \
-								-fetchlist	fetchlist \
-								-shape		[json get $member shape] \
-								-source		$subsource \
-								-path		$path \
-							]
+							if {[resolve_shape_type $shapes [json get $member shape]] eq "structure"} {
+								# Decode a nested structure as a conditional unit so
+								# an absent one is null rather than an empty object
+								# (and recursive shapes terminate cleanly).
+								set subfetchlist	{}
+								set subtemplate		[compile_xml_transforms \
+									-shapes		$shapes \
+									-fetchlist	subfetchlist \
+									-shape		[json get $member shape] \
+									-source		{} \
+									-path		$path \
+								]
+								set k	[expr {[llength $fetchlist] + 1}]
+								lappend fetchlist [list $k [typekey structure] $subsource $subfetchlist $subtemplate]
+								json set template $name [json string ~J:$k]
+							} else {
+								json set template $name [compile_xml_transforms \
+									-shapes		$shapes \
+									-fetchlist	fetchlist \
+									-shape		[json get $member shape] \
+									-source		$subsource \
+									-path		$path \
+									-flat		[json get -default false $member flattened] \
+								]
+							}
 						}
 					}
 
@@ -4913,38 +5105,43 @@ namespace eval aws {
 						if {$keytype ne "string"} {
 							error "Unhandled case: map with key type $keytype"
 						}
-						set valueshape	[json get $rshape value shape]
-						#set valuetype	[resolve_shape_type $shapes $valueshape]
+						# Non-flattened maps wrap each pair in <entry>; flattened maps
+						# repeat the map's own tag ($source) per pair. Key / value
+						# elements default to <key>/<value> (locationName overrides).
+						set flat		[expr {$flat || [json get -default false $rshape flattened]}]
+						set entryxpath	[expr {$flat ? $source : "$source/entry"}]
+						set keyname		[json get -default key   $rshape key   locationName]
+						set valuename	[json get -default value $rshape value locationName]
 						set subfetchlist	{}
 						set valuetemplate	[compile_xml_transforms \
 							-shapes		$shapes \
 							-fetchlist	subfetchlist \
-							-shape		$valueshape \
-							-source		$valueshape \
+							-shape		[json get $rshape value shape] \
+							-source		$valuename \
 							-path		$path \
 						]
-						lappend fetchlist [list $nextkey [typekey $type] $source [json get $rshape key shape] $subfetchlist $valuetemplate]
-						set template	[json string "~J:$nextkey"]
+						lappend fetchlist [list $nextkey [typekey $type] $entryxpath $keyname $subfetchlist $valuetemplate]
+						set template	[json string ~J:$nextkey]
 					}
 
 					blob {
 						lappend fetchlist [list $nextkey [typekey $type] {*}[if {$source ne {}} {list $source}]]
-						set template	[json string "~J:$nextkey"]
+						set template	[json string ~J:$nextkey]
 					}
 
 					string {
 						lappend fetchlist [list $nextkey [typekey $type] {*}[if {$source ne {}} {list $source}]]
-						set template	[json string "~J:$nextkey"]
+						set template	[json string ~J:$nextkey]
 					}
 
 					boolean {
 						lappend fetchlist [list $nextkey [typekey $type] {*}[if {$source ne {}} {list $source}]]
-						set template	[json string "~J:$nextkey"]
+						set template	[json string ~J:$nextkey]
 					}
 
 					timestamp {
 						lappend fetchlist [list $nextkey [typekey $type] {*}[if {$source ne {}} {list $source}]]
-						set template	[json string "~J:$nextkey"]
+						set template	[json string ~J:$nextkey]
 					}
 
 					integer -
@@ -4952,7 +5149,7 @@ namespace eval aws {
 					double -
 					float {
 						lappend fetchlist [list $nextkey [typekey $type] {*}[if {$source ne {}} {list $source}]]
-						set template	[json string "~J:$nextkey"]
+						set template	[json string ~J:$nextkey]
 					}
 
 					default {
@@ -5169,6 +5366,20 @@ namespace eval aws {
 		}
 
 		#>>>
+		proc _querystring_spec {shapes shape {memberfmt {}}} { #<<<
+			# Serialization spec for a rest @httpQuery / @httpQueryParams member,
+			# consumed by _flatten_query_param: bool / {timestamp fmt} (scalars),
+			# {qlist itemspec} (a JSON array → repeated name=item), qmap (a JSON
+			# map → expanded key=value), or {} (plain scalar).
+			switch -exact -- [resolve_shape_type $shapes $shape] {
+				boolean		{return bool}
+				timestamp	{return [list timestamp [expr {$memberfmt ne "" ? $memberfmt : [json get -default iso8601 $shapes $shape timestampFormat]}]]}
+				list		{return [list qlist [_querystring_spec $shapes [json get $shapes $shape member shape]]]}
+				map			{return qmap}
+				default		{return {}}
+			}
+		}
+		#>>>
 		proc compile_input args { #<<<
 			parse_args $args {
 				-argname			{}
@@ -5245,7 +5456,7 @@ namespace eval aws {
 									lappend uri_map	$locationName $name
 								}
 								querystring {
-									lappend query_map	$locationName $name {}
+									lappend query_map	$locationName $name [_querystring_spec $shapes [json get $member_def shape] [json get -default {} $member_def timestampFormat]]
 								}
 								headers {
 									lappend header_map	$locationName* $name

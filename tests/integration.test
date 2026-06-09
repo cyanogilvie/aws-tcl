@@ -3,11 +3,6 @@
 # etc.) are gated behind the rl_aws_account constraint so they only run
 # against Ruby Lane's account, where the fixtures are known to exist.
 
-if {[lsearch [namespace children] ::tcltest] == -1} {
-    package require tcltest
-    namespace import ::tcltest::*
-}
-
 source [file join [file dirname [file normalize [info script]]] common.tcl]
 
 # Reusable smoke tests: work against any account with credentials. These

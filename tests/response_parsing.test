@@ -5,11 +5,6 @@
 # empty collections must decode to [] / {} (matching the AWS CLI / botocore),
 # not null.
 
-if {[lsearch [namespace children] ::tcltest] == -1} {
-	package require tcltest
-	namespace import ::tcltest::*
-}
-
 source [file join [file dirname [file normalize [info script]]] common.tcl]
 
 namespace eval ::test_resp { #<<<
@@ -76,14 +71,14 @@ test resp-empty-list-1.1 {empty non-flattened list decodes to [] not null (query
 	list [json type $r AccountAliases] [json get $r AccountAliases]
 } -cleanup {unset -nocomplain r} -result {array {}}
 #>>>
-test resp-empty-list-1.2 {a list member is always an array — absent element also decodes to [], never null} -body { #<<<
-	# No AccountAliases element at all in the result. We deliberately normalise
-	# list/map members to []/{} so callers never have to null-check a collection.
+test resp-empty-list-1.2 {an absent list element is omitted, like the AWS CLI (only a present-but-empty wrapper decodes to [])} -body { #<<<
+	# No AccountAliases element at all in the result — botocore/the CLI omit it
+	# (distinct from a present-but-empty <AccountAliases/>, which gives []).
 	set r	[::test_resp::with {<ListAccountAliasesResponse xmlns="https://iam.amazonaws.com/doc/2010-05-08/"><ListAccountAliasesResult><IsTruncated>false</IsTruncated></ListAccountAliasesResult><ResponseMetadata><RequestId>r</RequestId></ResponseMetadata></ListAccountAliasesResponse>} {
 		aws iam list_account_aliases -region us-east-1
 	}]
-	json type $r AccountAliases
-} -cleanup {unset -nocomplain r} -result array
+	json exists $r AccountAliases
+} -cleanup {unset -nocomplain r} -result 0
 #>>>
 test resp-nonempty-list-1.3 {a populated list still decodes correctly} -body { #<<<
 	set r	[::test_resp::with {<ListAccountAliasesResponse xmlns="https://iam.amazonaws.com/doc/2010-05-08/"><ListAccountAliasesResult><IsTruncated>false</IsTruncated><AccountAliases><member>alpha</member><member>beta</member></AccountAliases></ListAccountAliasesResult><ResponseMetadata><RequestId>r</RequestId></ResponseMetadata></ListAccountAliasesResponse>} {

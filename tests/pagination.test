@@ -4,11 +4,6 @@
 # and a canned page sequence; no live AWS required. Integration tests gated by
 # aws_creds / rl_aws_account verify end-to-end behavior against real services.
 
-if {[lsearch [namespace children] ::tcltest] == -1} {
-    package require tcltest
-    namespace import ::tcltest::*
-}
-
 source [file join [file dirname [file normalize [info script]]] common.tcl]
 
 # Fake-service harness <<<

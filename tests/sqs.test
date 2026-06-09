@@ -1,8 +1,3 @@
-if {[lsearch [namespace children] ::tcltest] == -1} {
-    package require tcltest
-    namespace import ::tcltest::*
-}
-
 source [file join [file dirname [file normalize [info script]]] common.tcl]
 
 # Asserts the account has at least one queue — account-specific state, so

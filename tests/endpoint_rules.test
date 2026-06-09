@@ -1,8 +1,3 @@
-if {"::tcltest" ni [namespace children]} {
-	package require tcltest
-	namespace import ::tcltest::*
-}
-
 set here	[file dirname [file normalize [info script]]]
 source [file join $here common.tcl]
 #set ::aws::debug 1

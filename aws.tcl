@@ -3196,7 +3196,7 @@ namespace eval aws {
 				# the assembled doc (keyed by locationName via the rewriter) is
 				# walked into the XML document rooted at the input element;
 				# otherwise (all members are uri/query/header) there is no body.
-				if {$xml_input ni {{} {Body {} {}}}} {
+				if {$xml_input ni {{} {Body {} {}}} && [json length $bodydoc] > 0} {
 					set body	[_build_xml_body $xml_input $bodydoc]
 				} else {
 					set body			""
@@ -4532,6 +4532,7 @@ namespace eval aws {
 			set op_required	[if {[json exists $inputshape required]} {json get $inputshape required}]
 
 			set argspec			{}
+			set bool_members	{}
 			json foreach {member def} [json extract $inputshape members] {
 				set required	[expr {$member in $op_required}]
 				if {[json exists $def contextParam]} {
@@ -4542,6 +4543,13 @@ namespace eval aws {
 				set opt		-[aws from_camel $member]
 				set settings	[list -name $member]
 				if {$required} {lappend settings -required}
+				# Booleans are flags (consistent with the eager protocols): a
+				# false/unset boolean is dropped (matches the model default;
+				# parse_args can't express an explicit false).
+				if {[resolve_shape_type [json extract $service_def shapes] [json get $def shape]] eq "boolean"} {
+					lappend settings	-boolean
+					lappend bool_members	$member
+				}
 
 				lappend argspec $opt $settings
 			}
@@ -4607,6 +4615,14 @@ namespace eval aws {
 			}
 		}
 		# If the response specifies a payload, wire up the -payload alias in argspec >>>
+
+		# Drop false/unset booleans from $params so they aren't serialized
+		# (matches the model default; parse_args can't express explicit false).
+		if {[info exists bool_members]} {
+			foreach _bm $bool_members {
+				append post_parse_args "if {\[dict exists \$params [list $_bm]] && !\[dict get \$params [list $_bm]]} {dict unset params [list $_bm]}" \n
+			}
+		}
 
 		# Auto-populate idempotency tokens. For rest-xml the input args
 		# land in the $params dict keyed by the PascalCase member name,

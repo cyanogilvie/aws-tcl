@@ -585,17 +585,15 @@ proc _xml_strip_ws node { #<<<
 tcltest::testConstraint not_implemented 0
 
 set not_implemented_cases {
-	# WIP: remaining real-dispatch input edges (binary/blob bodies, a few
-	# host-with-path endpoint cases that the stub endpoint resolver does
-	# not model, and capture edge cases). Removed as each is fixed.
-	AllQueryStringTypes
+	# WIP / not-real-bug gating: requestCompression cases (gzip, empty
+	# vector body — on botocore's ignore-list); host-with-path endpoint
+	# cases the stub resolver does not model; a few checksum/null-header
+	# edges (also botocore-ignored).
 	AwsJson10HostWithPath
 	AwsJson11HostWithPath
 	Ec2QueryHostWithPath
 	HttpRequestLabelEscaping
 	HttpRequestWithLabelsAndTimestampFormat
-	InputAndOutputWithBooleanHeaders
-	InputWithHeadersAndAllParams
 	QueryHostWithPath
 	RestJsonHostWithPath
 	RestJsonHttpChecksumRequired
@@ -616,7 +614,6 @@ set not_implemented_cases {
 	SDKAppliedContentEncoding_ec2Query
 	SDKAppliedContentEncoding_restJson1
 	SDKAppliedContentEncoding_restXml
-	SimpleScalarProperties
 }
 
 # Output-vector cases gated separately (ids can collide with passing input
@@ -825,6 +822,14 @@ proc vec_check_input {entry case cap} { #<<<
 
 	set gb	[dict get $cap body]
 	set xb	[json get -default {} $ser body]
+	# requestCompression: the captured body is gzipped; the vector body is the
+	# uncompressed form, so inflate before comparing.
+	dict for {hk hv} [dict get $cap headers] {
+		if {[string equal -nocase $hk Content-Encoding] && [string match *gzip* $hv]} {
+			set gb	[encoding convertfrom utf-8 [zlib gunzip $gb]]
+			break
+		}
+	}
 	set d	[switch -exact -- $proto {
 		query - ec2					{vec_cmp_form $gb $xb $booldefs}
 		rest-xml					{vec_cmp_xml  $gb $xb $booldefs}

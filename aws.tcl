@@ -3110,6 +3110,13 @@ namespace eval aws {
 		foreach {header arg spec} $header_map {
 			if {![info exists _a_$arg]} continue
 			set v	[set _a_$arg]
+			if {[string equal -nocase $header Content-Type]} {
+				# A member bound to the Content-Type header overrides the
+				# protocol/payload default media type (it's sent via -content_type,
+				# not as a duplicate header).
+				set content_type	[_serialize_header $v $spec]
+				continue
+			}
 			if {[string index $header end] eq "*"} {
 				set header_pref	[string range $header 0 end-1]
 				json foreach {k mv} $v {

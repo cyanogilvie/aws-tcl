@@ -585,23 +585,17 @@ proc _xml_strip_ws node { #<<<
 tcltest::testConstraint not_implemented 0
 
 set not_implemented_cases {
-	# WIP / not-real-bug gating: requestCompression cases (gzip, empty
-	# vector body — on botocore's ignore-list); host-with-path endpoint
-	# cases the stub resolver does not model; a few checksum/null-header
-	# edges (also botocore-ignored).
+	# All non-bugs: requestCompression (gzip non-determinism + empty vector
+	# bodies — botocore-ignored), host-with-path endpoint cases the stub
+	# resolver does not model, and two botocore-ignored edges
+	# (HttpChecksumRequired, NullAndEmptyHeaders).
 	AwsJson10HostWithPath
 	AwsJson11HostWithPath
 	Ec2QueryHostWithPath
-	HttpRequestLabelEscaping
-	HttpRequestWithLabelsAndTimestampFormat
 	QueryHostWithPath
 	RestJsonHostWithPath
 	RestJsonHttpChecksumRequired
-	RestJsonHttpRequestLabelEscaping
-	RestJsonHttpRequestWithLabelsAndTimestampFormat
 	RestJsonNullAndEmptyHeaders
-	RestJsonTestPayloadBlob
-	RestXmlZeroAndFalseQueryValues
 	SDKAppendedGzipAfterProvidedEncoding_restJson1
 	SDKAppendedGzipAfterProvidedEncoding_restXml
 	SDKAppendsGzipAndIgnoresHttpProvidedEncoding_awsJson1_0
@@ -838,18 +832,28 @@ proc vec_check_input {entry case cap} { #<<<
 	}]
 	if {$d ne ""} {return $d}
 
-	# URI: path + (query params). Compare decode-normalized.
+	# URI: the captured path plus the dynamic query params; compared to the
+	# vector URI by normalising both with reuri.
 	set gu	[dict get $cap path]
-	if {[llength [dict get $cap params]]} {
-		append gu [expr {[string first ? $gu] >= 0 ? "&" : "?"}] [join [lmap {k v} [dict get $cap params] {format %s=%s $k [reuri encode awssig $v]}] &]
-	}
+	set gq	[reuri get $gu query {}]
+	foreach {k v} [dict get $cap params] {lappend gq $k $v}
+	if {[llength $gq]} {reuri set gu query [reuri::query new $gq]}
 	set xu	[json get -default / $ser uri]
-	set unorm [list apply {u {
-		lassign [split $u ?] p q
-		set qp [lsort [lmap kv [split $q &] {lassign [split $kv =] k v; list $k [reuri decode $v]}]]
-		list $p $qp
+	# Drop default-valued booleans (parse_args can't express explicit false),
+	# sort the query pairs, and normalise for a deterministic comparison.
+	set norm	[list apply {{uri booldefs} {
+		set pairs	[lmap {k v} [reuri get $uri query {}] {
+			if {[dict exists $booldefs $k] && [expr {$v in {true 1} ? 1 : 0}] == [dict get $booldefs $k]} continue
+			list $k $v
+		}]
+		if {[llength $pairs]} {
+			reuri set uri query [reuri::query new [concat {*}[lsort -dictionary $pairs]]]
+		} else {
+			reuri unset uri query
+		}
+		reuri normalize $uri
 	}}]
-	if {[{*}$unorm $gu] ne [{*}$unorm $xu]} {return "uri got ($gu) exp ($xu)"}
+	if {[{*}$norm $gu $booldefs] ne [{*}$norm $xu $booldefs]} {return "uri got ($gu) exp ($xu)"}
 
 	# Modeled headers (Content-Type compared charset-insensitively).
 	set gh	[dict get $cap headers]

@@ -760,7 +760,7 @@ proc compile_op {def op opdef protocol endpoint_params responsesVar exceptionsVa
 				# template is discarded.
 				set _empty_shapes	[json extract $def shapes]
 				json set _empty_shapes __aws_no_input__ {{"type":"structure","members":{}}}
-				aws::build::compile_input \
+				set t	[aws::build::compile_input \
 					-protocol			$protocol \
 					-params				params \
 					-cxparams			cxparams \
@@ -774,8 +774,10 @@ proc compile_op {def op opdef protocol endpoint_params responsesVar exceptionsVa
 					-shape				__aws_no_input__ \
 					-endpoint_params	$endpoint_params \
 					-builtins			builtins \
-					-transforms			transforms
-				set t	{}
+					-transforms			transforms]
+				# aws-json always sends an empty JSON object body ({}); the other
+				# protocols send no body for a no-input op.
+				if {$protocol ni {json json_1_0}} {set t {}}
 			}
 
 			# Auto-populate idempotency tokens (members with

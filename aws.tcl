@@ -2873,6 +2873,42 @@ namespace eval aws {
 	}
 
 	#>>>
+	proc _serialize_header {value spec} { #<<<
+		# Serialize a value bound to an @httpHeader, per the spec from
+		# aws::build::_header_spec. Lists comma-join with HTTP quoted-string
+		# escaping of elements containing a comma/quote/edge whitespace.
+		switch -exact -- [lindex $spec 0] {
+			bool	{return [expr {$value ? "true" : "false"}]}
+			blob	{return [binary encode base64 $value]}
+			timestamp {
+				set epoch	[if {[string is integer -strict $value]} {set value} else {clock scan $value}]
+				return [switch -exact -- [lindex $spec 1] {
+					unixTimestamp	{set epoch}
+					iso8601			{clock format $epoch -format {%Y-%m-%dT%H:%M:%SZ} -timezone :UTC}
+					default			{clock format $epoch -format {%a, %d %b %Y %H:%M:%S GMT} -timezone :UTC}
+				}]
+			}
+			hlist {
+				set itemspec	[lindex $spec 1]
+				# Only plain string elements get HTTP quoted-string escaping;
+				# httpDate timestamps (which contain a comma) are emitted bare.
+				set quote		[expr {$itemspec eq ""}]
+				return [join [json lmap item $value {
+					set s	[_serialize_header [json get $item] $itemspec]
+					if {$quote && ($s eq "" || $s ne [string trim $s] || [string match {*[",]*} $s])} {
+						set s	\"[string map [list \\ \\\\ \" \\\"] $s]\"
+					}
+					set s
+				}] {, }]
+			}
+			jsonvalue {
+				# @jsonValue header: the value is JSON, base64-encoded.
+				return [binary encode base64 [encoding convertto utf-8 $value]]
+			}
+			default {return $value}
+		}
+	}
+	#>>>
 	proc _flatten_query_param {queryvar prefix value spec} { #<<<
 		# Serialize $value into $queryvar as query-string pairs, honouring the
 		# shape spec produced by aws::build::compile_query_spec. Spec forms:
@@ -2965,8 +3001,12 @@ namespace eval aws {
 			}
 			qmap {
 				# rest @httpQueryParams: a JSON map expanded to "key=value"
-				# params; list-valued entries repeat the key.
+				# params; list-valued entries repeat the key. Explicit @httpQuery
+				# params already in the query take precedence, so skip those keys.
+				set present	{}
+				foreach {qk qv} $query {dict set present $qk 1}
 				json foreach {k v} $value {
+					if {[dict exists $present $k]} continue
 					if {[json type $v] eq "array"} {
 						json foreach item $v {lappend query $k [json get $item]}
 					} else {
@@ -3057,9 +3097,9 @@ namespace eval aws {
 		helpers::_apply_endpoint_override endpoint_info [namespace tail $service_ns]
 		_debug {log notice "endpoint_info:\n\t[join [lmap {k v} $endpoint_info {format {%20s: %s} $k $v}] \n\t]"}
 		set uri_map_out	{}
-		foreach {pat arg} $uri_map {
+		foreach {pat arg spec} $uri_map {
 			set rep	[if {[info exists _a_$arg]} {
-				set _a_$arg
+				_serialize_header [set _a_$arg] $spec
 			}]
 			set repe	[reuri encode path $rep]
 			#lappend uri_map_out	"{$pat}" $repe "{$pat+}" [string map {%2F /} $repe]
@@ -3067,27 +3107,19 @@ namespace eval aws {
 		}
 		#puts stderr "uri_map_out: ($uri_map_out)"
 
-		foreach {header arg} $header_map {
+		foreach {header arg spec} $header_map {
 			if {![info exists _a_$arg]} continue
 			set v	[set _a_$arg]
 			if {[string index $header end] eq "*"} {
 				set header_pref	[string range $header 0 end-1]
 				json foreach {k mv} $v {
-					lappend headers $header_pref$k $mv
+					lappend headers $header_pref$k [json get $mv]
 				}
-			} elseif {[json valid $v] && [json type $v] eq "array"} {
-				# A list bound to a header serializes as a comma-separated
-				# value; elements containing a comma, a double-quote, or
-				# leading/trailing whitespace use HTTP quoted-string form.
-				lappend headers $header [join [json lmap item $v {
-					set s	[json get $item]
-					if {$s eq "" || $s ne [string trim $s] || [string match {*[",]*} $s]} {
-						set s	\"[string map [list \\ \\\\ \" \\\"] $s]\"
-					}
-					set s
-				}] {, }]
 			} else {
-				lappend headers $header $v
+				set hv	[_serialize_header $v $spec]
+				# An empty list header is omitted rather than sent blank.
+				if {[lindex $spec 0] eq "hlist" && $hv eq ""} continue
+				lappend headers $header $hv
 			}
 		}
 
@@ -5366,6 +5398,19 @@ namespace eval aws {
 		}
 
 		#>>>
+		proc _header_spec {shapes shape {memberfmt {}}} { #<<<
+			# Serialization spec for an @httpHeader member, consumed by
+			# _serialize_header: bool, {timestamp fmt} (http-date default),
+			# {hlist itemspec} (comma-joined), blob (base64), or {} (scalar).
+			switch -exact -- [resolve_shape_type $shapes $shape] {
+				boolean		{return bool}
+				timestamp	{return [list timestamp [expr {$memberfmt ne "" ? $memberfmt : [json get -default rfc822 $shapes $shape timestampFormat]}]]}
+				list		{return [list hlist [_header_spec $shapes [json get $shapes $shape member shape]]]}
+				blob		{return blob}
+				default		{return {}}
+			}
+		}
+		#>>>
 		proc _querystring_spec {shapes shape {memberfmt {}}} { #<<<
 			# Serialization spec for a rest @httpQuery / @httpQueryParams member,
 			# consumed by _flatten_query_param: bool / {timestamp fmt} (scalars),
@@ -5453,16 +5498,20 @@ namespace eval aws {
 						if {[json exists $member_def location]} {
 							switch -- [json get $member_def location] {
 								uri	{
-									lappend uri_map	$locationName $name
+									lappend uri_map	$locationName $name [_querystring_spec $shapes [json get $member_def shape] [json get -default {} $member_def timestampFormat]]
 								}
 								querystring {
 									lappend query_map	$locationName $name [_querystring_spec $shapes [json get $member_def shape] [json get -default {} $member_def timestampFormat]]
 								}
 								headers {
-									lappend header_map	$locationName* $name
+									lappend header_map	$locationName* $name {}
 								}
 								header {
-									lappend header_map	$locationName $name
+									lappend header_map	$locationName $name [if {[json get -default false $member_def jsonvalue] || [json get -default false $shapes [json get $member_def shape] jsonvalue]} {
+										list jsonvalue
+									} else {
+										_header_spec $shapes [json get $member_def shape] [json get -default {} $member_def timestampFormat]
+									}]
 								}
 								default {
 									error "Unhandled location for $camel_name: ([json get $member_def location])"

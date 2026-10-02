@@ -1287,7 +1287,10 @@ namespace eval ::aws::%service_name% {
 	chantricks with_chan h {file tempfile tmpfn} {
 		puts -nonewline $h	[string map [list %ver% $ver] {
 			apply {{} {
-				zipfs mount [info script] aws-%ver%
+				# zipfs mounts are process-wide: another thread may have mounted it already
+				if {![dict exists [zipfs mount] [file join [zipfs root] aws-%ver%]]} {
+					zipfs mount [info script] aws-%ver%
+				}
 				::tcl::tm::path add [file join [zipfs root] aws-%ver%]
 				source [file join [zipfs root] aws-%ver%/aws.tcl]
 			}}

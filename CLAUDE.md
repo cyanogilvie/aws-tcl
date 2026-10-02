@@ -48,7 +48,8 @@ Forward-looking (not yet implemented):
   `build86` can't build the package without the dev-runtime packages
   (rl_http / rl_json / tomcrypt / reuri) installed for system Tcl 8.6.
 
-- Build outputs land in `$builddir/tm/aws-VER.tm` + `$builddir/tm/aws/*.tm`.
+- Build output is a single `$builddir/tm/aws-VER.tm`: the base package
+  with all the per-service modules in a zipfs archive appended to it.
   The test runner prepends the build dir to `tcl::tm::path` and calls
   `package forget aws aws::*` once (tcltest scans the tm path when
   first loaded — before our `-load` script runs — so the stale system
@@ -132,10 +133,10 @@ Forward-looking (not yet implemented):
   - `install_dir` from `tcl_dep.get_variable('libdir')` lands in the
     Tcl-visible `lib/tclN/site-tcl` rather than Debian's multiarch
     `lib/x86_64-linux-gnu/tclN/site-tcl`.
-  - 400+ generated per-service .tm files aren't listed as
-    `custom_target` outputs; a post-install script
-    (`tools/install_tm.tcl`) copies the whole tree at install time,
-    honoring `DESTDIR` manually.
+  - The 400+ generated per-service .tm files are packed into a zipfs
+    appended to the single `aws-VER.tm` output (avoids per-file
+    filesystem block overhead), so that one file is the only
+    `custom_target` output and installs normally. Needs Tcl 9's zipfs.
   - .tm output files live under `$builddir/tm/` (via `subdir('tm')`)
     rather than `$builddir/` directly, so the build root doesn't
     need to be on `tcl::tm::path` — Tcl refuses adds that are
@@ -229,7 +230,7 @@ web-identity code paths to nest STS calls without recursing through
 - `tests/s3sigv4.test` — live s3 sigv4 path-encoding cases (goes
   through `aws s3 put_object` now; no more workaround)
 
-Green baseline: `make test` passes whole suite in one process
+Green baseline: `meson test -C build9g` passes whole suite in one process
 (14374 / 14380 at time of writing; remaining skips are constraint-
 gated: rl_aws_account + a handful of known-bug sentinels).
 

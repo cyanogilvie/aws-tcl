@@ -4,7 +4,7 @@ aws - AWS service bindings for Tcl, modelled on the AWS CLI
 
 ## SYNOPSIS
 
-**package require aws** ?2.0a20?
+**package require aws** ?2.0a30?
 
 **package require aws::**\<*service*\>
 
@@ -44,9 +44,7 @@ package require aws
 aws s3 list_buckets
 ```
 
-is sufficient. Explicit `package require aws::s3` works too and is
-useful when you want a hard dependency declaration near the top of a
-file.
+is sufficient.
 
 ### Option format
 
@@ -99,6 +97,7 @@ not as Tcl dicts. Use the `~J:`, `~S:`, `~N:` substitution forms from
 **rl_json**’s `json template`:
 
 ``` tcl
+set tags [json template {["~S:a", "~S:b"]}]
 set item [json template {
     {
         "pk":     "~S:pk",
@@ -107,10 +106,9 @@ set item [json template {
         "tags":   "~J:tags"
     }
 }]
-set tags [json template {["~S:a", "~S:b"]}]
 aws dynamodb put_item \
     -table_name Users \
-    -item $item
+    -item       $item
 ```
 
 This is a deliberate design choice: nested JSON is frequently
@@ -134,11 +132,11 @@ botocore (the same ones the CLI uses for `--max-items` / `--page-size`)
 and hide the continuation-token plumbing:
 
 ``` tcl
-aws foreach bucket [aws s3 list_buckets] {
+aws foreach bucket s3 list_buckets {
     puts [json get $bucket Name]
 }
 
-set names [aws lmap bucket [aws s3 list_buckets] {
+set names [aws lmap bucket s3 list_buckets {
     json get $bucket Name
 }]
 ```
@@ -394,7 +392,7 @@ Things a CLI user might reach for that aren’t in this SDK:
 ``` tcl
 package require aws
 package require rl_json
-interp alias {} json {} ::rl_json::json
+namespace import ::rl_json::json
 
 # aws sts get-caller-identity
 set ident [aws sts get_caller_identity]
@@ -405,29 +403,35 @@ set meta [aws s3 head_object -bucket assets -key foo/bar.jpg]
 puts "size: [json get $meta ContentLength]"
 
 # aws ec2 describe-instances \
-#     --instance-ids i-aaa i-bbb \
-#     --filters "Name=tag:Env,Values=prod"
+#     --instance-ids    i-aaa i-bbb \
+#     --filters         "Name=tag:Env,Values=prod"
 set instances [aws ec2 describe_instances \
-    -instance_ids {i-aaa i-bbb} \
-    -filters [list [dict create Name tag:Env Values prod]]]
+    -instance_ids   {i-aaa i-bbb} \
+    -filters        [list [dict create Name tag:Env     Values prod]]]
 
 # aws dynamodb put-item \
-#     --table-name Users \
-#     --item '{"pk":{"S":"user#42"},"count":{"N":"7"}}'
+#     --table-name  Users \
+#     --item        '{"pk":{"S":"user#42"},"count":{"N":"7"}}'
+set pk      user#42
+set count   7
 set item [json template {
     {
         "pk":    { "S": "~S:pk"    },
-        "count": { "N": "~N:count" }
+        "count": { "N": "~S:count" }
     }
-} {pk user#42 count 7}]
+}]
 aws dynamodb put_item -table_name Users -item $item
 
 # aws lambda invoke --function-name worker --payload '{"op":"reindex"}' out.json
 set resp [aws lambda invoke \
-    -function_name worker \
-    -payload [json template {{"op":"~S:op"}} {op reindex}]]
+    -function_name  worker \
+    -payload        [json template {{"op":"~S:op"}} {op reindex}]]
 set fh [open out.json wb]
-try { puts -nonewline $fh [json get $resp Payload] } finally { close $fh }
+try {
+    puts -nonewline $fh [json get $resp Payload]
+} finally {
+    close $fh
+}
 ```
 
 ## PAGINATION EXAMPLE
@@ -435,24 +439,68 @@ try { puts -nonewline $fh [json get $resp Payload] } finally { close $fh }
 ``` tcl
 package require aws
 package require rl_json
-interp alias {} json {} ::rl_json::json
+namespace import ::rl_json::json
 
 # Iterate every object in a bucket — even across paginator boundaries.
 # The CLI equivalent is `aws s3api list-objects-v2 --bucket assets`
 # plus a NextContinuationToken loop.
-aws foreach obj [aws s3 list_objects_v2 -bucket assets -prefix images/] {
+aws foreach obj \
+    s3 list_objects_v2 \
+        -bucket assets \
+        -prefix images/ \
+{
     puts "[json get $obj Key] ([json get $obj Size] bytes)"
 }
 
 # Same pattern with aws lmap: produce a Tcl list by transforming each
 # item. lmap runs the body once per item and collects return values.
-set keys [aws lmap obj [aws s3 list_objects_v2 -bucket assets] {
+set keys [aws lmap obj  s3 list_objects_v2 -bucket assets {
     json get $obj Key
 }]
 
 # A non-S3 example: list every CloudWatch log group across pages.
-aws foreach group [aws logs describe_log_groups] {
+aws foreach group   logs describe_log_groups {
     puts [json get $group logGroupName]
+}
+
+# If you want per-page metadata that some services return outside of each item
+aws foreach item \
+        -page       page \
+        -itemtype   type \
+    s3 list_objects_v2 \
+        -bucket     assets \
+        -delimiter  / \
+{
+    if {[info exists page]} {
+        puts "Page keycount: [json get $page KeyCount]"
+        unset page  ;# Will only be set again when the next page arrives
+    }
+
+    # Some paginated services return multiple types, like s3 given -delimiter
+    switch -- $type {
+        CommonPrefix {
+            puts "Folder: [json get $item Prefix]"
+        }
+        Object {
+            puts "[json get $item Key] ([json get $item Size] bytes)"
+        }
+    }
+}
+
+# If you want to iterate over the raw items yourself, once per page:
+aws foreach item \
+       -page        page \
+       -itemtype    type \
+    s3 list_objects_v2 \
+        -bucket     assets \
+        -delimiter  / \
+{
+    json foreach object [json extract $page Contents] {
+        puts "key: [json get $object Key]"
+    }
+
+    # Signal to the iteration orchestrator that we're done with the items in this page
+    throw {AWS FOREACH NEXT_PAGE} {}
 }
 ```
 
@@ -461,27 +509,25 @@ aws foreach group [aws logs describe_log_groups] {
 ``` tcl
 package require aws
 package require rl_json
-interp alias {} json {} ::rl_json::json
+namespace import ::rl_json::json
 
 # Service error codes are part of the Tcl errorCode, so you can pattern
 # match on them with `try ... trap`. This is the preferred shape —
 # catching by string match on the error message is brittle across
 # service wording changes.
-proc get_user {user_id} {
+proc get_user user_id {
     try {
         aws dynamodb get_item \
             -table_name Users \
-            -key [json template {{"pk":{"S":"~S:user_id"}}}]
+            -key        [json template {{"pk":{"S":"~S:user_id"}}}]
     } trap {AWS DYNAMODB Sender ResourceNotFoundException} {} {
         # Table doesn't exist. Different from "item not found" — an
         # empty Item in the response means the row is absent.
-        return -code error -errorcode {APP TABLE_MISSING} \
-            "Users table is not provisioned"
+        throw {APP TABLE_MISSING} "Users table is not provisioned"
     } trap {AWS DYNAMODB Sender ProvisionedThroughputExceededException} {} {
         # The SDK already retried this per the configured retry policy;
         # if it still bubbles up the bucket is exhausted for real.
-        return -code error -errorcode {APP OVERLOADED} \
-            "DynamoDB throttling — try again shortly"
+        throw {APP OVERLOADED} "DynamoDB throttling — try again shortly"
     }
 }
 
@@ -496,7 +542,7 @@ try {
 # Credential-resolution errors are distinct from service errors.
 try {
     aws sts get_caller_identity
-} trap {AWS SSO_TOKEN_EXPIRED} {msg} {
+} trap {AWS SSO_TOKEN_EXPIRED} msg {
     puts stderr "Run 'aws sso login' to refresh your session."
     exit 1
 } trap {AWS NO_CREDENTIALS} {} {
@@ -539,4 +585,4 @@ aws-tcl-specific (not defined by the CLI):
 
 ## BUGS
 
-Report issues at <https://github.com/RubyLane/aws-tcl>.
+Report issues at <https://github.com/cyanogilvie/aws-tcl>.

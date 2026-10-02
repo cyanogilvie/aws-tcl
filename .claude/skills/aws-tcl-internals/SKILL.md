@@ -47,8 +47,8 @@ Two principles that should not be silently reversed:
 
 ## Test landscape
 
-`make test TCLSH=/opt/tcl9g/bin/tclsh9.0` runs the whole suite in one
-process. Single file: `make test TESTFLAGS='-file <name>'`. See
+`meson test -C build9g` runs the whole suite in one process. Single
+file: `TESTFLAGS='-file <name>' meson test -C build9g`. See
 `testing.md` for the full run matrix.
 
 Running `protocol_vectors.test` (236 cases) is the best smoke for
@@ -66,6 +66,6 @@ CloudFormation stack deployed by `make fixtures` — gated by the
 
 - Tcl 9 at `/opt/tcl9g/bin/tclsh9.0` is the primary test target.
 - botocore is a git submodule at `botocore/`; currently pinned to v1.42.90.
-- Build: `rm -rf tm && make -e tm TCLSH=/opt/tcl9g/bin/tclsh9.0`.
+- Build: `meson compile -C build9g` (setup: see the repo's CLAUDE.md).
 - rl_json source: `~/git/rl_json` (see the rl_json memory).
 - cbor source: `~/git/tcl/cbor` (when implementing smithy-rpc-v2-cbor).

@@ -2,10 +2,13 @@
 
 ## Build/runtime split
 
-- **Build time** (`build.tcl`, invoked by `make tm`): reads
+- **Build time** (`build.tcl`, invoked by the `tm` custom_target in
+  `tm/meson.build`): reads
   `botocore/botocore/data/<service>/<version>/service-2.json` +
-  `endpoint-rule-set-1.json`, generates one module per service under
-  `tm/aws/<service>-<VER>.tm`. The module contains one proc per operation
+  `endpoint-rule-set-1.json`, generates one module per service
+  (`aws/<service>-<VER>.tm`), and gathers them all into a zipfs archive
+  appended to `$builddir/tm/aws-<VER>.tm`, whose loader mounts it
+  (once per process) on load. The module contains one proc per operation
   (or a lazy-compile stub for rest-xml), plus an `endpoint_rules` proc
   from the rule-set JSON.
 - **Runtime** (`aws.tcl`): the base package. Provides `aws` ensemble,
@@ -19,10 +22,11 @@ Service modules `package require aws 2` and use helpers from
 
 ```
 aws.tcl                     # base package + rule-engine helpers + compile_input
-build.tcl                   # code generator: walks botocore/, writes tm/
-Makefile                    # `make tm` drives build.tcl
+build.tcl                   # code generator: walks botocore/, writes the tm
+meson.build, tm/meson.build # build/test/install; tm/ target drives build.tcl
+Makefile                    # residual: fixture-stack lifecycle only
 botocore/                   # git submodule, botocore release (currently 1.42.90)
-tm/aws/                     # generated service modules (built artefact, not checked in)
+$builddir/tm/aws-VER.tm     # built artefact: base package + zipfs of service modules
 tests/                      # tcltest files; see testing.md
 ```
 

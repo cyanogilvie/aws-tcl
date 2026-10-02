@@ -5,28 +5,27 @@ at `/opt/tcl9g/bin/tclsh9.0`.
 
 ## Running
 
-Whole suite (preferred):
+Build + test go through meson (see the repo's CLAUDE.md for the
+standard build dirs). Whole suite, in one process:
 
 ```
-rm -rf tm && make -e tm TCLSH=/opt/tcl9g/bin/tclsh9.0 && make test TCLSH=/opt/tcl9g/bin/tclsh9.0
+PKG_CONFIG_PATH=/opt/tcl9g/lib/pkgconfig meson setup build9g -Dtestmode=true
+meson compile -C build9g
+meson test    -C build9g
 ```
 
-Single file:
+Single file / subset:
 
 ```
-make test TCLSH=/opt/tcl9g/bin/tclsh9.0 TESTFLAGS='-file pagination.test'
+TESTFLAGS='-file pagination.test' meson test -C build9g
+TESTFLAGS='-match pagination-1.*' meson test -C build9g
 ```
 
-Or direct:
-
-```
-/opt/tcl9g/bin/tclsh9.0 tests/all.tcl \
-    -load "apply {ver {source tests/load_self.tcl}} 2.0a20" \
-    -file <filename>
-```
-
-The .tm modules are generated artefacts. `make clean` removes them.
-Rebuild before testing after any aws.tcl / build.tcl change.
+`tools/runtests.tcl` drives `tests/all.tcl`, prepending
+`$builddir/tm` to `tcl::tm::path` so the freshly built
+`aws-<VER>.tm` (with the per-service modules in its appended zipfs)
+is what gets loaded. `meson test` rebuilds the tm first, so there is
+no separate rebuild step after aws.tcl / build.tcl changes.
 
 ## Test files (current)
 

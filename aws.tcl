@@ -137,9 +137,6 @@ namespace eval aws {
 		# Minimum floor for the adaptive send-rate cap (Hz)
 		variable _min_send_rate		0.5
 
-		if {[llength [tsv::names aws_tcl_rate]] == 0} {
-			# No-op: tsv::names is cheap; ensures the array exists lazily
-		}
 		# Retry / rate-limit configuration >>>
 
 		interp alias {} ::aws::helpers::sigencode {} ::reuri encode awssig

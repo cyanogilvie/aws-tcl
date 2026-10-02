@@ -162,6 +162,25 @@ test rest-xml-input-hostprefix-1.4 {endpoint hostPrefix is label-substituted and
 } -result 1
 #>>>
 
+test rest-xml_lazy_compile-1.1 {lazy op compile needs nothing from build.tcl} -setup { #<<<
+	# protocol_vectors.test sources build.tcl, which defines global procs
+	# (resolve_shape_type, ...) that an unqualified call in the runtime would
+	# silently fall back to, so check in a fresh interp that hasn't seen it
+	set child	[interp create]
+	$child eval [list set ::auto_path $::auto_path]
+	$child eval [list tcl::tm::path add {*}[lreverse [tcl::tm::path list]]]
+} -body {
+	$child eval [list package require -exact aws [package present aws]]
+	$child eval {
+		package require aws::s3
+		::aws::_compile_rest-xml_op ::aws::s3 put_object
+		info procs ::aws::s3::put_object
+	}
+} -cleanup {
+	interp delete $child
+	unset -nocomplain child
+} -result ::aws::s3::put_object
+#>>>
 test rest-xml_route53-list_hosted_zones-1.1 {} -constraints aws_creds -body { #<<<
 	json exists [aws route53 list_hosted_zones] HostedZones
 } -result 1

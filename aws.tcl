@@ -4550,7 +4550,7 @@ namespace eval aws {
 				# Booleans are flags (consistent with the eager protocols): a
 				# false/unset boolean is dropped (matches the model default;
 				# parse_args can't express an explicit false).
-				if {[resolve_shape_type [json extract $service_def shapes] [json get $def shape]] eq "boolean"} {
+				if {[build::resolve_shape_type [json extract $service_def shapes] [json get $def shape]] eq "boolean"} {
 					lappend settings	-boolean
 					lappend bool_members	$member
 				}

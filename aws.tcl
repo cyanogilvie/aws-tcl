@@ -4363,13 +4363,17 @@ namespace eval aws {
 		#>>>
 		proc isValidHostLabel {str allowdots} { #<<<
 			#puts stderr "isValidHostLabel ($str), $allowdots"
-			set valid [if {$allowdots} {
-				regexp {^[a-zA-Z0-9.-]+$} $str
-			} else {
-				regexp {^[a-zA-Z0-9-]+$} $str
-			}]
-			#puts stderr "\treturning $valid"
-			set valid
+			# RFC 1123 labels, matching botocore: 1-63 chars, no leading or
+			# trailing hyphen.  With allowdots each dot-separated label is
+			# checked independently.
+			if {$str eq ""} {return 0}
+			if {!$allowdots && [string first . $str] >= 0} {return 0}
+			foreach label [split $str .] {
+				if {![regexp {^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$} $label]} {
+					return 0
+				}
+			}
+			return 1
 		}
 
 		#>>>

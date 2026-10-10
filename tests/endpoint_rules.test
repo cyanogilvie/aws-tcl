@@ -13,12 +13,15 @@ try {
 			codecatalyst
 		}} continue
 		#puts stderr "Generating endpoint tests for $svc_name"
+		# Services whose only protocol isn't implemented (smithy-rpc-v2-cbor
+		# with no fallback) are skipped by build.tcl
+		tcltest::testConstraint built_$svc_name [expr {![catch {package require aws::$svc_name}]}]
 
 		set endpoint_tests_fn	[file join $here ../botocore/tests/functional/endpoint-rules/$service/endpoint-tests-1.json]
 		#puts stderr "Loading endpoint tests: $endpoint_tests_fn"
 		set i	0
 		json foreach testcase [json extract [readfile $endpoint_tests_fn] testCases] {
-			set extra	{}
+			set extra	[list -constraints built_$svc_name]
 			set params	[if {[json exists $testcase params]} {json get $testcase params}]
 			set rules_fns	[glob -types f [file join $here ../botocore/botocore/data/$service/*/endpoint-rule-set-1.json]]
 			switch -exact [llength $rules_fns] {

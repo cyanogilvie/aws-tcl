@@ -152,7 +152,7 @@ Forward-looking (not yet implemented):
   stack in the caller's account with deterministic resources; tests gated
   by the `aws_tcl_fixtures` constraint run against it.
   `make teardown-fixtures` cleans up. See `tests/fixtures/README.md`.
-- `botocore/` is a git submodule; currently pinned to v1.42.90
+- `botocore/` is a git submodule; currently pinned to v1.43.111
 - Related sources (not in this repo):
   - rl_json: `~/git/rl_json` (see memory)
   - cbor: `~/git/tcl/cbor` (for future cbor impl)

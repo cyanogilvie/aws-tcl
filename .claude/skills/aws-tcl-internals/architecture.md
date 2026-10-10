@@ -25,7 +25,7 @@ aws.tcl                     # base package + rule-engine helpers + compile_input
 build.tcl                   # code generator: walks botocore/, writes the tm
 meson.build, tm/meson.build # build/test/install; tm/ target drives build.tcl
 Makefile                    # residual: fixture-stack lifecycle only
-botocore/                   # git submodule, botocore release (currently 1.42.90)
+botocore/                   # git submodule, botocore release (currently 1.43.111)
 $builddir/tm/aws-VER.tm     # built artefact: base package + zipfs of service modules
 tests/                      # tcltest files; see testing.md
 ```

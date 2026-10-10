@@ -65,7 +65,7 @@ CloudFormation stack deployed by `make fixtures` — gated by the
 ## Environment notes
 
 - Tcl 9 at `/opt/tcl9g/bin/tclsh9.0` is the primary test target.
-- botocore is a git submodule at `botocore/`; currently pinned to v1.42.90.
+- botocore is a git submodule at `botocore/`; currently pinned to v1.43.111.
 - Build: `meson compile -C build9g` (setup: see the repo's CLAUDE.md).
 - rl_json source: `~/git/rl_json` (see the rl_json memory).
 - cbor source: `~/git/tcl/cbor` (when implementing smithy-rpc-v2-cbor).

@@ -27,7 +27,7 @@ matching the task:
 | `pagination.md` | understanding or extending `aws foreach` / `aws lmap` and the paginator metadata |
 | `retry.md` | retry classifier, backoff, per-service rate-limit state, idempotency-token auto-fill |
 | `testing.md` | writing new tests; understanding the test harness; the fixture stack; tcltest gotchas |
-| `cbor.md` | implementing smithy-rpc-v2-cbor (planned, not implemented) |
+| `cbor.md` | smithy-rpc-v2-cbor: the json pipeline + jitc-compiled `cbor_glue.c`; which services use it |
 
 ## Critical design decisions to respect
 

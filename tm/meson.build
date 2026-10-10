@@ -3,6 +3,7 @@ tm = custom_target('tm',
   input:  files(
     meson.project_source_root() / 'aws.tcl',
     meson.project_source_root() / 'build.tcl',
+    meson.project_source_root() / 'cbor_glue.c',
   ),
   env: {
     'TCLLIBPATH':                                   ' '.join(dep_builddirs_trad),

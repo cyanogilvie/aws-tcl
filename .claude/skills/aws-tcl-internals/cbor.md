@@ -1,186 +1,108 @@
-# smithy-rpc-v2-cbor (planned, not yet implemented)
+# smithy-rpc-v2-cbor
 
-Three services currently declare `smithy-rpc-v2-cbor` as their primary
-protocol: `cloudwatch`, `interconnect`, `arc-region-switch`. All three
-list `json` (plus `query` for cloudwatch) as a fallback in
-`metadata.protocols`, and our build-time protocol-selection fallback
-logic routes them through `json` today. That works *iff* AWS keeps
-honouring the JSON alternative on the wire, which they've signalled
-they may not forever.
+Implemented natively, but used only by services whose `metadata.protocols`
+offers nothing else we support (currently `cloudwatchomni`,
+`eventbridgev2`, `partnercentral-revenue-measurement`).  The ~22 services
+that list cbor first *and* a json fallback (cloudwatch, ...) still build
+as `json`: the native path needs Tcl 9 + jitc + cbor at runtime, and the
+json path doesn't.  To move one over, change the protocol selection in
+`build_aws_services` (build.tcl).
 
-This page captures what a native cbor implementation needs so it can
-be bolted on without rediscovery.
+## Shape of the implementation
 
-## Protocol on the wire
-
-Per the Smithy RPC-v2-cbor spec:
-
-- **Method**: always `POST`.
-- **URL path**: `/service/<targetPrefix>/operation/<OperationName>`.
-  No query string. `targetPrefix` comes from `metadata.targetPrefix`
-  just like json-1.1.
-- **Headers**:
-  - `smithy-protocol: rpc-v2-cbor`
-  - `Accept: application/cbor`
-  - `Content-Type: application/cbor` (present iff there's a body)
-  - optional event-stream variant headers; ignore for v1
-- **Body**: CBOR-encoded representation of the input structure.
-- **Response**: CBOR-encoded body; `Content-Type: application/cbor`.
-
-The CBOR on the wire follows fairly standard CBOR rules, but with a
-specific representation for special types:
-
-- Integers → CBOR unsigned / negative integer (type 0 / 1).
-- Floats → CBOR float (type 7, subtypes 25/26/27). NaN / Infinity use
-  the natural CBOR encoding (not JSON string quoting).
-- Strings → CBOR text string (type 3).
-- Blobs → CBOR byte string (type 2). **Not** base64 like JSON bodies.
-- Booleans → CBOR simple value (20 / 21).
-- Null → CBOR null (simple value 22). Same "strip nulls before
-  sending" rule as JSON.
-- Timestamps → CBOR tag 1 (epoch) wrapping a float (seconds since
-  epoch). No ISO-8601 option.
-- Arrays → CBOR array (type 4).
-- Maps → CBOR map (type 5).
-- Structures → CBOR map with member serialization names as keys.
-  Same `jsonName` / `locationName` rules as json (jsonName wins).
-- Documents → CBOR value of whatever natural type matches (same
-  "accept any JSON value" semantic, but encoded as the equivalent CBOR).
-
-Reference: <https://smithy.io/2.0/additional-specs/protocols/smithy-rpc-v2.html>
-
-## cbor package (Tcl)
-
-Source: `~/git/tcl/cbor`. Provides:
-
-- `cbor::encode <type> ?<args>...?` — low-level encoders
-- `cbor::template <json-template> <dict>` — JSON-style template that
-  produces CBOR bytes. Shape-wise similar to rl_json's `json template`.
-- `cbor::decode <cbor-bytes>` — parse to a Tcl/rl_json-compatible form
-- `cbor::extract / ::get / ::pretty` — navigate/inspect
-
-The template-style encoder is the direct analogue of rl_json's template,
-so much of `compile_input` can be reused almost verbatim, just swapping
-the output step from `json template` to `cbor template`.
-
-## Implementation path
-
-### 1. Recognise the protocol
-
-In `build.tcl`, remove `smithy-rpc-v2-cbor` from the "fall back to
-supported" branch and add a new bucket:
-
-```tcl
-set by_protocol {
-    json        {}
-    rest-json   {}
-    query       {}
-    rest-xml    {}
-    ec2         {}
-    smithy-rpc-v2-cbor {}
-}
-```
-
-### 2. Code generation
-
-Create a cbor generator loop (parallel to the existing json/rest-json/
-query loop). Most of it mirrors the json path:
-
-```tcl
-foreach service_def [dict get $by_protocol smithy-rpc-v2-cbor] {
-    # compile_input as usual — shapes and transforms are identical
-    # to json, but we emit a cbor template instead of a json template
-    set t [aws::build::compile_input \
-        -protocol cbor \
-        ... \
-        -transforms transforms]
-    # body assembly at runtime: cbor template $t $args
-    # URL path: /service/$targetPrefix/operation/$op
-    # Headers: smithy-protocol, Accept, Content-Type
-}
-```
-
-compile_input needs a `-protocol cbor` branch. Existing shape handling
-(rewriter, transforms) applies almost verbatim with two changes:
-
-- **Blobs are raw, not base64**. The `blob` transform kind emits the
-  raw bytes; `cbor template`'s blob substitution marker emits a CBOR
-  byte string. No base64 wrapping.
-- **Timestamps are always unixTimestamp-ish** (CBOR tag 1 + float) —
-  shape-level `timestampFormat` is ignored on the wire. We normalise
-  everything through `_tx_ts_epoch` and emit a CBOR tagged float.
-
-### 3. Runtime
-
-Add a body-assembly branch in `_service_req`:
-
-```tcl
-} elseif {$protocol eq "smithy-rpc-v2-cbor"} {
-    set body [uplevel 1 [list cbor template $template]]
-    set content_type application/cbor
-    lappend headers smithy-protocol rpc-v2-cbor
-    lappend headers Accept application/cbor
-}
-```
-
-Response handling: decode the CBOR body to rl_json (via
-`cbor::to_json` or similar) so downstream consumers see the same
-rl_json-shaped result they do for json/rest-json ops.
-
-### 4. Error responses
-
-Errors in rpc-v2-cbor are CBOR-encoded. Format:
+It is the json pipeline with a different last step on each side:
 
 ```
-{
-    "__type": "com.example.svc#MyError",
-    "message": "the error message",
-    ...custom error fields...
-}
+request:  parse_args → transforms / rewriter → json template → null strip
+          → _cbor_encode $bodydoc $input_shape $cbor_shapes   (cbor_glue.c)
+response: _cbor_decode $body → the rl_json value a json service returns
+errors:   _aws_error decodes a CBOR body to the same {"__type","message"}
+          document and falls into its JSON branch
 ```
 
-(Encoded as CBOR map). `_aws_error` sniffs `{` for JSON today; for
-cbor we need a separate error-path branch that decodes CBOR first,
-then routes through the same classification logic.
+- **build.tcl**
+  - `by_protocol` has a `smithy-rpc-v2-cbor` bucket, generated in the same
+    loop as json / rest-json / query / ec2.
+  - `compile_op`: `POST /service/<targetPrefix>/operation/<Op>`,
+    `-c application/cbor`, headers `smithy-protocol: rpc-v2-cbor`,
+    `Accept: application/cbor` (+ `x-amzn-query-mode: true` with
+    `awsQueryCompatible`), `-cs <input shape>`.  No input shape → no body
+    and no Content-Type (the `t {}` no-input rule, as for rest-json).
+  - `compile_cbor_shapes` emits `variable cbor_shapes` into the service
+    namespace: shape name → descriptor (grammar at the top of
+    `cbor_glue.c`).  Structure keys are serialization names: `locationName`
+    else the member name.  **jsonName doesn't apply** to rpc-v2-cbor.
+- **aws.tcl**
+  - `compile_input` treats cbor like json for body members; timestamps are
+    always `unixTimestamp` (`ts_epoch`) whatever `timestampFormat` says.
+  - `build_rewriter_spec`: same timestamp rule, and no jsonName renames.
+  - `_service_req -cs`: the body is `_cbor_encode $bodydoc $cbor_shape
+    $cbor_shapes`; a non-empty response body is `_cbor_decode`d.
+  - `_aws_error`: `content-type: application/cbor` → decode, then the JSON
+    branch (which now also accepts `Message` as well as `message`).  For
+    cbor only, an `x-amzn-query-error` header ("Code;Fault") overrides
+    `__type` (query-compatible services).
+  - `_cbor_init` (lazy, first use): `package require jitc 0.8`, `cbor
+    1.2`, reads `cbor_glue.c` from beside aws.tcl (the zipfs root), and
+    `jitc::bind`s `::aws::_cbor_encode` / `::aws::_cbor_decode` over the
+    placeholder procs.  Missing packages → `{AWS UNSUPPORTED cbor}`.
+- **cbor_glue.c** (repo root, packed into the zipfs next to aws.tcl; an
+  input of the `tm` target): C23 + `defer`, compiled by jitc with
+  `package` parts for rl_json and cbor (direct linking — jitc can't link
+  stub libraries).
+  - encode walks the rl_json doc with the shape table: blob → base64
+    decode → byte string; timestamp → tag 1 wrapping a float (always a
+    float — the Smithy vectors expect it even for whole seconds);
+    float/double → float (also `"NaN"` / `"Infinity"` / `"-Infinity"`
+    strings, the json protocols' form); everything without a shape
+    (documents, unmodeled keys) → RFC 8949 §6.2 generic mapping.
+  - decode is generic (no shapes): byte string → base64 string, tag 1 →
+    its number, tags 2/3 → bignum number, NaN/±Inf → the strings above,
+    other tags transparent, integer map keys → decimal strings.  So
+    results match the json protocols' raw-body design (see the
+    `json_response_decode_gap` memory): unmodeled members are returned.
+  - Workaround in it: jitc 0.8.6's libslimcc evaluates `NAN` and
+    `INFINITY` to 0 — use `nan("")` / `HUGE_VAL`.
 
-### 5. Event streams (later)
+## Wire details worth knowing
 
-rpc-v2-cbor supports AWS event streams (`application/vnd.amazon.eventstream`
-Content-Type variant). Out of scope for v1 — note that the
-`operation_model.has_event_stream_output` check in botocore signals
-ops that need it. Skip them in v1 and re-route to the fallback
-protocol.
+- Bodies are CBOR maps; definite lengths on our side, either accepted
+  from the server.
+- Floats: we send the shortest exact width (cbor's `CBOR_EmitFloat`);
+  botocore always sends f32 for float, f64 for double.  Equivalent on the
+  wire.
+- `_req` routes a signed `Accept` header through rl_http's `-accept`:
+  rl_http always writes its own Accept line, so passing it in `-headers`
+  sent two and the server's canonical request (`accept:*/*,application/
+  cbor`) didn't match our signature.  Any protocol that sets Accept
+  benefits.
+- Endpoint rules for these services may list `sigv4a` (with a
+  `signingRegionSet`) before `sigv4`; `_eir` prefers `sigv4` when both are
+  offered.
 
 ## Tests
 
-`botocore/tests/unit/protocols/input/smithy-rpc-v2-cbor.json` and the
-output counterpart exist — 15 + more cases. They include
-`smithy-rpc-v2-cbor-non-query-compatible.json` and `-query-compatible`
-variants.
+`tests/protocol_vectors.test` runs botocore's
+`{input,output}/smithy-rpc-v2-cbor*.json` (gated by `haveCbor`):
 
-Add a `cbor` branch to `protocol_vectors.test`'s dispatcher: synthesize
-the service_def, run compile_input with `-protocol cbor`, assemble the
-body via `cbor template`, compare to the reference CBOR bytes.
+- input: the captured body is compared with the vector's base64 body via
+  `vec_cbor_canon` (a jitc helper over the cbor C API producing a
+  canonical tree: maps sorted, definite/indefinite alike, float width
+  ignored but types and tags kept) and `vec_cbor_equal` (floats also
+  equal after rounding to float32).
+- output: `_cbor_decode`; expected blobs are base64-encoded and unmodeled
+  members dropped from ours (`vec_b64_blobs`, `vec_modeled`) before
+  `result_equal`.
+- errors: `run_output_error_file` drives the real `_aws_error` with an
+  `interp alias` stand-in for the rl_http object; codes are compared on
+  the part after `#`.
 
-Test bodies in the fixtures are given as base64-encoded CBOR strings in
-the `serialized.body` field. Decode with `binary decode base64` before
-byte-comparing. CBOR has canonical-encoding rules — both the reference
-and our output should match byte-for-byte *if* we use the canonical form
-(integers in minimum-length encoding, map keys sorted, etc.). The cbor
-package probably handles canonicalization; if not, we may need a
-canonicalize pass before comparing.
+Live: the three services' list ops, plus cloudwatch reified with the
+protocol forced to cbor (GetMetricData exercises tag-1 timestamps and
+doubles both ways) worked against AWS on 2026-10-10.
 
-## Scope estimate
+## Not done
 
-Starting fresh with the existing shape-walk as a model: probably a day
-of focused work. The hard part is response decoding (decoding CBOR back
-to rl_json for consumers; less formally specified) and the transform
-layer for CBOR-specific rules (blobs as raw, timestamps as tagged
-floats). The request side is mostly "swap json template for cbor
-template" given compile_input's current architecture.
-
-## Why implement it
-
-Aside from future-proofing, cbor bodies are smaller and decode faster
-than JSON. For services with large request/response shapes (cloudwatch
-especially — Metrics API) the bandwidth savings are meaningful.
+- Event streams (`application/vnd.amazon.eventstream`): none of the
+  cbor-only services have event-stream operations yet.
+- Shape-aware response decoding (it's raw, like json).

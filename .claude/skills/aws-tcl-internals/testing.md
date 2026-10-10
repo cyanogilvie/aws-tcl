@@ -36,7 +36,7 @@ no separate rebuild step after aws.tcl / build.tcl changes.
 | `sigv4a.test` | offline unit tests | 17 tests: SigV4-A KDF scalar derivation, full-signing output shape (algorithm, scope-without-region, X-Amz-Region-Set), end-to-end signature-verifies-against-derived-pubkey |
 | `signing_vectors.test` | offline, from fixtures | 74 tests driven by AWS's published SigV4 / SigV4-A test vectors in aws-c-auth/tests/aws-signing-test-suite. v4 cases check canonical request + STS + signature bit-exactly; v4a cases check canonical request + STS bit-exactly, verify the produced signature against the expected public key from public-key.json, and also cross-check that our KDF derives the same public key |
 | `endpoint_rules.test` | offline, from fixtures | 13882 tests from botocore/tests/functional/endpoint-rules |
-| `protocol_vectors.test` | offline, from fixtures | 236 serialization tests driven by botocore/tests/unit/protocols/input/*.json (query/ec2/json/json_1_0/rest-json) |
+| `protocol_vectors.test` | offline, from fixtures | botocore/tests/unit/protocols/{input,output}/*.json: request serialization for every protocol, response decoding for query/ec2/rest-xml/smithy-rpc-v2-cbor, plus cbor error decoding (cbor cases need jitc + cbor 1.2: `haveCbor`; see `cbor.md`) |
 | `pagination.test` | mixed | 23 offline unit tests of `aws foreach` / `aws lmap` against a fake service; 6 live tests gated by `aws_tcl_fixtures`; 1 legacy rl_aws_account test |
 | `integration.test` | online, gated | smoke / rl-only tests against live AWS |
 | `account.test`, `cloudformation.test`, `dynamodb.test`, `ec2.test`, `logs.test`, `rest-xml.test`, `s3sigv4.test`, `sqs.test`, `sts.test` | online, service-specific | narrow integration tests |

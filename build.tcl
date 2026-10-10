@@ -162,6 +162,17 @@ proc typekey type { #<<<
 #>>>
 
 # Endpoint rules compilation <<<
+proc endpoint_leaf_template ep { #<<<
+	# The normalized endpoint result template for an endpoint rule's endpoint:
+	# absent properties are an empty object, as the rules spec (and botocore's
+	# endpoint tests) treat them
+	if {[json type $ep] eq "object" && ![json exists $ep properties]} {
+		json set ep properties {{}}
+	}
+	json normalize $ep
+}
+
+#>>>
 proc extract_leaves endpoint_rules { # Pre-scan for duplicate leaves and errors <<<
 	set leaves	{}
 	set errors	{}
@@ -172,7 +183,7 @@ proc extract_leaves endpoint_rules { # Pre-scan for duplicate leaves and errors 
 		foreach path $paths {
 			switch -exact -- [lindex $path end] {
 				endpoint {
-					dict incr leaves [json normalize [json extract $endpoint_rules {*}$path]] 1
+					dict incr leaves [endpoint_leaf_template [json extract $endpoint_rules {*}$path]] 1
 				}
 				error {
 					dict incr errors [json get $endpoint_rules {*}$path] 1
@@ -433,7 +444,7 @@ proc compile_rules {rules {depth 1}} { #<<<
 			}
 
 			endpoint {
-				set template	[json normalize [json extract $rule endpoint]]
+				set template	[endpoint_leaf_template [json extract $rule endpoint]]
 				#puts stderr "Emitting lindex [dict get $leaves $template] for $template"
 				if {[dict exists $leaves $template]} {
 					set block "_r [list [dict get $leaves $template]] \$l"
@@ -659,6 +670,41 @@ proc compile_paginators {definitions service_def} { #<<<
 # vector test can reify a synthetic service through the real codegen + dispatch
 # rather than reimplementing _service_req. Updates the per-service responses /
 # exceptions accumulators by name.
+proc compile_cbor_shapes shapes { #<<<
+	# The shape table cbor_glue.c's encoder follows to convert the rl_json
+	# request body to CBOR (see the descriptor grammar there).  Structure keys
+	# are serialization names: locationName, else the member name (jsonName
+	# doesn't apply to rpc-v2-cbor).
+	set table	{}
+	json foreach {name def} $shapes {
+		if {[json get -default false $def document]} {
+			dict set table $name D
+			continue
+		}
+		dict set table $name [switch -exact -- [json get -default {} $def type] {
+			string - character	{return -level 0 s}
+			integer - long - short - byte - bigInteger	{return -level 0 i}
+			float - double - bigDecimal	{return -level 0 d}
+			boolean		{return -level 0 b}
+			blob		{return -level 0 x}
+			timestamp	{return -level 0 t}
+			list		{list L [json get $def member shape]}
+			map			{list M [json get $def value shape]}
+			structure - union {
+				set members	{}
+				json foreach {mname mdef} [json extract $def members] {
+					if {[json exists $mdef location]} continue
+					dict set members [json get -default $mname $mdef locationName] [json get $mdef shape]
+				}
+				list S $members
+			}
+			default		{return -level 0 D}
+		}]
+	}
+	set table
+}
+
+#>>>
 proc compile_op {def op opdef protocol endpoint_params responsesVar exceptionsVar} {
 	upvar 1 $responsesVar responses $exceptionsVar exceptions
 	set service_code	{}
@@ -934,6 +980,22 @@ proc compile_op {def op opdef protocol endpoint_params responsesVar exceptionsVa
 			set p		[json get $opdef http requestUri]
 			set z		[json get -default {} $opdef requestcompression encodings]
 
+			if {$protocol eq "smithy-rpc-v2-cbor"} {
+				# Smithy RPC v2: always POST to /service/<target>/operation/<op>,
+				# CBOR body (absent for ops with no input) encoded against the input
+				# shape (-cs) via the service's cbor_shapes table
+				set m	POST
+				set p	/service/[json get $def metadata targetPrefix]/operation/$op
+				set c	application/cbor
+				set h	{smithy-protocol rpc-v2-cbor Accept application/cbor}
+				if {[json exists $def metadata awsQueryCompatible]} {
+					lappend h x-amzn-query-mode true
+				}
+				if {[json exists $opdef input shape]} {
+					set cs	[json get $opdef input shape]
+				}
+			}
+
 			# Operation endpoint trait (hostPrefix). Rewrite {memberName}
 			# placeholders to {argName} so _service_req can substitute the
 			# upvar'd _a_<arg> at request time.
@@ -973,10 +1035,12 @@ proc compile_op {def op opdef protocol endpoint_params responsesVar exceptionsVa
 				x		{}
 				z		{}
 				hp		{}
+				cs		{}
 			}
 			foreach v {
 				b
 				c
+				cs
 				e
 				h
 				hm
@@ -1073,6 +1137,7 @@ proc build_aws_services args { #<<<
 		query		{}
 		rest-xml	{}
 		ec2			{}
+		smithy-rpc-v2-cbor	{}
 	}
 	foreach service_dir [glob -type d -tails -directory $definitions *] {
 		set latest	[lindex [lsort -dictionary -decreasing [glob -type d -tails -directory [file join $definitions $service_dir] *]] 0]
@@ -1104,8 +1169,9 @@ proc build_aws_services args { #<<<
 			json set service_def metadata targetPrefix AmazonSQS
 			json set service_def metadata jsonVersion 1.0
 		}
-		# smithy-rpc-v2-cbor isn't implemented; fall back to any supported
-		# protocol the service lists as an alternative.
+		# smithy-rpc-v2-cbor is implemented natively only for services that offer
+		# nothing else (it needs the jitc and cbor packages at runtime); services
+		# that also list a protocol we support use that instead.
 		if {$protocol ni {json rest-json query rest-xml ec2}} {
 			set fallback	{}
 			if {[json exists $service_def metadata protocols]} {
@@ -1116,6 +1182,9 @@ proc build_aws_services args { #<<<
 						break
 					}
 				}
+			}
+			if {$fallback eq "" && $protocol eq "smithy-rpc-v2-cbor"} {
+				set fallback	$protocol
 			}
 			if {$fallback eq ""} {
 				puts "Skipping $service_name: protocol $protocol not supported and no fallback in [expr {[json exists $service_def metadata protocols] ? [json extract $service_def metadata protocols] : {{}}}]"
@@ -1137,7 +1206,7 @@ proc build_aws_services args { #<<<
 	}
 
 	set total_raw			0
-	foreach service_def [list {*}[dict get $by_protocol json] {*}[dict get $by_protocol rest-json] {*}[dict get $by_protocol query] {*}[dict get $by_protocol ec2]] { #<<<
+	foreach service_def [list {*}[dict get $by_protocol json] {*}[dict get $by_protocol rest-json] {*}[dict get $by_protocol query] {*}[dict get $by_protocol ec2] {*}[dict get $by_protocol smithy-rpc-v2-cbor]] { #<<<
 		set def			$service_def
 
 		#puts "creating ::aws::[json get $service_def metadata service_name]"
@@ -1171,6 +1240,9 @@ proc build_aws_services args { #<<<
 		}
 		if {[dict size $responses] > 0} {
 			append service_code "variable responses {\n[join [lmap {k v} $responses {format "%s\t%s" [list $k] [list $v]}] \n]\n}" \n
+		}
+		if {$protocol eq "smithy-rpc-v2-cbor"} {
+			append service_code [list variable cbor_shapes [compile_cbor_shapes [json extract $def shapes]]] \n
 		}
 		if {
 			[json get $service_def metadata protocol] in {query ec2} &&
@@ -1296,7 +1368,8 @@ namespace eval ::aws::%service_name% {
 			}}
 		}]
 		puts -nonewline $h \x1A
-		set contents [list $tmsource aws.tcl]
+		# cbor_glue.c: read beside aws.tcl by ::aws::_cbor_init
+		set contents [list $tmsource aws.tcl [file join $source cbor_glue.c] cbor_glue.c]
 		foreach f [glob -directory $prefix -tails aws/*.tm] {
 			lappend contents	[file join $prefix $f]	$f
 		}

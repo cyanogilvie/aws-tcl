@@ -25,6 +25,7 @@ aws.tcl                     # base package + rule-engine helpers + compile_input
 build.tcl                   # code generator: walks botocore/, writes the tm
 meson.build, tm/meson.build # build/test/install; tm/ target drives build.tcl
 Makefile                    # residual: fixture-stack lifecycle only
+cbor_glue.c                 # rl_json <-> CBOR for smithy-rpc-v2-cbor (jitc, runtime; packed beside aws.tcl)
 botocore/                   # git submodule, botocore release (currently 1.43.111)
 $builddir/tm/aws-VER.tm     # built artefact: base package + zipfs of service modules
 tests/                      # tcltest files; see testing.md
@@ -35,9 +36,10 @@ tests/                      # tcltest files; see testing.md
 1. `build_aws_services` iterates every `botocore/data/*` directory.
 2. For each service:
    - Reads `service-2.json`. `metadata.protocol` decides the protocol
-     bucket (json / rest-json / query / rest-xml / ec2). If it's
-     `smithy-rpc-v2-cbor`, fall back to the first supported protocol in
-     `metadata.protocols` (see `cbor.md`).
+     bucket (json / rest-json / query / rest-xml / ec2 /
+     smithy-rpc-v2-cbor). A `smithy-rpc-v2-cbor` service falls back to
+     the first other supported protocol in `metadata.protocols`, and only
+     builds as cbor when there isn't one (see `cbor.md`).
    - Reads `endpoint-rule-set-1.json` and compiles it to a Tcl proc body
      via `compile_endpoint_rules` → `compile_rules` → `compile_arg`.
    - For each operation, calls `aws::build::compile_input` to produce

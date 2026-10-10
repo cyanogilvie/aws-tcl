@@ -1173,38 +1173,55 @@ namespace eval aws {
 
 		#>>>
 		proc _aws_error {h xml_ns string_to_sign} { #<<<
-			if {[$h body] eq ""} {
+			set body	[$h body]
+			if {$body eq ""} {
 				throw [list AWS [$h code]] "AWS http code [$h code]"
 			}
-			if {[string match "\{*" [$h body]]} { # Guess json <<<
-				if {[json exists [$h body] code]} {
-					# TODO: use [json get [$h body] type]
+			if {
+				[dict exists [$h headers] content-type] &&
+				[string match application/cbor* [lindex [dict get [$h headers] content-type] 0]]
+			} {
+				# smithy-rpc-v2-cbor: the same error document the json protocols
+				# send ({"__type": ..., "message": ...}), CBOR-encoded
+				set body	[::aws::_cbor_decode $body]
+				# awsQueryCompatible services: the legacy query error code, if
+				# the service sent one ("Code;Fault"), is the code
+				if {[dict exists [$h headers] x-amzn-query-error]} {
+					set qcode	[lindex [split [lindex [dict get [$h headers] x-amzn-query-error] 0] {;}] 0]
+					if {$qcode ne ""} {json set body __type [json string $qcode]}
+				}
+			}
+			if {[string match "\{*" $body]} { # Guess json <<<
+				if {[json exists $body code]} {
+					# TODO: use [json get $body type]
 					throw [list AWS \
-						[json get [$h body] code] \
+						[json get $body code] \
 						[dict get [$h headers] x-amzn-requestid] \
 						"" \
-					] [json get [$h body] message]
-				} elseif {[json exists [$h body] __type]} {
-					if {[json exists [$h body] message]} {
-						set message	[json get [$h body] message]
+					] [json get $body message]
+				} elseif {[json exists $body __type]} {
+					if {[json exists $body message]} {
+						set message	[json get $body message]
+					} elseif {[json exists $body Message]} {
+						set message	[json get $body Message]
 					} else {
-						set message	"AWS exception: [json get [$h body] __type]"
+						set message	"AWS exception: [json get $body __type]"
 					}
 					throw [list AWS \
-						[json get [$h body] __type] \
+						[json get $body __type] \
 						[dict get [$h headers] x-amzn-requestid] \
 						"" \
 					] $message
-				} elseif {[json exists [$h body] message]} {
+				} elseif {[json exists $body message]} {
 					set headers	[$h headers]
 					throw [list AWS \
 						[if {[dict exists $headers x-amzn-errortype]} {dict get $headers x-amzn-errortype} else {return -level 0 "<unknown>"}] \
 						[dict get [$h headers] x-amzn-requestid] \
 						"" \
-					] [json get [$h body] message]
+					] [json get $body message]
 				} else {
 					set headers	[$h headers]
-					log error "Unhandled AWS error: [$h body]"
+					log error "Unhandled AWS error: $body"
 					throw [list AWS \
 						[if {[dict exists $headers x-amzn-errortype]} {dict get $headers x-amzn-errortype} else {return -level 0 "<unknown>"}] \
 						[dict get [$h headers] x-amzn-requestid] \
@@ -1463,6 +1480,19 @@ namespace eval aws {
 					}
 				}] rl_http_$signed_url]
 			}]
+			# rl_http always writes its own Accept line (-accept, default */*):
+			# pass a signed Accept header through that, otherwise it goes out as
+			# a second Accept, which the server combines ("*/*,application/cbor")
+			# and the signature no longer matches
+			set accept_opt	{}
+			set req_headers	{}
+			foreach {k v} $signed_headers {
+				if {[string equal -nocase $k Accept]} {
+					set accept_opt	[list -accept $v]
+				} else {
+					lappend req_headers $k $v
+				}
+			}
 			rl_http instvar h $method $signed_url \
 				-timeout				$timeout \
 				-connect_timeout		$connect_timeout \
@@ -1470,7 +1500,8 @@ namespace eval aws {
 				-keepalive				1 \
 				-max_keepalive_age		$max_keepalive_age \
 				-max_keepalive_count	$max_keepalive_count \
-				-headers				$signed_headers \
+				-headers				$req_headers \
+				{*}$accept_opt \
 				{*}[expr {$ca_bundle ne "" ? [list -cafile $ca_bundle] : {}}] \
 				{*}$extra \
 				-data					$body
@@ -2613,7 +2644,17 @@ namespace eval aws {
 		set endpoint	[uplevel 2 {endpoint_rules $cxparams}]
 
 		set authscheme	[if {[json exists $endpoint properties authSchemes 0]} {
-			json extract $endpoint properties authSchemes 0
+			# Prefer sigv4 when offered alongside sigv4a (multi-region rules
+			# list sigv4a first, with a signingRegionSet rather than a
+			# signingRegion)
+			set chosen	[json extract $endpoint properties authSchemes 0]
+			json foreach scheme [json extract $endpoint properties authSchemes] {
+				if {[json get -default {} $scheme name] eq "sigv4"} {
+					set chosen	$scheme
+					break
+				}
+			}
+			set chosen
 		} else {
 			set default_region	[json get $endpoint _ region]
 			json template {
@@ -2648,7 +2689,7 @@ namespace eval aws {
 			credentialScope			[json get $endpoint _ credentialScope] \
 			signatureVersions		[list $sigver] \
 			disableDoubleEncoding	[json get $authscheme disableDoubleEncoding] \
-			signingRegion			[json get $authscheme signingRegion]
+			signingRegion			[json get -default [json get $endpoint _ region] $authscheme signingRegion]
 	}
 
 	#>>>
@@ -3018,10 +3059,43 @@ namespace eval aws {
 	}
 
 	#>>>
+	proc _cbor_init {} { #<<<
+		# smithy-rpc-v2-cbor body conversion is C (cbor_glue.c, shipped beside
+		# aws.tcl) compiled by jitc against rl_json and cbor on first use.  Only
+		# services offering no other protocol use it, so jitc and cbor are
+		# needed only by those.  The jitc::bind'd commands replace these procs.
+		variable dir
+		try {
+			package require jitc 0.8
+			package require cbor 1.2
+		} on error {errmsg options} {
+			return -code error -errorcode {AWS UNSUPPORTED cbor} \
+				"This service uses the smithy-rpc-v2-cbor protocol, which needs the jitc (>= 0.8) and cbor (>= 1.2) packages: $errmsg"
+		}
+		set h	[open [file join $dir cbor_glue.c] r]
+		try {
+			set src	[read $h]
+		} finally {
+			close $h
+		}
+		set cdef	[list \
+			options	{-O2 -Wall -Werror} \
+			package	[list rl_json [package present rl_json]] \
+			package	[list cbor [package present cbor]] \
+			code	$src \
+		]
+		jitc::bind ::aws::_cbor_encode $cdef encode
+		jitc::bind ::aws::_cbor_decode $cdef decode
+	}
+
+	#>>>
+	proc _cbor_encode {doc shape shapes} {_cbor_init; tailcall _cbor_encode $doc $shape $shapes}
+	proc _cbor_decode bytes {_cbor_init; tailcall _cbor_decode $bytes}
 	proc _service_req args { #<<<
 		parse_args $args {
 			-b			{-default {} -name payload}
 			-c			{-default application/x-amz-json-1.1 -name content_type}
+			-cs			{-default {} -name cbor_shape}
 			-e			{-default 200 -name expected_status}
 			-h			{-default {} -name headers}
 			-hm			{-default {} -name header_map}
@@ -3206,6 +3280,8 @@ namespace eval aws {
 					set body			""
 					set content_type	""
 				}
+			} elseif {$protocol eq "smithy-rpc-v2-cbor"} {
+				set body	[_cbor_encode $bodydoc $cbor_shape [set ${service_ns}::cbor_shapes]]
 			} else {
 				set body	[encoding convertto utf-8 $bodydoc]
 			}
@@ -3321,6 +3397,9 @@ namespace eval aws {
 					}
 					#puts "calling _resp_xml with [list $resultWrapper {*}[dict get [set ${service_ns}::responses] $response]]\n$body"
 					_resp_xml $resultWrapper {*}[dict get [set ${service_ns}::responses] $response] $body
+				} elseif {$protocol eq "smithy-rpc-v2-cbor" && $body ne ""} {
+					# The rl_json value the json protocols would have returned
+					_cbor_decode $body
 				} else {
 					set body
 				}
@@ -5273,7 +5352,10 @@ namespace eval aws {
 				}
 				timestamp {
 					set fmt	[json get -default "" $def timestampFormat]
-					if {$fmt eq ""} {
+					if {$protocol eq "smithy-rpc-v2-cbor"} {
+						# Always epoch seconds (tag 1 on the wire) regardless of timestampFormat
+						set fmt	unixTimestamp
+					} elseif {$fmt eq ""} {
 						set fmt	[expr {$protocol in {json rest-json} ? "unixTimestamp" : "iso8601"}]
 					}
 					list ts $fmt
@@ -5286,7 +5368,7 @@ namespace eval aws {
 					set members		{}
 					json foreach {ck mdef} [json extract $def members] {
 						if {[json exists $mdef location]} continue ;# header/uri/querystring — not body
-						set loc	[if {[json exists $mdef jsonName]} {
+						set loc	[if {[json exists $mdef jsonName] && $protocol ne "smithy-rpc-v2-cbor"} {
 							json get $mdef jsonName
 						} elseif {[json exists $mdef locationName]} {
 							json get $mdef locationName
@@ -5541,7 +5623,7 @@ namespace eval aws {
 									error "Unhandled location for $camel_name: ([json get $member_def location])"
 								}
 							}
-						} elseif {$protocol in {json rest-json rest-xml}} {
+						} elseif {$protocol in {json rest-json rest-xml smithy-rpc-v2-cbor}} {
 							if {[json get $member_def shape] in {Expression Expressions AttributeFilterList AttributeFilter}} {
 								json set template_obj $locationName [json string "~J:$name"]
 							} else {
@@ -5590,7 +5672,10 @@ namespace eval aws {
 					# timestampFormat wins; otherwise json/rest-json default to
 					# unixTimestamp, rest-xml/query/ec2 default to iso8601.
 					set fmt	[json get -default "" $input timestampFormat]
-					if {$fmt eq ""} {
+					if {$protocol eq "smithy-rpc-v2-cbor"} {
+						# Always epoch seconds (tag 1 on the wire) regardless of timestampFormat
+						set fmt	unixTimestamp
+					} elseif {$fmt eq ""} {
 						set fmt	[expr {$protocol in {json rest-json} ? "unixTimestamp" : "iso8601"}]
 					}
 					switch -exact -- $fmt {

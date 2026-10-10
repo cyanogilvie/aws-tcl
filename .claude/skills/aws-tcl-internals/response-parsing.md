@@ -38,6 +38,11 @@ rest-xml uses `_handle_xml_resp` at runtime, which calls the recursive
 maintained separately in `_build_resp_frag`'s `list` branch. Both
 places must agree.
 
+### smithy-rpc-v2-cbor
+
+`_cbor_decode` (cbor_glue.c) converts the CBOR body to the rl_json value
+the json protocols would return — see `cbor.md`.
+
 ### json / rest-json (pre-compiled)
 
 The JSON response is loaded directly as the result; no per-op
@@ -60,13 +65,17 @@ All protocols route non-2xx responses through `::aws::helpers::_aws_error`
 in aws.tcl. It sniffs the body shape:
 
 1. Empty body → throw `[list AWS <status>]` with generic message.
-2. Body starts with `{` → JSON error:
+2. `content-type: application/cbor` (smithy-rpc-v2-cbor) → the body is
+   decoded to the equivalent JSON document first (an `x-amzn-query-error`
+   header's code replaces `__type`), then handled as below.
+3. Body starts with `{` → JSON error:
    - If `code` key present: `{AWS <code> <x-amzn-requestid> "" []}` with
      `message` as error message.
-   - Else if `__type` key present: same with `__type` as the code.
+   - Else if `__type` key present: same with `__type` as the code, and
+     `message` (or `Message`) as the message.
    - Else if `message` key: `{AWS <x-amzn-errortype or "<unknown>"> ...}`.
    - Else log + throw generic.
-3. Otherwise parse as XML and inspect the root:
+4. Otherwise parse as XML and inspect the root:
    - `<Response><Errors><Error>...</Error></Errors><RequestID>...</RequestID></Response>`
      → ec2 format, errorCode `{AWS <Code> <RequestID> "" <details>}`.
      Note: `RequestID` with capital-D-capital-D in ec2, vs `RequestId`

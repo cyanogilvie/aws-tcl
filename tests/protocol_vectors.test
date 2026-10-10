@@ -26,6 +26,100 @@ if {[llength [info commands json]] == 0} {namespace import rl_json::*}
 source [file join [file dirname [file normalize [info script]]] .. build.tcl]
 package require rltest
 
+# smithy-rpc-v2-cbor needs jitc and cbor at runtime (cbor_glue.c)
+tcltest::testConstraint haveCbor [expr {
+	![catch {package require jitc 0.8}] && ![catch {package require cbor 1.2}]
+}]
+if {[tcltest::testConstraint haveCbor]} {
+	# Canonical form of a CBOR item for comparing request bodies: map entries
+	# sorted, definite / indefinite lengths alike, float widths ignored (botocore
+	# always sends float32 / float64; we send the shortest exact width), but
+	# major types and tags kept, so bytes vs text and tag 1 are checked.
+	jitc::bind ::vec_cbor_canon [list options {-O2 -Wall -Werror} package [list cbor [package present cbor]] code {
+		#include <math.h>
+		static int canon(Tcl_Interp* interp, const uint8_t** pp, const uint8_t* e, Tcl_Obj** res)
+		{
+			const uint8_t*	p0 = *pp;
+			CBOR_Head		h;
+			Tcl_Obj*		v = NULL;
+			Tcl_Obj*		acc = NULL;
+			Tcl_Obj*		k = NULL;
+			defer {
+				replace_tclobj(&v, NULL);
+				replace_tclobj(&acc, NULL);
+				replace_tclobj(&k, NULL);
+			}
+
+			TEST_OK(CBOR_ReadHead(interp, pp, e, &h));
+			switch (h.mt) {
+				case CBOR_MT_UINT: case CBOR_MT_NINT: case CBOR_MT_BYTES: case CBOR_MT_TEXT: {
+					*pp = p0;
+					TEST_OK(CBOR_DecodeValue(interp, pp, e, &v, NULL));
+					const char*	t = h.mt == CBOR_MT_BYTES ? "x" : h.mt == CBOR_MT_TEXT ? "s" : "i";
+					if (h.mt == CBOR_MT_BYTES) {
+						Tcl_Size		len;
+						const uint8_t*	b = Tcl_GetBytesFromObj(interp, v, &len);
+						replace_tclobj(&acc, Tcl_NewObj());
+						for (Tcl_Size i=0; i<len; i++) Tcl_AppendPrintfToObj(acc, "%02x", b[i]);
+						replace_tclobj(&v, acc);
+					}
+					Tcl_Obj*	pair[2] = {Tcl_NewStringObj(t, -1), v};
+					replace_tclobj(res, Tcl_NewListObj(2, pair));
+					return TCL_OK;
+				}
+				case CBOR_MT_ARRAY:
+				case CBOR_MT_MAP:
+					replace_tclobj(&acc, Tcl_NewListObj(0, NULL));
+					for (uint64_t i=0; h.indefinite || i < h.val; i++) {
+						if (h.indefinite && *pp < e && **pp == 0xff) {(*pp)++; break;}
+						if (h.mt == CBOR_MT_MAP) {
+							TEST_OK(canon(interp, pp, e, &k));
+							TEST_OK(canon(interp, pp, e, &v));
+							Tcl_Obj*	kv[2] = {k, v};
+							TEST_OK(Tcl_ListObjAppendElement(interp, acc, Tcl_NewListObj(2, kv)));
+						} else {
+							TEST_OK(canon(interp, pp, e, &v));
+							TEST_OK(Tcl_ListObjAppendElement(interp, acc, v));
+						}
+					}
+					replace_tclobj(res, Tcl_NewListObj(2, (Tcl_Obj*[]){Tcl_NewStringObj(h.mt == CBOR_MT_MAP ? "m" : "a", 1), acc}));
+					return TCL_OK;
+				case CBOR_MT_TAG:
+					TEST_OK(canon(interp, pp, e, &v));
+					replace_tclobj(res, Tcl_NewListObj(3, (Tcl_Obj*[]){Tcl_NewStringObj("t", 1), Tcl_NewWideIntObj((Tcl_WideInt)h.val), v}));
+					return TCL_OK;
+				case CBOR_MT_SIMPLE:
+					switch (h.ai) {
+						case 20: case 21: replace_tclobj(res, Tcl_ObjPrintf("b %d", h.ai == 21)); return TCL_OK;
+						case 22: replace_tclobj(res, Tcl_NewStringObj("null", -1)); return TCL_OK;
+						case 23: replace_tclobj(res, Tcl_NewStringObj("undefined", -1)); return TCL_OK;
+						case 25: case 26: case 27:
+							if (isnan(h.fval))			replace_tclobj(res, Tcl_NewStringObj("f NaN", -1));
+							else if (isinf(h.fval))		replace_tclobj(res, Tcl_NewStringObj(h.fval > 0 ? "f Inf" : "f -Inf", -1));
+							else						replace_tclobj(res, Tcl_ObjPrintf("f %.17g", h.fval));
+							return TCL_OK;
+						default:
+							replace_tclobj(res, Tcl_ObjPrintf("simple %d", (int)h.val));
+							return TCL_OK;
+					}
+			}
+			THROW_PRINTF("bad major type %d", (int)h.mt);
+		}
+		OBJCMD(canon_cmd) {
+			enum {A_cmd, A_BYTES, A_objc};
+			CHECK_ARGS("bytes");
+			Tcl_Size		len;
+			const uint8_t*	p = Tcl_GetBytesFromObj(interp, objv[A_BYTES], &len);
+			if (!p) return TCL_ERROR;
+			Tcl_Obj*	res = NULL;
+			int			code = canon(interp, &p, p + len, &res);
+			if (code == TCL_OK) Tcl_SetObjResult(interp, res);
+			replace_tclobj(&res, NULL);
+			return code;
+		}
+	}] canon_cmd
+}
+
 # ------------------------------------------------------------------
 # Helpers
 
@@ -683,6 +777,9 @@ proc reify_service {entry} { #<<<
 		if {$proto in {query ec2} && [json exists $md apiVersion]} {
 			set ::aws::vec::apiVersion	[json get $md apiVersion]
 		}
+		if {$proto eq "smithy-rpc-v2-cbor"} {
+			set ::aws::vec::cbor_shapes	[compile_cbor_shapes [json extract $def shapes]]
+		}
 		set responses {}; set exceptions {}
 		json foreach {op opdef} [json extract $def operations] {
 			set pt	[compile_op $def $op $opdef $proto {} responses exceptions]
@@ -805,6 +902,71 @@ proc vec_cmp_xml {got exp booldefs} { #<<<
 	return "xml-body mismatch:\n  got [xml_canon $got]\n  exp [xml_canon $exp]"
 }
 #>>>
+proc vec_cbor_equal {a b} { #<<<
+	# Canonical forms (vec_cbor_canon) equal, with a float compared as equal
+	# when the two sides agree once rounded to float32 (a float member sent as
+	# a float64 by us, float32 by botocore)
+	if {[lindex $a 0] ne [lindex $b 0]} {return 0}
+	switch -exact -- [lindex $a 0] {
+		f {
+			lassign $a - x
+			lassign $b - y
+			if {$x eq $y} {return 1}
+			if {![string is double -strict $x] || ![string is double -strict $y]} {return 0}
+			binary scan [binary format rr $x $y] rr x32 y32
+			expr {$x32 == $y32}
+		}
+		a {
+			if {[llength [lindex $a 1]] != [llength [lindex $b 1]]} {return 0}
+			foreach ea [lindex $a 1] eb [lindex $b 1] {
+				if {![vec_cbor_equal $ea $eb]} {return 0}
+			}
+			return 1
+		}
+		m {
+			set da	[lsort -index 0 [lindex $a 1]]
+			set db	[lsort -index 0 [lindex $b 1]]
+			if {[llength $da] != [llength $db]} {return 0}
+			foreach ea $da eb $db {
+				if {[lindex $ea 0] ne [lindex $eb 0]} {return 0}
+				if {![vec_cbor_equal [lindex $ea 1] [lindex $eb 1]]} {return 0}
+			}
+			return 1
+		}
+		t {
+			expr {[lindex $a 1] == [lindex $b 1] && [vec_cbor_equal [lindex $a 2] [lindex $b 2]]}
+		}
+		default {expr {$a eq $b}}
+	}
+}
+
+#>>>
+proc vec_cmp_cbor {got exp booldefs} { #<<<
+	# exp is the vector's base64 body
+	set exp	[binary decode base64 $exp]
+	if {$got eq "" || $exp eq ""} {
+		if {$got eq $exp} {return ""}
+		return "raw-body mismatch:\n  got ([binary encode hex $got])\n  exp ([binary encode hex $exp])"
+	}
+	set strip	[list apply {{c booldefs} {
+		# absent ≡ default-present for top-level booleans
+		if {[lindex $c 0] ne "m"} {return $c}
+		list m [lmap kv [lindex $c 1] {
+			lassign $kv k v
+			if {
+				[lindex $k 0] eq "s" && [dict exists $booldefs [lindex $k 1]] &&
+				[lindex $v 0] eq "b" && [lindex $v 1] == [dict get $booldefs [lindex $k 1]]
+			} continue
+			set kv
+		}]
+	}}]
+	set g	[{*}$strip [vec_cbor_canon $got] $booldefs]
+	set e	[{*}$strip [vec_cbor_canon $exp] $booldefs]
+	if {[vec_cbor_equal $g $e]} {return ""}
+	return "cbor-body mismatch:\n  got $g\n  exp $e"
+}
+
+#>>>
 # Compare a captured request against the case's expected serialization.
 proc vec_check_input {entry case cap} { #<<<
 	set proto		[json get $entry metadata protocol]
@@ -828,6 +990,7 @@ proc vec_check_input {entry case cap} { #<<<
 		query - ec2					{vec_cmp_form $gb $xb $booldefs}
 		rest-xml					{vec_cmp_xml  $gb $xb $booldefs}
 		json - json_1_0 - rest-json	{vec_cmp_json $gb $xb $booldefs}
+		smithy-rpc-v2-cbor			{vec_cmp_cbor $gb $xb $booldefs}
 		default						{return "unsupported protocol $proto"}
 	}]
 	if {$d ne ""} {return $d}
@@ -896,6 +1059,7 @@ proc run_input_file {path} { #<<<
 			json foreach case [json extract $entry cases] {
 				set case_id		[json get $case id]
 				set constraints	[if {$case_id in $not_implemented_cases} {list not_implemented}]
+				if {[json get $entry metadata protocol] eq "smithy-rpc-v2-cbor"} {lappend constraints haveCbor}
 				test protocol-input-$protocol-$case_id [json get -default $case_id $entry description] -constraints $constraints -body {
 					set op		[aws from_camel [json get $case given name]]
 					set args	[vec_build_args $entry $case]
@@ -959,6 +1123,11 @@ proc decode_output {entry case} { #<<<
 				json get -default ${op}Result $case given output resultWrapper
 			}]
 			::aws::_resp_xml $rw $fetchlist $template [json get $case response body]
+		}
+		smithy-rpc-v2-cbor {
+			set b	[binary decode base64 [json get -default {} $case response body]]
+			if {$b eq ""} {return {{}}}
+			::aws::_cbor_decode $b
 		}
 		default {
 			return -code error "output decoder not implemented for this protocol"
@@ -1062,6 +1231,115 @@ proc result_equal {a b} { #<<<
 }
 #>>>
 
+proc vec_b64_blobs {shapes shape j} { #<<<
+	# base64 encode the blob values in the JSON value j of shape
+	if {![json exists $shapes $shape] || [json type $j] eq "null"} {return $j}
+	switch -exact -- [resolve_shape_type $shapes $shape] {
+		blob {
+			return [json string [binary encode base64 [encoding convertto utf-8 [json get $j]]]]
+		}
+		structure - union {
+			json foreach {k v} $j {
+				if {[json exists $shapes $shape members $k]} {
+					json set j $k [vec_b64_blobs $shapes [json get $shapes $shape members $k shape] $v]
+				}
+			}
+		}
+		list {
+			set i	0
+			json foreach v $j {
+				json set j $i [vec_b64_blobs $shapes [json get $shapes $shape member shape] $v]
+				incr i
+			}
+		}
+		map {
+			json foreach {k v} $j {
+				json set j $k [vec_b64_blobs $shapes [json get $shapes $shape value shape] $v]
+			}
+		}
+	}
+	return $j
+}
+
+#>>>
+proc vec_modeled {shapes shape j} { #<<<
+	# Drop members of j not modeled by shape (recursively)
+	if {![json exists $shapes $shape] || [json type $j] eq "null"} {return $j}
+	switch -exact -- [resolve_shape_type $shapes $shape] {
+		structure - union {
+			if {[json type $j] ne "object"} {return $j}
+			json foreach {k v} $j {
+				if {[json exists $shapes $shape members $k]} {
+					json set j $k [vec_modeled $shapes [json get $shapes $shape members $k shape] $v]
+				} else {
+					json unset j $k
+				}
+			}
+		}
+		list {
+			if {[json type $j] ne "array"} {return $j}
+			set i	0
+			json foreach v $j {
+				json set j $i [vec_modeled $shapes [json get $shapes $shape member shape] $v]
+				incr i
+			}
+		}
+		map {
+			if {[json type $j] ne "object"} {return $j}
+			json foreach {k v} $j {
+				json set j $k [vec_modeled $shapes [json get $shapes $shape value shape] $v]
+			}
+		}
+	}
+	return $j
+}
+
+#>>>
+# Error responses (smithy-rpc-v2-cbor): decode through the real _aws_error,
+# with a stand-in for the rl_http response object.
+proc run_output_error_file {path} { #<<<
+	set entries		[chantricks::readfile $path]
+	set protocol	[file rootname [file tail $path]]
+	json foreach entry $entries {
+		json foreach case [json extract $entry cases] {
+			if {![json exists $case error]} continue
+			set case_id	[json get $case id]
+			test protocol-output-error-$protocol-$case_id [json get $entry description] -constraints haveCbor -body {
+				set hdrs	{}
+				json foreach {k v} [json extract -default {{}} $case response headers] {
+					dict set hdrs [string tolower $k] [list [json get $v]]
+				}
+				dict set hdrs x-amzn-requestid [list req-1]
+				interp alias {} ::vec_resp {} apply {{status hdrs body method} {
+					switch -exact -- $method {
+						code	{set status}
+						headers	{set hdrs}
+						body	{set body}
+					}
+				}} [json get $case response status_code] $hdrs [binary decode base64 [json get $case response body]]
+				set rc	[catch {::aws::helpers::_aws_error ::vec_resp {} {}} msg opts]
+				set ec	[dict get $opts -errorcode]
+				set code	[lindex $ec 1]
+				# Like the json protocols, the code is __type in full
+				# (namespace#Name); the vectors give the bare name
+				set code	[lindex [split $code #] end]
+				# With no message in the error, ours (like the json protocols')
+				# falls back to naming the exception type
+				set expmsg	[if {[json exists $case errorMessage]} {
+					json get $case errorMessage
+				} else {
+					string cat "AWS exception: " [lindex [dict get $opts -errorcode] 1]
+				}]
+				list $rc [lindex $ec 0] $code [expr {$msg eq $expmsg}]
+			} -cleanup {
+				interp alias {} ::vec_resp {}
+				unset -nocomplain hdrs rc msg opts ec code expmsg
+			} -result [list 1 AWS [json get $case errorCode] 1]
+		}
+	}
+}
+
+#>>>
 # Run all (success-result) output cases from a protocol vector file.
 proc run_output_file {path} { #<<<
 	global not_implemented_output_cases
@@ -1074,15 +1352,27 @@ proc run_output_file {path} { #<<<
 			if {![json exists $case result]} continue
 			set case_id		[json get $case id]
 			set constraints	[if {$case_id in $not_implemented_output_cases} {list not_implemented}]
+			set cbor		[expr {[json get $entry metadata protocol] eq "smithy-rpc-v2-cbor"}]
+			if {$cbor} {lappend constraints haveCbor}
 			set name		protocol-output-$protocol-$case_id
 			test $name $desc -constraints $constraints -body {
 				set got	[strip_nulls [decode_output $entry $case]]
 				set exp	[json extract $case result]
+				if {$cbor && [json exists $case given output shape]} {
+					set oshape	[json get $case given output shape]
+					# Like the json protocols, blobs come back base64 encoded
+					# (the vectors give the decoded value), and the result is
+					# the whole response document, unmodeled members included
+					# (the vectors drop them) - see the json response raw-body
+					# design decision
+					set exp	[vec_b64_blobs [json extract $entry shapes] $oshape $exp]
+					set got	[vec_modeled [json extract $entry shapes] $oshape $got]
+				}
 				if {![result_equal $got $exp]} {
 					error "got [json normalize $got]\nexp [json normalize $exp]"
 				}
 				return "match"
-			} -cleanup {unset -nocomplain got exp} -result match
+			} -cleanup {unset -nocomplain got exp oshape} -result match
 		}
 	}
 }
@@ -1091,16 +1381,22 @@ proc run_output_file {path} { #<<<
 # Kick off
 set protocol_dir	[file join [file dirname [info script]] .. botocore tests unit protocols]
 if {[file isdirectory $protocol_dir]} {
-	foreach proto {query ec2 json json_1_0 rest-json rest-xml} {
+	foreach proto {query ec2 json json_1_0 rest-json rest-xml smithy-rpc-v2-cbor smithy-rpc-v2-cbor-query-compatible smithy-rpc-v2-cbor-non-query-compatible} {
 		set path	[file join $protocol_dir input $proto.json]
 		if {[file exists $path]} {
 			run_input_file $path
 		}
 	}
-	foreach proto {query ec2 rest-xml} {
+	foreach proto {query ec2 rest-xml smithy-rpc-v2-cbor smithy-rpc-v2-cbor-query-compatible} {
 		set path	[file join $protocol_dir output $proto.json]
 		if {[file exists $path]} {
 			run_output_file $path
+		}
+	}
+	foreach proto {smithy-rpc-v2-cbor smithy-rpc-v2-cbor-query-compatible} {
+		set path	[file join $protocol_dir output $proto.json]
+		if {[file exists $path]} {
+			run_output_error_file $path
 		}
 	}
 }

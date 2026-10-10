@@ -23,11 +23,9 @@ Key pages to start with:
 - `pagination.md` — aws foreach / aws lmap, driven by paginators-1.json
 - `retry.md` — retry classifier, backoff, per-service rate-limit state (tsv-backed), idempotency-token auto-fill
 - `testing.md` — test file layout, constraints, the fixture stack
-
-Forward-looking (not yet implemented):
-
-- `cbor.md` — how to add native smithy-rpc-v2-cbor support alongside
-  the json fallback
+- `cbor.md` — smithy-rpc-v2-cbor: the json pipeline plus `cbor_glue.c`
+  (jitc-compiled rl_json <-> CBOR conversion), used only by the
+  services that offer no other protocol
 
 ## Environment
 
@@ -36,11 +34,17 @@ Forward-looking (not yet implemented):
   the fixture-stack lifecycle). Standard dev invocation:
 
   ```sh
-  PKG_CONFIG_PATH=/opt/tcl9g/lib/pkgconfig \
+  CC=gcc-14 PKG_CONFIG_PATH=/opt/tcl9g/lib/pkgconfig \
       meson setup build9g -Dtestmode=true
   meson compile -C build9g
   meson test    -C build9g
   ```
+
+  `CC=gcc-14`: the package itself is pure Tcl, but the cbor test dep
+  (needed by the smithy-rpc-v2-cbor services) is a C extension built as
+  a subproject when the pkg-config prefix doesn't have cbor >= 1.2
+  (/opt/tcl9g ships 1.1 until it's rebuilt from alpine-tcl), and it
+  links /opt/tcl9g's libtommath.a, which carries gcc-14 LTO bytecode.
 
   Single test file: `TESTFLAGS='-file credentials.test' meson test -C build9g`.
   Release build with `/opt/tcl9`: `CC=gcc-14 PKG_CONFIG_PATH=/opt/tcl9/lib/pkgconfig
@@ -63,7 +67,8 @@ Forward-looking (not yet implemented):
   works for packagers.
 
 - Doc source: `doc/aws.md.in` → pandoc → `aws.n`, `aws.html`, `README.md`.
-  Alias target: `meson compile -C build9g doc`. README.md in the repo
+  Alias target: `meson compile -C build9g ./doc/doc:alias` (plain `doc`
+  is ambiguous when the cbor subproject is built). README.md in the repo
   root is the rendered GFM output — update by copying
   `build9g/doc/README.md` over it when the source changes.
 
@@ -71,7 +76,7 @@ Forward-looking (not yet implemented):
   prefix, meson falls back to building it from `subprojects/<name>.wrap`
   (git clones from GitHub). Build deps (`rl_json`, `parse_args`,
   `chantricks`, `brotli`) are required for `meson compile`; test deps
-  (`rl_http`, `tomcrypt`, `reuri`, `s2n`, `tdom`) are gated by
+  (`rl_http`, `tomcrypt`, `reuri`, `s2n`, `tdom`, `cbor`) are gated by
   `-Dbuild_tests` (default on). Two deps still need meson support
   added upstream: `tdom` (~several thousand lines of autoconf — a
   dedicated session) and (to a lesser extent) `rl_http` + `chantricks`
@@ -155,7 +160,7 @@ Forward-looking (not yet implemented):
 - `botocore/` is a git submodule; currently pinned to v1.43.111
 - Related sources (not in this repo):
   - rl_json: `~/git/rl_json` (see memory)
-  - cbor: `~/git/tcl/cbor` (for future cbor impl)
+  - cbor: `~/git/tcl/cbor` (C API / stubs used by `cbor_glue.c`)
 
 ## Design decisions worth not re-litigating
 
@@ -231,8 +236,10 @@ web-identity code paths to nest STS calls without recursing through
   through `aws s3 put_object` now; no more workaround)
 
 Green baseline: `meson test -C build9g` passes whole suite in one process
-(14374 / 14380 at time of writing; remaining skips are constraint-
-gated: rl_aws_account + a handful of known-bug sentinels).
+(15024 / 15091 at time of writing; remaining skips are constraint-
+gated: rl_aws_account + a handful of known-bug sentinels).  The
+smithy-rpc-v2-cbor protocol-vector cases need jitc (from the test
+tclsh's install) and cbor 1.2 (`haveCbor` constraint).
 
 Requires rl_http ≥ 1.24 (for `-cafile` / `-cadir` / `-s2n_config`, the
 keepalive-pool TLS-identity partitioning, plus the earlier 1.23

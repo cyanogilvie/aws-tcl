@@ -115,6 +115,10 @@ deps_spec = [
   ['dedup',      'pkg', get_option('build_tests')],
   ['reuri',      'pkg', get_option('build_tests')],
   ['tdom',       'pkg', get_option('build_tests')],
+  # cbor (>= 1.2, plus jitc >= 0.8, taken from the test tclsh's own install)
+  # is only needed at runtime by the smithy-rpc-v2-cbor services, which
+  # compile cbor_glue.c against it on first use.
+  ['cbor',       'pkg', get_option('build_tests')],
   ['tcl-s2n',    'pkg', false],
 ]
 if tcl_dep.type_name() == 'internal'

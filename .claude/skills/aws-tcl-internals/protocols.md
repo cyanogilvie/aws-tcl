@@ -245,9 +245,10 @@ an ordered list of fallbacks (newer). `build_aws_services` checks:
    that.
 3. Otherwise skip the service (logged, not built).
 
-This is how `smithy-rpc-v2-cbor` services (cloudwatch, interconnect,
-arc-region-switch) currently build: they fall back to `json`.
-Adding native cbor support is documented in `cbor.md`.
+Services listing `smithy-rpc-v2-cbor` first but also a supported
+protocol (cloudwatch and ~20 others) build with that fallback (json).
+Services offering *only* cbor build natively as `smithy-rpc-v2-cbor` —
+see `cbor.md`.
 
 ## Signing
 

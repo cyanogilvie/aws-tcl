@@ -123,6 +123,26 @@ type information (boolean vs string, number vs string). Query, ec2, and
 rest-xml protocols continue to take Tcl-native nested values because
 those protocols serialise to XML-flavoured wire formats.
 
+### smithy-rpc-v2-cbor services
+
+A few newer services only offer the Smithy RPC v2 CBOR protocol
+(currently `cloudwatchomni`, `eventbridgev2` and
+`partnercentral_revenue_measurement`). They look exactly like the
+json-family services from Tcl: nested inputs are JSON fragments, and the
+result is the same rl_json value a json service would return (blobs
+base64-encoded, timestamps as epoch seconds, NaN / Infinity as the
+strings `"NaN"`, `"Infinity"`, `"-Infinity"`). Errors carry the same
+`{AWS <__type> <request-id> ...}` error code.
+
+On the wire the request and response bodies are CBOR, converted by a
+small C module compiled at runtime by **jitc** against **rl_json** and
+**cbor** the first time one of these services is called, so they need
+Tcl 9 with the **jitc** (>= 0.8) and **cbor** (>= 1.2) packages
+installed. Without them the call fails with
+`{AWS UNSUPPORTED cbor}`. Services that offer CBOR alongside a JSON
+protocol (cloudwatch and others) use the JSON protocol, and don't need
+either package.
+
 ### Operations that return blobs
 
 Binary outputs (e.g., `s3 get_object`, `lambda invoke` response

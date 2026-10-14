@@ -646,6 +646,60 @@ test transport_config-1.7 {every generated op accepts -connect_timeout / -read_t
 #>>>
 # Retry classifier + backoff + idempotency tokens >>>
 
+# Option names and generated argspecs <<<
+proc _argspec_dups cmd { #<<<
+	# Options defined more than once in the parse_args spec of an op proc
+	set body	[info body $cmd]
+	set rest	[string range $body [string first {parse_args $args } $body]+17 end]
+	for {set i 1} {$i < [string length $rest]} {incr i} {
+		set w	[string range $rest 0 $i]
+		if {[string index $w end] eq "\}" && [info complete $w]} break
+	}
+	set seen	{}
+	set dups	{}
+	foreach {o -} [lindex $w 0] {
+		if {[dict exists $seen $o]} {lappend dups $o}
+		dict set seen $o 1
+	}
+	set dups
+}
+
+#>>>
+test from_camel-1.1 {words, acronyms and digits} -body { #<<<
+	lmap n {UseFIPS WriteGetObjectResult S3Bucket fooEnum1 TableName} {aws from_camel $n}
+} -result {use_FIPS write_get_object_result S3_bucket foo_enum1 table_name}
+#>>>
+test from_camel-1.2 {a lone letter is a word, not dropped} -body { #<<<
+	lmap n {a aB eTag oAuth2Credentials M3u8Settings S3objectKey} {aws from_camel $n}
+} -result {a a_B e_tag o_auth2_credentials m3_u8_settings s3_object_key}
+#>>>
+test from_camel-1.3 {eTag and Tag no longer collide} -body { #<<<
+	expr {[aws from_camel eTag] ne [aws from_camel Tag]}
+} -result 1
+#>>>
+test argspec_dups-1.1 {rest-xml op: input members aren't redefined by endpoint context params} -setup { #<<<
+	package require aws::s3
+	::aws::_compile_rest-xml_op ::aws::s3 get_object
+} -body {
+	_argspec_dups ::aws::s3::get_object
+} -result {}
+#>>>
+test argspec_dups-1.2 {s3 get_object -bucket stays required} -body { #<<<
+	aws s3 get_object -key k
+} -returnCodes error -errorCode {PARSE_ARGS REQUIRED -bucket} -result {option -bucket is required}
+#>>>
+test argspec_dups-1.3 {eager op: input members aren't redefined by output-capture aliases} -setup { #<<<
+	package require aws::sagemaker_runtime
+} -body {
+	_argspec_dups ::aws::sagemaker_runtime::invoke_endpoint
+} -result {}
+#>>>
+test argspec_dups-1.4 {_first_def keeps the first definition, and drops options already taken} -body { #<<<
+	::aws::_first_def {-a {-required} -b {} -a -alias -timeout {} -c {}} {-timeout {-default {}}}
+} -result {-a -required -b {} -c {}}
+#>>>
+# Option names and generated argspecs >>>
+
 # cleanup
 ::tcltest::cleanupTests
 return

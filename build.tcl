@@ -1064,6 +1064,7 @@ proc compile_op {def op opdef protocol endpoint_params responsesVar exceptionsVa
 			}
 
 			if {[llength $static] != 0} {set static ";[join $static ";"]"}
+			set params	[aws::_first_def $params $::aws::common_argspec]
 			append service_code "proc [list $cmd]%p$params\}$static%r$service_args\}" \n
 		} on error {errmsg options} {
 			set prefix	"Error compiling service [json get $def metadata service_name].$op:"

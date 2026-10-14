@@ -92,9 +92,39 @@ word-words. Crucially, **it handles digit suffixes on both**:
 - `IPV4Address` → `IPV4_address`
 - `DBInstanceIdentifier` → `DB_instance_identifier`
 
-A pre-fix version silently stripped trailing digits (`fooEnum1` →
-`foo_enum`), which collided members and made several services' ops
-unreachable. If you touch the regex, test against all of those.
+A lone letter is a word too: `a` → `a`, `aB` → `a_B`, `eTag` →
+`e_tag`, `M3u8Settings` → `m3_u8_settings`, `S3objectKey` →
+`s3_object_key`.
+
+Two pre-fix versions dropped characters: one stripped trailing digits
+(`fooEnum1` → `foo_enum`), the other (word branch `[a-z]+`) dropped
+lone letters (`a` → ``, `eTag` → `tag`), which collided members
+(`eTag` with `Tag`, rest-xml protocol vector members `a`/`b`/`c` all
+→ `-`) and made several services' ops unreachable. If you touch the
+regex, test against all of those (`units.test` `from_camel-*`), and diff
+the mapping over every botocore member / op / endpoint-param name:
+op names must not change, and no two members of one shape may map to
+the same option.
+
+## Duplicate options: `_first_def`
+
+An op's parse_args spec is assembled from several sources that can
+name the same option: input members, endpoint-rules context params
+(`-bucket` in s3), output-capture `-alias` entries for output members
+that share an input member's name (`-content_type` in sagemaker_runtime
+invoke_endpoint), and the shared transport prefix (`-timeout`, from
+`::aws::common_argspec`, the `%p` template). parse_args 0.6 silently
+kept the first definition, 0.7.0 the last, and 0.7.1 rejects
+duplicates outright. Both emit points (`build.tcl` for eager ops, the
+end of `_compile_rest-xml_op`) pass the spec through
+`::aws::_first_def`, which keeps the first definition (the 0.6
+semantics), dropping options already in `common_argspec` for eager
+ops. `units.test` `argspec_dups-*` covers it.
+
+Note that `-cx_suppress` has never taken effect: both endpoint-param
+loops test `[dict exists cx_suppress $camel_name]` (the literal name,
+not `$cx_suppress`), so suppressed params are still emitted (then
+deduplicated by `_first_def` when they shadow a member).
 
 ## Location routing (top-level members)
 

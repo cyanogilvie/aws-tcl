@@ -40,11 +40,15 @@ Key pages to start with:
   meson test    -C build9g
   ```
 
-  `CC=gcc-14`: the package itself is pure Tcl, but the cbor test dep
-  (needed by the smithy-rpc-v2-cbor services) is a C extension built as
-  a subproject when the pkg-config prefix doesn't have cbor >= 1.2
-  (/opt/tcl9g ships 1.1 until it's rebuilt from alpine-tcl), and it
-  links /opt/tcl9g's libtommath.a, which carries gcc-14 LTO bytecode.
+  `CC=gcc-14`: the package itself is pure Tcl, and with a current
+  /opt/tcl9g (rebuilt from alpine-tcl: cbor 1.2.1, parse_args 0.7.x,
+  rl_json 0.17.8) every dep resolves from the system install, so nothing
+  is compiled.  It matters when a C dep falls back to a subproject
+  (missing from the prefix, or `--force-fallback-for=...`): those link
+  /opt/tcl9g's libtommath.a, which carries gcc-14 LTO bytecode.
+  Subproject builds of rl_json >= 0.17.8 also need meson >= 1.11 (1.9.1
+  passes its `c_std` fallback list verbatim to `-std=` in a has_define
+  check and fails with "Could not get define 'MODULE_SCOPE'").
 
   Single test file: `TESTFLAGS='-file credentials.test' meson test -C build9g`.
   Release build with `/opt/tcl9`: `CC=gcc-14 PKG_CONFIG_PATH=/opt/tcl9/lib/pkgconfig
@@ -225,7 +229,9 @@ web-identity code paths to nest STS calls without recursing through
   UTF-8 paths, header continuation, duplicate keys, and pre-encoded
   query strings
 - `tests/units.test` — primitives + retry classifier / backoff /
-  Retry-After / UUIDv4 / idempotency-token auto-fill
+  Retry-After / UUIDv4 / idempotency-token auto-fill, `from_camel`, and
+  no duplicate options in generated argspecs (parse_args >= 0.7.1
+  rejects them)
 - `tests/retry.test` — `_aws_req` retry loop end-to-end with a
   programmable mock `_req`
 - `tests/pagination.test` — 30 unit + fixture-stack tests of
@@ -236,8 +242,9 @@ web-identity code paths to nest STS calls without recursing through
   through `aws s3 put_object` now; no more workaround)
 
 Green baseline: `meson test -C build9g` passes whole suite in one process
-(15024 / 15091 at time of writing; remaining skips are constraint-
-gated: rl_aws_account + a handful of known-bug sentinels).  The
+(15068 / 15101 at time of writing; remaining skips are constraint-
+gated: rl_aws_account, aws_tcl_fixtures when the fixture stack isn't
+deployed, + a handful of known-bug sentinels).  The
 smithy-rpc-v2-cbor protocol-vector cases need jitc (from the test
 tclsh's install) and cbor 1.2 (`haveCbor` constraint).
 

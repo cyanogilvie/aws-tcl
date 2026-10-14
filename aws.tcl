@@ -4222,25 +4222,52 @@ namespace eval aws {
 	}
 
 	#>>>
+	# The leading options of every eager op's parse_args spec (the %p prefix)
+	variable common_argspec {-requestid -alias -response_headers -alias -timeout {-default {}} -connect_timeout {-default {}} -read_timeout {-default {}} -max_keepalive_age {-default {}} -max_keepalive_count {-default {}}}
+
 	proc _reconstruct {custom_maps in} { #<<<
+		variable common_argspec
 		string map [list \
-			%p		" args \{parse_args \$args \{-requestid -alias -response_headers -alias -timeout \{-default \{\}\} -connect_timeout \{-default \{\}\} -read_timeout \{-default \{\}\} -max_keepalive_age \{-default \{\}\} -max_keepalive_count \{-default \{\}\} " \
+			%p		" args \{parse_args \$args \{$common_argspec " \
 			%r		";_service_req -r \$region " \
 			{*}$custom_maps \
 		] $in
 	}
 
 	#>>>
-	proc from_camel str { # UseFIPS -> use_FIPS, WriteGetObjectResult -> write_get_object_result, S3Bucket -> s3_bucket, fooEnum1 -> foo_enum1 <<<
+	proc _first_def {argspec {taken {}}} { #<<<
+		# Drop repeat definitions of an option from a parse_args spec, keeping
+		# the first, and any option already defined in the spec $taken that
+		# precedes it.  Which of two definitions parse_args honours isn't
+		# specified, and changed in parse_args 0.7.0 (first to last), so a
+		# repeat would silently change meaning: an input member shadowed by
+		# an endpoint context param (s3 -bucket / -key losing -required and
+		# then their values) or by an output-capture -alias of the same name
+		# (sagemaker_runtime invoke_endpoint -content_type).
+		set seen	[dict map {o -} $taken {}]
+		set res		{}
+		foreach {o settings} $argspec {
+			if {[dict exists $seen $o]} continue
+			dict set seen $o {}
+			lappend res $o $settings
+		}
+		set res
+	}
+
+	#>>>
+	proc from_camel str { # UseFIPS -> use_FIPS, WriteGetObjectResult -> write_get_object_result, S3Bucket -> S3_bucket, fooEnum1 -> foo_enum1 <<<
 		# Two cases:
 		#   - An all-caps run, optionally followed by digits, as long as the
 		#     next char is caps (so the digits are part of an acronym like S3)
 		#     or end of string. Example: "UseFIPS" -> "use" + "FIPS".
-		#   - A normal word: a letter followed by 1+ lowercase and optional
-		#     trailing digits. Example: "fooEnum1" -> "foo" + "Enum1".
+		#   - A normal word: a letter followed by any lowercase and optional
+		#     trailing digits. Example: "fooEnum1" -> "foo" + "Enum1".  A lone
+		#     letter is a word too ("a" -> "a", "eTag" -> "e_tag",
+		#     "M3u8Settings" -> "m3_u8_settings"): requiring 1+ lowercase
+		#     dropped it, mapping "a" to "" and colliding "eTag" with "Tag".
 		# Acronym runs keep their original case; normal words lowercase.
 		join [lmap {- caps title} [regexp -all -inline \
-			{([A-Z]+\d*(?=[A-Z]|$))|([A-Za-z][a-z]+\d*)} $str] \
+			{([A-Z]+\d*(?=[A-Z]|$))|([A-Za-z][a-z]*\d*)} $str] \
 		{
 			if {$title ne {}} {
 				string tolower $title
@@ -4734,7 +4761,7 @@ namespace eval aws {
 		set body	""
 		append body	{variable service_def} \n
 		append body	[list set cxparams	$cxparams] \n
-		append body	"parse_args \$args [list $argspec] params\n"
+		append body	"parse_args \$args [list [_first_def $argspec]] params\n"
 		append body $post_parse_args
 		foreach _tok $idempotency_tokens {
 			append body "if {!\[dict exists \$params [list $_tok]\]} {dict set params [list $_tok] \[::aws::helpers::_uuid4\]}\n"

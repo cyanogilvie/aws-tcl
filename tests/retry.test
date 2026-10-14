@@ -261,6 +261,23 @@ test retry-1.9 {exhausts retries → throws original error not TOO_MANY_ERRORS} 
 	::test_retry::cleanup
 } -result {rc 1 code SlowDown}
 #>>>
+test retry-1.10 {retries namespace-qualified throttle codes, surfaces the qualified code} -setup $retry_setup -body { #<<<
+	# DynamoDB (and other json-protocol services) report __type as
+	# <namespace>#<Code>. The classifier must match on the bare code,
+	# while the errorCode the caller sees keeps the original form.
+	set ::test_retry::script {
+		{err com.amazonaws.dynamodb.v20120810#ProvisionedThroughputExceededException a}
+		{err com.amazonaws.dynamodb.v20120810#ProvisionedThroughputExceededException b}
+		{err com.amazonaws.dynamodb.v20120810#ProvisionedThroughputExceededException c}
+	}
+	set rc [catch {::test_retry::do_req -retries 3} res ei]
+	list rc $rc attempts [llength $::test_retry::call_log] \
+		code [lindex [dict get $ei -errorcode] 1]
+} -cleanup {
+	unset -nocomplain rc res ei
+	::test_retry::cleanup
+} -result {rc 1 attempts 3 code com.amazonaws.dynamodb.v20120810#ProvisionedThroughputExceededException}
+#>>>
 
 # File-level teardown: drop the ::test_retry namespace and the only
 # global we created outside it.

@@ -8,12 +8,12 @@ aws - AWS service bindings for Tcl, modelled on the AWS CLI
 
 **package require aws::**\<*service*\>
 
-**aws** *service* *operation* ?*-option* *value* …?  
+**aws** *service* *operation* ?*-option* *value* …?\
 **aws** **foreach** *varlist* *service* *operation* ?*-option* *value*
-…? *body*  
+…? *body*\
 **aws** **lmap** *varlist* *service* *operation* ?*-option* *value* …?
-*body*  
-**aws** **endpoint** **-service** *service* ?**-region** *region*?  
+*body*\
+**aws** **endpoint** **-service** *service* ?**-region** *region*?\
 **::aws::helpers::set_creds** **-access_key** *key* **-secret** *secret*
 ?**-token** *token*?
 
@@ -51,10 +51,10 @@ is sufficient.
 The CLI uses `--double-dashed` options in `kebab-case`. The Tcl SDK uses
 single-dashed options in `snake_case`, matching Tcl convention:
 
-| AWS CLI                            | Tcl SDK                                 |
-|------------------------------------|-----------------------------------------|
-| `--function-name foo`              | `-function_name foo`                    |
-| `--max-items 10`                   | `-max_items 10`                         |
+| AWS CLI | Tcl SDK |
+|----|----|
+| `--function-name foo` | `-function_name foo` |
+| `--max-items 10` | `-max_items 10` |
 | `--cli-input-json file://req.json` | not supported — pass arguments directly |
 
 Operation names convert the same way: `list-functions` →
@@ -91,31 +91,48 @@ aws ec2 describe_instances -instance_ids {i-aaa i-bbb}
 
 ### Structure / map inputs (json-family protocols)
 
-Services using the json, rest-json, or json_1.0 protocols (dynamodb,
-lambda, ecs, and many others) accept nested values as JSON fragments,
-not as Tcl dicts. Use the `~J:`, `~S:`, `~N:` substitution forms from
-**rl_json**’s `json template`:
+Services using the json, rest-json, json_1.0, or rest-xml protocols
+(dynamodb, lambda, ecs, s3, cloudfront, route53, and many others) accept
+nested values (structures, maps, and lists, including top-level lists)
+as JSON fragments, not as Tcl dicts or lists. Use the `~J:`, `~S:`,
+`~N:`, `~B:` substitution forms from **rl_json**’s `json template`:
 
 ``` tcl
 set tags [json template {["~S:a", "~S:b"]}]
 set item [json template {
     {
-        "pk":     "~S:pk",
-        "sk":     "~S:sk",
-        "count":  "~N:count",
-        "tags":   "~J:tags"
+        "pk":     {"S":  "~S:pk"},
+        "sk":     {"S":  "~S:sk"},
+        "count":  {"N":  "~S:count"},
+        "tags":   {"SS": "~J:tags"}
     }
 }]
 aws dynamodb put_item \
     -table_name Users \
     -item       $item
+
+aws cloudfront create_invalidation \
+    -distribution_id    E2R4RHYW3FOCFL \
+    -invalidation_batch [json template {
+        {
+            "Paths":           {"Quantity": 1, "Items": ["/index.html"]},
+            "CallerReference": "~S:ref"
+        }
+    }]
 ```
+
+Keys inside the fragment are the botocore member names (the same keys
+the CLI’s JSON input uses); wire-level renames, base64 encoding of
+nested blobs, and timestamp formatting are applied by the SDK. For
+rest-xml services the SDK converts the fragment to the XML request body.
 
 This is a deliberate design choice: nested JSON is frequently
 constructed by composition, and round-tripping through Tcl dicts loses
-type information (boolean vs string, number vs string). Query, ec2, and
-rest-xml protocols continue to take Tcl-native nested values because
-those protocols serialise to XML-flavoured wire formats.
+type information (boolean vs string, number vs string). The query and
+ec2 protocols (iam, sts, cloudformation, ec2, …) take Tcl-native nested
+values instead: lists as Tcl lists, structures as dicts keyed by member
+name (see the `describe_instances` example under **COMMON
+TRANSLATIONS**).
 
 ### smithy-rpc-v2-cbor services
 
@@ -138,10 +155,18 @@ others) use the JSON protocol, and don’t need either package.
 
 ### Operations that return blobs
 
-Binary outputs (e.g., `s3 get_object`, `lambda invoke` response payload)
-are returned as byte-string Tcl values. Use `binary format` /
-`binary scan` / `chan write` to handle them; do not `puts` them to a
-text channel without a `-translation binary` configuration.
+Binary outputs are byte-string Tcl values. Where the whole response body
+is the blob (e.g. `s3 get_object`), pass `-payload varname` to receive
+it; the return value then holds the metadata from the response headers:
+
+``` tcl
+set meta [aws s3 get_object -bucket assets -key logo.png -payload bytes]
+```
+
+Blobs embedded in a JSON response (e.g. the `lambda invoke` `Payload`)
+are returned in the JSON. Use `binary format` / `binary scan` /
+`chan write` to handle them; do not `puts` them to a text channel
+without a `-translation binary` configuration.
 
 ## PAGINATION
 
@@ -299,9 +324,11 @@ Matching the AWS SDK v2 / v3 conventions:
 | Retry mode  | `AWS_RETRY_MODE`   | `retry_mode`   | `standard` |
 | Attempt cap | `AWS_MAX_ATTEMPTS` | `max_attempts` | `3`        |
 
-`legacy` / `standard` / `adaptive` have the same meaning as the AWS SDKs
-— `adaptive` adds client-side adaptive throttling on top of the standard
-backoff.
+All modes retry with full-jitter exponential backoff (honouring
+`Retry-After`). `standard` (and `adaptive`, currently treated the same)
+also paces sends per service and region: a throttling response halves
+the allowed send rate, which recovers after 10 s without throttles.
+`legacy` skips the pacing.
 
 The retry classifier recognises:
 
@@ -311,9 +338,9 @@ The retry classifier recognises:
   `RequestTimeout`, …)
 - HTTP statuses `408`, `425`, `429`, `500`, `502`, `503`, `504`, `509`
 
-Rate-limit state (the adaptive-mode bucket) is kept in process-scoped
-`tsv` arrays, so throttling observed on one thread influences subsequent
-sends from other threads that share the **rl_http** keepalive pool.
+Rate-limit state is kept in process-scoped `tsv` arrays, so throttling
+observed on one thread influences subsequent sends from other threads
+that share the **rl_http** keepalive pool.
 
 Idempotency tokens on operations that declare one (ubiquitous on
 `Create*` ops that accept a `ClientToken`) are auto-populated with a
@@ -348,32 +375,44 @@ against S3/DynamoDB partition-scale opacity.
 AWS service errors are raised as Tcl exceptions with an `errorCode` of
 the form:
 
-    AWS <SERVICE_ID_UPPER> <type> <Code>
+    AWS <Code> <RequestId> <Resource> <Details>
 
 where:
 
-- **SERVICE_ID_UPPER** is the service ID in upper case (e.g. `S3`,
-  `DYNAMODB`, `STS`).
-- **type** is `Sender`, `Server`, or `unknown`.
 - **Code** is the service-defined error code (e.g. `NoSuchBucket`,
-  `ValidationException`).
+  `ValidationException`, `InvalidInstanceID.Malformed`). Some json
+  protocol services (DynamoDB among them) report a namespace-qualified
+  code such as
+  `com.amazonaws.dynamodb.v20120810#ResourceNotFoundException`.
+- **RequestId** is the AWS request id.
+- **Resource** is the `Resource` element of an XML error response (S3),
+  otherwise empty.
+- **Details** (XML protocols) is a key/value list of every field of the
+  error element (`BucketName`, `Key`, `HostId`, …).
+
+The result is the AWS error message (prefixed with `AWS:` for XML
+protocols). An error response with no parseable body raises
+`AWS <httpStatus>`, e.g. `AWS 404` from `s3 head_object`.
 
 Typical pattern:
 
 ``` tcl
 try {
-    aws dynamodb get_item -table_name Users -key $key
-} trap {AWS DYNAMODB Sender ResourceNotFoundException} {} {
-    # table doesn't exist — create it or surface a user-friendly error
-} trap {AWS DYNAMODB} {msg opts} {
-    # any other DynamoDB-side failure
-    log warn "dynamodb: $msg"
+    aws s3 get_object -bucket assets -key $key -payload bytes
+} trap {AWS NoSuchKey} {} {
+    # object doesn't exist
+} trap AWS {msg opts} {
+    # any other AWS-side failure
+    log warn "s3: $msg ([lindex [dict get $opts -errorcode] 1])"
 }
 ```
 
-Transport-level failures (DNS, TCP reset, TLS) propagate with an
-errorCode starting with `AWS POSIX`, matching the classifier used by the
-retry logic.
+Throttling and transient errors have already been retried (see **RETRIES
+AND RATE LIMITING**) by the time they reach the caller.
+
+Transport-level failures (DNS, TCP reset, TLS) that persist through the
+retries propagate with the underlying socket / **rl_http** errorCode,
+which does not start with `AWS`.
 
 **Credential-resolution errors** have their own taxonomy:
 
@@ -539,22 +578,36 @@ proc get_user user_id {
         aws dynamodb get_item \
             -table_name Users \
             -key        [json template {{"pk":{"S":"~S:user_id"}}}]
-    } trap {AWS DYNAMODB Sender ResourceNotFoundException} {} {
-        # Table doesn't exist. Different from "item not found" — an
-        # empty Item in the response means the row is absent.
-        throw {APP TABLE_MISSING} "Users table is not provisioned"
-    } trap {AWS DYNAMODB Sender ProvisionedThroughputExceededException} {} {
-        # The SDK already retried this per the configured retry policy;
-        # if it still bubbles up the bucket is exhausted for real.
-        throw {APP OVERLOADED} "DynamoDB throttling — try again shortly"
+    } trap AWS {msg opts} {
+        # DynamoDB reports namespace-qualified codes
+        # (com.amazonaws.dynamodb.v20120810#ResourceNotFoundException),
+        # which trap's prefix matching can't glob, so match on the
+        # unqualified tail of the code here.
+        set code [lindex [dict get $opts -errorcode] 1]
+        switch -- [lindex [split $code #] end] {
+            ResourceNotFoundException {
+                # Table doesn't exist. Different from "item not found" —
+                # an empty Item in the response means the row is absent.
+                throw {APP TABLE_MISSING} "Users table is not provisioned"
+            }
+            ProvisionedThroughputExceededException {
+                throw {APP OVERLOADED} "DynamoDB throttling — try again shortly"
+            }
+        }
+        return -options $opts $msg
     }
 }
 
-# Catch all errors from a given service in one block. Tcl's trap
-# pattern matching is prefix-based, so {AWS S3} matches any s3 error.
+# S3 errors carry the request id, resource and every field of the XML
+# error element in the errorCode: {AWS Code RequestId Resource Details}
 try {
     aws s3 put_object -bucket private -key secrets.txt -body $data
-} trap {AWS S3} {msg opts} {
+} trap {AWS AccessDenied} {msg opts} {
+    lassign [dict get $opts -errorcode] - code requestid resource details
+    log error "s3 upload to $resource denied (request $requestid): $msg"
+} trap AWS {msg opts} {
+    # Tcl's trap pattern matching is prefix-based, so {AWS} matches any
+    # AWS-side error.
     log error "s3 upload failed: [dict get $opts -errorcode] $msg"
 }
 

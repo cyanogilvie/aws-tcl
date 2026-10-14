@@ -32,7 +32,7 @@ no separate rebuild step after aws.tcl / build.tcl changes.
 | File | Kind | Notes |
 |---|---|---|
 | `units.test` | offline unit tests | primitives — getAttr, substring, parseArn, partition, _a, flatten, error parsers, retry classifier, backoff, Retry-After parser, UUIDv4, idempotency auto-fill |
-| `retry.test` | offline unit tests | 9 end-to-end tests of `_aws_req`'s retry loop with a programmable mock `_req` — all throttle/transient codes, socket errors, exhaustion, Retry-After |
+| `retry.test` | offline unit tests | 10 end-to-end tests of `_aws_req`'s retry loop with a programmable mock `_req` — all throttle/transient codes, namespace-qualified codes, socket errors, exhaustion, Retry-After |
 | `sigv4a.test` | offline unit tests | 17 tests: SigV4-A KDF scalar derivation, full-signing output shape (algorithm, scope-without-region, X-Amz-Region-Set), end-to-end signature-verifies-against-derived-pubkey |
 | `signing_vectors.test` | offline, from fixtures | 74 tests driven by AWS's published SigV4 / SigV4-A test vectors in aws-c-auth/tests/aws-signing-test-suite. v4 cases check canonical request + STS + signature bit-exactly; v4a cases check canonical request + STS bit-exactly, verify the produced signature against the expected public key from public-key.json, and also cross-check that our KDF derives the same public key |
 | `endpoint_rules.test` | offline, from fixtures | 13882 tests from botocore/tests/functional/endpoint-rules |

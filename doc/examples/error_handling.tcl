@@ -11,22 +11,36 @@ proc get_user user_id {
         aws dynamodb get_item \
             -table_name Users \
             -key        [json template {{"pk":{"S":"~S:user_id"}}}]
-    } trap {AWS DYNAMODB Sender ResourceNotFoundException} {} {
-        # Table doesn't exist. Different from "item not found" — an
-        # empty Item in the response means the row is absent.
-        throw {APP TABLE_MISSING} "Users table is not provisioned"
-    } trap {AWS DYNAMODB Sender ProvisionedThroughputExceededException} {} {
-        # The SDK already retried this per the configured retry policy;
-        # if it still bubbles up the bucket is exhausted for real.
-        throw {APP OVERLOADED} "DynamoDB throttling — try again shortly"
+    } trap AWS {msg opts} {
+        # DynamoDB reports namespace-qualified codes
+        # (com.amazonaws.dynamodb.v20120810#ResourceNotFoundException),
+        # which trap's prefix matching can't glob, so match on the
+        # unqualified tail of the code here.
+        set code [lindex [dict get $opts -errorcode] 1]
+        switch -- [lindex [split $code #] end] {
+            ResourceNotFoundException {
+                # Table doesn't exist. Different from "item not found" —
+                # an empty Item in the response means the row is absent.
+                throw {APP TABLE_MISSING} "Users table is not provisioned"
+            }
+            ProvisionedThroughputExceededException {
+                throw {APP OVERLOADED} "DynamoDB throttling — try again shortly"
+            }
+        }
+        return -options $opts $msg
     }
 }
 
-# Catch all errors from a given service in one block. Tcl's trap
-# pattern matching is prefix-based, so {AWS S3} matches any s3 error.
+# S3 errors carry the request id, resource and every field of the XML
+# error element in the errorCode: {AWS Code RequestId Resource Details}
 try {
     aws s3 put_object -bucket private -key secrets.txt -body $data
-} trap {AWS S3} {msg opts} {
+} trap {AWS AccessDenied} {msg opts} {
+    lassign [dict get $opts -errorcode] - code requestid resource details
+    log error "s3 upload to $resource denied (request $requestid): $msg"
+} trap AWS {msg opts} {
+    # Tcl's trap pattern matching is prefix-based, so {AWS} matches any
+    # AWS-side error.
     log error "s3 upload failed: [dict get $opts -errorcode] $msg"
 }
 

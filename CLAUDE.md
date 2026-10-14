@@ -202,11 +202,20 @@ SSO provider lives in `aws.tcl` under the `_sso_*` helpers
 (`_sso_creds_from_session`, `_sso_creds_from_legacy`,
 `_sso_creds_common`, `_sso_token_cache_path`, `_sso_load_token`,
 `_sso_refresh_token`, `_sso_write_token_cache`,
-`_sso_get_role_credentials`). Both sso-oidc and portal.sso calls are
+`_sso_get_role_credentials`, `_sso_can_refresh`, `_sso_parse_time`).
+Both sso-oidc and portal.sso calls are
 made with direct rl_http (not through the operation dispatcher), since
 those operations are `smithy.api#noAuth` and going through the
 dispatcher would require a noAuth signing path we don't otherwise
-need.
+need.  The refresh follows botocore's `SSOTokenProvider`: within 15
+minutes of expiry, only with an unexpired client registration, sending
+`clientId` / `clientSecret` / `refreshToken`; a failed refresh re-reads
+the cache (another process may have rotated the refresh token) and is
+only an error once the token has actually expired.  `credentials.test`
+`sso-refresh-*` stubs `rl_http` in `::aws::helpers` to check the
+CreateToken request itself — before 2.0a33 the refresh sent the whole
+token dict as `refreshToken` and no client credentials, so it never
+worked and every session died at the access token's first expiry.
 
 Helpers for config/credentials access live in `::aws::helpers`:
 `_profile_name`, `_config_file_path`, `_credentials_file_path`,
@@ -242,7 +251,7 @@ web-identity code paths to nest STS calls without recursing through
   through `aws s3 put_object` now; no more workaround)
 
 Green baseline: `meson test -C build9g` passes whole suite in one process
-(15068 / 15101 at time of writing; remaining skips are constraint-
+(15075 / 15108 at time of writing; remaining skips are constraint-
 gated: rl_aws_account, aws_tcl_fixtures when the fixture stack isn't
 deployed, + a handful of known-bug sentinels).  The
 smithy-rpc-v2-cbor protocol-vector cases need jitc (from the test

@@ -2069,15 +2069,26 @@ namespace eval aws {
 
 			set token_path	[_sso_token_cache_path $cache_key]
 			set token		[_sso_load_token $token_path $start_url $cache_key]
-			# Refresh if close to expiry and refresh token is present.
+			# Refresh within 15 minutes of expiry, when the cache carries a
+			# refresh token and an unexpired client registration (as botocore
+			# does).  A failed refresh isn't fatal while the current token is
+			# still good.  Another process may have refreshed (and rotated the
+			# refresh token) concurrently, so on failure prefer whatever is in
+			# the cache now.
 			if {
-				[clock seconds] >= [dict get $token expires_at] - 60 &&
-				[dict exists $token refreshToken] &&
-				[dict get $token refreshToken] ne "" &&
-				[dict exists $token clientId] &&
-				[dict exists $token clientSecret]
+				[clock seconds] >= [dict get $token expires_at] - 15*60 &&
+				[_sso_can_refresh $token]
 			} {
-				set token [_sso_refresh_token $region $token $token_path]
+				try {
+					set token [_sso_refresh_token $region $token $token_path]
+				} trap {AWS SSO_REFRESH_FAILED} {errmsg erropts} {
+					catch {
+						set token [_sso_load_token $token_path $start_url $cache_key]
+					}
+					if {[clock seconds] >= [dict get $token expires_at]} {
+						return -options $erropts $errmsg
+					}
+				}
 			}
 			if {[clock seconds] >= [dict get $token expires_at]} {
 				throw {AWS SSO_TOKEN_EXPIRED} "SSO access token for profile '$profile' has expired — run 'aws sso login --profile $profile' to refresh"
@@ -2133,7 +2144,7 @@ namespace eval aws {
 			}
 			set out [dict create \
 				accessToken		[json get $j accessToken] \
-				expires_at		[clock scan [json get $j expiresAt] -timezone :UTC -format {%Y-%m-%dT%H:%M:%SZ}] \
+				expires_at		[_sso_parse_time [json get $j expiresAt]] \
 				cache_path		$path \
 			]
 			foreach k {refreshToken clientId clientSecret region startUrl registrationExpiresAt} {
@@ -2144,23 +2155,59 @@ namespace eval aws {
 		}
 
 		#>>>
-		proc _sso_refresh_token {region token token_path} { #<<<
-			# Call sso-oidc:CreateToken with grant_type=refresh_token,
-			# write the new token back to the cache file so the next
-			# process can use it too.
-			set ca_bundle	[_ca_bundle]
+		proc _sso_parse_time str { #<<<
+			# expiresAt / registrationExpiresAt: ISO 8601 UTC.  The CLI writes
+			# whole seconds ("2026-10-14T23:13:57Z"); other SDKs (JS v3's
+			# toISOString) add milliseconds, or write a numeric offset.
+			if {![regexp {^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.\d+)?(Z|UTC|[+-]\d\d:?\d\d)$} $str - base zone]} {
+				throw {AWS SSO_TOKEN_INVALID} "unparseable SSO token timestamp \"$str\" — re-run 'aws sso login'"
+			}
+			if {$zone in {Z UTC}} {set zone +0000}
+			clock scan $base[string map {: {}} $zone] -format {%Y-%m-%dT%H:%M:%S%z}
+		}
 
-			rl_http instvar h POST https://oidc.$region.amazonaws.com/token \
-				-stats_cx	AWS \
-				-timeout	10 \
-				-headers	{Content-Type application/json Accept application/json} \
-				{*}[if {$ca_bundle ne {}} {list -cafile $ca_bundle}] \
-				-data		[encoding convertto utf-8 [json template {
-					{
-						"grantType":	"refresh_token",
-						"refreshToken":	"~S:token"
-					}
-				}]]
+		#>>>
+		proc _sso_can_refresh token { #<<<
+			# A refresh needs the refresh token and the client registration
+			# (clientId / clientSecret) it was issued to, while the
+			# registration is still valid.
+			foreach k {refreshToken clientId clientSecret} {
+				if {![dict exists $token $k] || [dict get $token $k] eq ""} {return 0}
+			}
+			if {[dict exists $token registrationExpiresAt]} {
+				if {[catch {_sso_parse_time [dict get $token registrationExpiresAt]} reg_expires]} {return 0}
+				if {[clock seconds] >= $reg_expires} {return 0}
+			}
+			return 1
+		}
+
+		#>>>
+		proc _sso_refresh_token {region token token_path} { #<<<
+			# Call sso-oidc:CreateToken with grantType refresh_token, and
+			# write the new token back to the cache file so the next process
+			# (and the CLI) can use it too.
+			set ca_bundle		[_ca_bundle]
+			set client_id		[dict get $token clientId]
+			set client_secret	[dict get $token clientSecret]
+			set refresh_token	[dict get $token refreshToken]
+
+			try {
+				rl_http instvar h POST https://oidc.$region.amazonaws.com/token \
+					-stats_cx	AWS \
+					-timeout	10 \
+					-headers	{Content-Type application/json Accept application/json} \
+					{*}[if {$ca_bundle ne {}} {list -cafile $ca_bundle}] \
+					-data		[encoding convertto utf-8 [json template {
+						{
+							"grantType":	"refresh_token",
+							"clientId":		"~S:client_id",
+							"clientSecret":	"~S:client_secret",
+							"refreshToken":	"~S:refresh_token"
+						}
+					}]]
+			} on error {errmsg} {
+				throw {AWS SSO_REFRESH_FAILED} "sso-oidc:CreateToken failed: $errmsg"
+			}
 
 			if {[$h code] != 200} {
 				throw {AWS SSO_REFRESH_FAILED} "sso-oidc:CreateToken returned [$h code]: [$h body] — run 'aws sso login' to start a new session"

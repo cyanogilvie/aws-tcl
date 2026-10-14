@@ -121,10 +121,24 @@ end of `_compile_rest-xml_op`) pass the spec through
 semantics), dropping options already in `common_argspec` for eager
 ops. `units.test` `argspec_dups-*` covers it.
 
-Note that `-cx_suppress` has never taken effect: both endpoint-param
-loops test `[dict exists cx_suppress $camel_name]` (the literal name,
-not `$cx_suppress`), so suppressed params are still emitted (then
-deduplicated by `_first_def` when they shadow a member).
+## Endpoint params that aren't options: `cx_suppress` / `_static_cx`
+
+`cx_suppress` collects the endpoint-rules params a caller mustn't set,
+so the endpoint-param loops don't offer them as options (botocore
+doesn't either): `UseObjectLambdaEndpoint` (only ever pinned, by s3
+`WriteGetObjectResponse`), the op's `staticContextParams`, and params
+supplied by a member's `contextParam`. The op's `staticContextParams`
+values are applied after `_copy2cx` (eager ops: `::aws::_static_cx`;
+lazy rest-xml: the leading `set cxparams`), so they always win.
+
+Until 2.0a33 both loops tested `[dict exists cx_suppress ...]` (the
+literal name), so nothing was suppressed, and the eager path never
+applied `staticContextParams` at all (the emitting line was commented
+out): acm and neptune_graph ops required `-service_type` / `-api_type`,
+kinesis ops with `-stream_ARN` failed ("Operation Type is not set"),
+and wellarchitected agent / dynamodb SearchVectors / signin OAuth ops
+went to the wrong endpoint. `units.test` `static_cx-*` runs real ops
+with `_service_req` stubbed to return the endpoint context.
 
 ## Location routing (top-level members)
 

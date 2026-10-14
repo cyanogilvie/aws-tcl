@@ -2755,6 +2755,18 @@ namespace eval aws {
 	}
 
 	#>>>
+	proc _static_cx args { #<<<
+		# The op's staticContextParams: endpoint-rules values the model pins
+		# for this operation (kinesis OperationType, acm ServiceType, ...).
+		# Applied after _copy2cx so they always win.
+		upvar 1 cxparams cxparams
+		if {![info exists cxparams]} {set cxparams {}}
+		foreach {k v} $args {
+			dict set cxparams $k $v
+		}
+	}
+
+	#>>>
 	proc _builtins args { #<<<
 		foreach {v handler} $args {
 			switch -exact -- $handler {
@@ -4731,7 +4743,7 @@ namespace eval aws {
 
 			json foreach {camel_name details} $endpoint_params {
 				set required	[expr {$camel_name in $cx_required}]
-				if {[dict exists cx_suppress $camel_name]} continue
+				if {[dict exists $cx_suppress $camel_name]} continue
 
 				set name		-[aws from_camel $camel_name]
 				set settings	{}
@@ -4846,6 +4858,7 @@ namespace eval aws {
 		set _transforms	{}
 		#puts stderr -----------------------------------------------------------------------------------
 		if {[json exists $opdef input]} {
+			set _cx_suppress	$cx_suppress
 			set t	[aws::build::compile_input \
 				-argname_transform	{} \
 				-protocol			[json get $service_def metadata protocol] \
@@ -5629,6 +5642,7 @@ namespace eval aws {
 				-builtins			{-alias}
 				-transforms			{-alias}
 			}
+			if {![info exists cx_suppress]} {set cx_suppress {}}
 
 			#puts stderr "compile_input, argname: ([if {[info exists argname]} {set argname}]), shape: ($shape)"
 			set input	[json extract $shapes $shape]
@@ -5856,7 +5870,7 @@ namespace eval aws {
 				_debug {log debug "endpoint_params required: ($cx_required)"}
 
 				json foreach {camel_name details} $endpoint_params {
-					if {[dict exists cx_suppress $camel_name]} continue
+					if {[dict exists $cx_suppress $camel_name]} continue
 					set required	[expr {$camel_name in $cx_required}]
 
 					set name		[aws from_camel $camel_name]

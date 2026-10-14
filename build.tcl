@@ -878,9 +878,13 @@ proc compile_op {def op opdef protocol endpoint_params responsesVar exceptionsVa
 				lappend static	[list ::aws::_builtins {*}$builtins]
 			}
 
-			#lappend static	[list set cxparams $cxparams]
 			if {[llength $copy_to_cx] > 0} {
 				lappend static	[list _copy2cx {*}$copy_to_cx]
+			}
+			# The staticContextParams collected above (not offered as options:
+			# see cx_suppress)
+			if {[dict size $cxparams] > 0} {
+				lappend static	[list ::aws::_static_cx {*}$cxparams]
 			}
 			#lappend static {puts stderr "cxparams: ($cxparams)"}
 			#lappend static	[list dict set params service [list $service_name_orig]]

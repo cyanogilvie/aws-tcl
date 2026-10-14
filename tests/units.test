@@ -698,6 +698,63 @@ test argspec_dups-1.4 {_first_def keeps the first definition, and drops options 
 	::aws::_first_def {-a {-required} -b {} -a -alias -timeout {} -c {}} {-timeout {-default {}}}
 } -result {-a -required -b {} -c {}}
 #>>>
+proc _endpoint_of script { #<<<
+	# Run an op in a fresh interp whose _service_req is stubbed to return
+	# the endpoint-rules context and the resolved URL, so nothing is sent.
+	set child	[interp create]
+	try {
+		$child eval [list set ::auto_path $::auto_path]
+		$child eval [list tcl::tm::path add {*}[lreverse [tcl::tm::path list]]]
+		$child eval [list package require -exact aws [package present aws]]
+		$child eval {
+			proc ::aws::_service_req args {
+				set ep	[uplevel 1 {endpoint_rules $cxparams}]
+				list [uplevel 1 {set cxparams}] [::rl_json::json get $ep url]
+			}
+		}
+		$child eval $script
+	} finally {
+		interp delete $child
+	}
+}
+
+#>>>
+test static_cx-1.1 {acm: ServiceType is pinned, not a (required) option} -body { #<<<
+	lassign [_endpoint_of {aws acm list_certificates -region us-east-1}] cx url
+	list [dict get $cx ServiceType] $url
+} -cleanup {unset -nocomplain cx url} -result {ACM https://acm.us-east-1.amazonaws.com}
+#>>>
+test static_cx-1.2 {kinesis: OperationType is pinned per op} -body { #<<<
+	set arn	arn:aws:kinesis:us-east-1:123456789012:stream/x
+	list \
+		[lindex [_endpoint_of [list aws kinesis put_record -region us-east-1 -stream_ARN $arn -data eA== -partition_key k]] 1] \
+		[lindex [_endpoint_of [list aws kinesis describe_stream_summary -region us-east-1 -stream_ARN $arn]] 1]
+} -cleanup {unset -nocomplain arn} -result {https://123456789012.data-kinesis.us-east-1.amazonaws.com https://123456789012.control-kinesis.us-east-1.amazonaws.com}
+#>>>
+test static_cx-1.3 {wellarchitected agent ops go to the agent endpoint} -body { #<<<
+	lindex [_endpoint_of {
+		aws wellarchitected create_agent_goal -region us-east-1 -profile_arn p -pillars {["security"]} -title t
+	}] 1
+} -result https://wellarchitected-agent.us-east-1.amazonaws.com
+#>>>
+test static_cx-1.4 {pinned and suppressed endpoint params aren't options} -body { #<<<
+	lmap cmd {
+		{aws acm list_certificates -region us-east-1 -service_type ACM-ACME}
+		{aws kinesis list_streams -region us-east-1 -operation_type data}
+		{aws s3 get_object -bucket b -key k -use_object_lambda_endpoint 1}
+	} {
+		catch $cmd - opts
+		lrange [dict get $opts -errorcode] 0 2
+	}
+} -cleanup {unset -nocomplain cmd opts} -result {{TCL LOOKUP INDEX} {TCL LOOKUP INDEX} {TCL LOOKUP INDEX}}
+#>>>
+test static_cx-1.5 {rest-xml: s3 write_get_object_response still pins UseObjectLambdaEndpoint} -setup { #<<<
+	package require aws::s3
+	::aws::_compile_rest-xml_op ::aws::s3 write_get_object_response
+} -body {
+	string match {*set cxparams {UseObjectLambdaEndpoint 1}*} [info body ::aws::s3::write_get_object_response]
+} -result 1
+#>>>
 # Option names and generated argspecs >>>
 
 # cleanup

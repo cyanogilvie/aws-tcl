@@ -481,7 +481,12 @@ namespace eval aws {
 				# rl_http / socket / DNS / TLS errors — treat as transient
 				return [list transient [lindex $ec 0]]
 			}
-			set code	[lindex $ec 1]
+			# Normalise to the bare code the tables use: json-protocol
+			# __type values can be namespace-qualified
+			# (com.amazonaws.dynamodb.v20120810#ProvisionedThroughputExceededException)
+			# and x-amzn-errortype values can carry a ":<uri>" suffix
+			# (ThrottlingException:http://internal.amazon.com/coral/...).
+			set code	[lindex [split [lindex [split [lindex $ec 1] :] 0] #] end]
 			if {$code eq "RequestTimeTooSkewed"} {
 				return [list clockskew $code]
 			}

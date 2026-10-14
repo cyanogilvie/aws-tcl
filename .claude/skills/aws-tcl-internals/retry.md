@@ -53,6 +53,16 @@
 Non-`AWS` errorcodes (socket / DNS / TLS errors from `rl_http`) are
 classified as transient and retried.
 
+Before the table lookup the code is normalised to its bare form: a
+`<namespace>#` prefix (json-protocol `__type`, e.g.
+`com.amazonaws.dynamodb.v20120810#ProvisionedThroughputExceededException`)
+and a `:<uri>` suffix (`x-amzn-errortype`, e.g.
+`ThrottlingException:http://internal.amazon.com/coral/...`) are
+stripped, matching botocore. Only the classification uses the bare
+code — the errorCode thrown to the caller keeps the original form.
+Before this normalisation, DynamoDB throttles were classified `none`
+and surfaced on the first failure.
+
 `ValidationException`, `AccessDenied`, signing errors, and anything
 not in those tables return `none` and propagate to the caller immediately.
 

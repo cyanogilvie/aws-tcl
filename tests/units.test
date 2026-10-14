@@ -440,6 +440,27 @@ test classify-1.7 {non-AWS (socket/DNS/TLS) errors are transient} -body { #<<<
 	}
 } -cleanup {unset -nocomplain ec} -result {transient transient transient transient}
 #>>>
+test classify-1.8 {namespace-qualified __type codes classify by their bare code} -body { #<<<
+	lmap code {
+		com.amazonaws.dynamodb.v20120810#ProvisionedThroughputExceededException
+		com.amazonaws.dynamodb.v20120810#ThrottlingException
+		com.amazonaws.dynamodb.v20120810#InternalServerError
+		com.amazonaws.dynamodb.v20120810#ResourceNotFoundException
+	} {
+		::aws::helpers::_classify_error [dict create -errorcode [list AWS $code rq {}]]
+	}
+} -cleanup {unset -nocomplain code} -result {{throttle ProvisionedThroughputExceededException} {throttle ThrottlingException} {transient InternalServerError} {none ResourceNotFoundException}}
+#>>>
+test classify-1.9 {x-amzn-errortype ":<uri>" suffix is ignored} -body { #<<<
+	lmap code {
+		ThrottlingException:http://internal.amazon.com/coral/com.amazon.coral.availability/
+		ServiceUnavailable:http://internal.amazon.com/coral/com.amazon.coral.service/
+		ValidationException:http://internal.amazon.com/coral/com.amazon.coral.validate/
+	} {
+		lindex [::aws::helpers::_classify_error [dict create -errorcode [list AWS $code rq {}]]] 0
+	}
+} -cleanup {unset -nocomplain code} -result {throttle transient none}
+#>>>
 
 test backoff-1.1 {exponential with jitter — bounded by cap} -body { #<<<
 	# 500 samples; none should exceed base*2^(attempt-1) capped at 20s

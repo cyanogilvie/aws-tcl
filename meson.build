@@ -1,5 +1,5 @@
 project('aws',
-  version:            '2.0a33',
+  version:            '2.0a34',
   meson_version:      '>=1.3.0',
 )
 # Pure-Tcl module. No C sources — the implicit 'c' project language stays
@@ -43,7 +43,9 @@ else
     files('tools/print_patchlevel.tcl'),
     check: true,
   ).stdout()
-  if tclsh_patchlevel.split('.')[0] + '.' + tclsh_patchlevel.split('.')[1] != tclver
+  tclsh_parts = tclsh_patchlevel.split('.')
+  tclsh_minor = tclsh_parts[1].split('a')[0].split('b')[0].split('rc')[0]
+  if tclsh_parts[0] + '.' + tclsh_minor != tclver
     error('Tcl mismatch: pkg-config found @0@, tclsh reports @1@. Set PKG_CONFIG_PATH to point at the same Tcl install.'
       .format(tclver_full, tclsh_patchlevel))
   endif
@@ -115,12 +117,15 @@ deps_spec = [
   ['dedup',      'pkg', get_option('build_tests')],
   ['reuri',      'pkg', get_option('build_tests')],
   ['tdom',       'pkg', get_option('build_tests')],
-  # cbor (>= 1.2, plus jitc >= 0.8, taken from the test tclsh's own install)
-  # is only needed at runtime by the smithy-rpc-v2-cbor services, which
-  # compile cbor_glue.c against it on first use.
-  ['cbor',       'pkg', get_option('build_tests')],
   ['tcl-s2n',    'pkg', false],
 ]
+# cbor (>= 1.2, plus jitc >= 0.8, taken from the test tclsh's own install)
+# is only needed at runtime by the smithy-rpc-v2-cbor services, which
+# compile cbor_glue.c against it on first use.  cbor requires Tcl 9: on
+# older Tcls those services are unavailable and their tests skip.
+if tclver_major.to_int() >= 9
+  deps_spec += [['cbor', 'pkg', get_option('build_tests')]]
+endif
 if tcl_dep.type_name() == 'internal'
   deps_spec += [['thread', 'pkg', true]]
 endif

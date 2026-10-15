@@ -105,6 +105,31 @@ test rest-xml-input-create_invalidation-1.2 {the intercepted request targets the
 } -result {POST /2020-05-31/distribution/E2R4RHYW3FOCFL/invalidation}
 #>>>
 
+# Greedy URI labels: S3's {Key+} is the raw key with its / kept, each
+# segment percent-encoded, so a % in a key is a literal %, never an escape
+foreach {n key path} {
+	1.1	foo/bar.txt					/foo/bar.txt
+	1.2	{foo bar+baz}				/foo%20bar%2Bbaz
+	1.3	100%.txt					/100%25.txt
+	1.4	a%20b						/a%2520b
+	1.5	foo%2fbar					/foo%252fbar
+	1.6	rlheart%2ewebp				/rlheart%252ewebp
+	1.7	/lead//double/				//lead//double/
+	1.8	fooはbar				/foo%E3%81%AFbar
+} {
+	test rest-xml-greedy-label-$n "S3 key [list $key] is sent as its own name" -setup { #<<<
+		::test_restxml::install
+	} -body {
+		set req	[::test_restxml::capture [list aws s3 get_object -region us-east-1 -bucket example-bucket -key $key]]
+		dict get $req path
+	} -cleanup {
+		::test_restxml::uninstall
+		unset -nocomplain req
+	} -result $path
+	#>>>
+}
+unset -nocomplain n key path
+
 # End-to-end check of the requestCompression wiring (op compiler -> -z ->
 # _service_req -> _compress_request). No real rest-xml op carries the trait,
 # so inject it into a fresh copy of an op def, drop any compiled proc so the

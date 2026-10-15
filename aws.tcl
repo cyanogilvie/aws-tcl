@@ -3238,7 +3238,12 @@ namespace eval aws {
 			}]
 			set repe	[reuri encode path $rep]
 			#lappend uri_map_out	"{$pat}" $repe "{$pat+}" [string map {%2F /} $repe]
-			lappend uri_map_out	"{$pat}" $repe "{$pat+}" [reuri::path join {*}[reuri::path get [string map {+ %2B} $rep]]]
+			# A greedy label ({Key+}) is the raw value with its / kept: encode
+			# each segment.  Parsing it as a path instead decoded any %XX in
+			# it, so an S3 key containing % named a different object (a%2ewebp
+			# fetched a.webp), and %2F turned into a / that S3 signed and the
+			# sigv4 canonical path didn't (SignatureDoesNotMatch)
+			lappend uri_map_out	"{$pat}" $repe "{$pat+}" [join [lmap seg [split $rep /] {string map {+ %2B} [reuri encode path $seg]}] /]
 		}
 		#puts stderr "uri_map_out: ($uri_map_out)"
 

@@ -6,6 +6,7 @@ namespace import ::rl_json::json
 # The CLI equivalent is `aws s3api list-objects-v2 --bucket assets`
 # plus a NextContinuationToken loop.
 aws foreach obj \
+        -type       Object \
     s3 list_objects_v2 \
         -bucket assets \
         -prefix images/ \
@@ -15,7 +16,7 @@ aws foreach obj \
 
 # Same pattern with aws lmap: produce a Tcl list by transforming each
 # item. lmap runs the body once per item and collects return values.
-set keys [aws lmap obj  s3 list_objects_v2 -bucket assets {
+set keys [aws lmap obj -type Object s3 list_objects_v2 -bucket assets {
     json get $obj Key
 }]
 
@@ -37,7 +38,9 @@ aws foreach item \
         unset page  ;# Will only be set again when the next page arrives
     }
 
-    # Some paginated services return multiple types, like s3 given -delimiter
+    # Some paginators declare several item types, like s3 list_objects_v2
+    # (Object and CommonPrefix, the latter only seen with -delimiter), and
+    # then one of -itemtype, -type or -result_key is required
     switch -- $type {
         CommonPrefix {
             puts "Folder: [json get $item Prefix]"

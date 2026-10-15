@@ -1217,13 +1217,15 @@ namespace eval aws {
 						[dict get [$h headers] x-amzn-requestid] \
 						"" \
 					] $message
-				} elseif {[json exists $body message]} {
+				} elseif {[json exists $body message] || [json exists $body Message]} {
+					# rest-json (lambda et al): the code is in x-amzn-errortype,
+					# the body is {"Type": ..., "Message": ...} or {"message": ...}
 					set headers	[$h headers]
 					throw [list AWS \
 						[if {[dict exists $headers x-amzn-errortype]} {dict get $headers x-amzn-errortype} else {return -level 0 "<unknown>"}] \
 						[dict get [$h headers] x-amzn-requestid] \
 						"" \
-					] [json get $body message]
+					] [json get $body [expr {[json exists $body message] ? "message" : "Message"}]]
 				} else {
 					set headers	[$h headers]
 					log error "Unhandled AWS error: $body"

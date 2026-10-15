@@ -339,6 +339,15 @@ test _aws_error-json-1.3 {JSON error with x-amzn-errortype header} -setup { #<<<
 } -cleanup $mock_cleanup \
   -returnCodes error -errorCode {AWS ThrottlingException req-789 {}} -result {something went wrong}
 #>>>
+test _aws_error-json-1.4 {rest-json error with capitalised Message (lambda style)} -setup { #<<<
+	set h [make_mock_h {{"Type":"User","Message":"User: arn:aws:sts::123456789012:assumed-role/r/i is not authorized to perform: lambda:ListFunctions"}} 403 \
+		{x-amzn-errortype AccessDeniedException x-amzn-requestid req-abc}]
+} -body {
+	::aws::helpers::_aws_error $h "" ""
+} -cleanup $mock_cleanup \
+  -returnCodes error -errorCode {AWS AccessDeniedException req-abc {}} \
+  -result {User: arn:aws:sts::123456789012:assumed-role/r/i is not authorized to perform: lambda:ListFunctions}
+#>>>
 
 test _aws_error-xml-1.1 {rest-xml / query style Error element} -setup { #<<<
 	set h [make_mock_h {<?xml version="1.0"?>

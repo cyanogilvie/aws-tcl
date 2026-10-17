@@ -4,7 +4,7 @@ aws - AWS service bindings for Tcl, modelled on the AWS CLI
 
 ## SYNOPSIS
 
-**package require aws** ?2.0a35?
+**package require aws** ?2.0a36?
 
 **package require aws::**\<*service*\>
 

@@ -3444,7 +3444,13 @@ namespace eval aws {
 				}
 			}
 			try {
-				if {$protocol in {query ec2 rest-xml} && $body ne ""} {
+				if {$protocol in {query ec2 rest-xml} && $body ne "" && $response eq ""} {
+					# The output has no members to read from the body (an empty
+					# output shape, like CloudFormation ExecuteChangeSet's, or
+					# none, like DeleteStack's): an empty object, as the json
+					# protocols give
+					set body	{{}}
+				} elseif {$protocol in {query ec2 rest-xml} && $body ne ""} {
 					# TODO: check content-type xml?
 					package require tdom
 					# Strip the xmlns

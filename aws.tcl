@@ -1520,7 +1520,10 @@ namespace eval aws {
 
 			set status				[$h code]
 			set response_headers	[$h headers]
-			if {[$h code] == $expecting_status} {
+			# Any 2xx is success, like botocore: the modelled responseCode
+			# isn't the only one a service sends (S3 GetObject with -range
+			# answers 206 Partial Content, Lambda Invoke 202 / 204)
+			if {[$h code] == $expecting_status || [$h code] >= 200 && [$h code] < 300} {
 				return [$h body]
 			} else {
 				#puts stderr "Got [$h code]:\n\theaders: ([$h headers])\n\tbody: ([$h body])"
@@ -3169,6 +3172,7 @@ namespace eval aws {
 			-m			{-default POST -name method}
 			-o			{-default {} -name out_headers_map}
 			-p			{-default / -name path}
+			-pe			{-default {} -name empty_payload_body}
 			-q			{-default {} -name query_map}
 			-R			{-default {} -name response}
 			-r			{-default {} -name region}
@@ -3244,6 +3248,7 @@ namespace eval aws {
 		}
 		#puts stderr "uri_map_out: ($uri_map_out)"
 
+		set explicit_content_type	0
 		foreach {header arg spec} $header_map {
 			if {![info exists _a_$arg]} continue
 			set v	[set _a_$arg]
@@ -3251,7 +3256,8 @@ namespace eval aws {
 				# A member bound to the Content-Type header overrides the
 				# protocol/payload default media type (it's sent via -content_type,
 				# not as a duplicate header).
-				set content_type	[_serialize_header $v $spec]
+				set content_type			[_serialize_header $v $spec]
+				set explicit_content_type	1
 				continue
 			}
 			if {[string index $header end] eq "*"} {
@@ -3292,7 +3298,7 @@ namespace eval aws {
 		} elseif {$payload ne ""} {
 			#puts "exists: [info exists _a_$payload]"
 			if {![info exists _a_$payload]} {
-				set body	{}
+				set body	$empty_payload_body
 			} elseif {$xml_input in {{} {Body {} {}}}} {
 				# Raw blob / string / enum payload — sent verbatim.
 				set body	[set _a_$payload]
@@ -3353,6 +3359,12 @@ namespace eval aws {
 			}
 		} else {
 			set body	{}
+			set content_type	""
+		}
+		# No body, no default media type (an unset payload member: lambda
+		# invoke without -payload, s3 put_object without -body).  One the
+		# caller set through a Content-Type member still goes out
+		if {$body eq "" && !$explicit_content_type} {
 			set content_type	""
 		}
 
@@ -3900,6 +3912,11 @@ namespace eval aws {
 			-payload	{-alias}
 		}
 
+		if {![json exists $def operations $op output shape]} {
+			# No output shape (s3 PutBucketTagging, DeleteBucket): an empty
+			# object, as for the other protocols
+			return {{}}
+		}
 		set output		[json extract $def operations $op output]
 		set outshape	[json extract $def shapes [json get $def operations $op output shape]]
 

@@ -728,7 +728,7 @@ proc compile_op {def op opdef protocol endpoint_params responsesVar exceptionsVa
 			set cmd		[aws from_camel $op]
 			#puts stderr "[json get $def metadata service_name]: op: ($op) -> cmd: ($cmd), opdef: [json pretty $opdef]"
 
-			unset -nocomplain w
+			unset -nocomplain w pe
 			switch -exact -- [json get -default 1.1 $def metadata jsonVersion] {
 				1.0 {
 					# Copilot hint: perhaps it knows something I don't:
@@ -767,6 +767,16 @@ proc compile_op {def op opdef protocol endpoint_params responsesVar exceptionsVa
 					} elseif {$_cpt eq "string"} {
 						set c	text/plain
 					}
+					# An unset rest-json structure payload still sends {}
+					# (RestJsonHttpWithEmptyStructurePayload); an unset union,
+					# blob or string payload sends no body
+					if {
+						$protocol eq "rest-json" &&
+						$_cpt eq "structure" &&
+						![json get -default false $def shapes $_cps union]
+					} {
+						set pe	{{}}
+					}
 				}
 			}
 			set u			{}
@@ -796,6 +806,17 @@ proc compile_op {def op opdef protocol endpoint_params responsesVar exceptionsVa
 					-builtins			builtins \
 					-transforms			transforms \
 				]
+				# rest-json: an input whose members are all uri / query / header
+				# bound has no body, rather than {} (and so no Content-Type: the
+				# Smithy RestJsonHttp{Get,Post}WithNoModeledBody vectors forbid it,
+				# and it put a body on GETs like lambda get_function)
+				if {$protocol eq "rest-json" && $b eq ""} {
+					set _has_body	0
+					json foreach {- _md} [json extract -default {{}} $def shapes [json get $opdef input shape] members] {
+						if {![json exists $_md location]} {set _has_body 1; break}
+					}
+					if {!$_has_body} {set t {}}
+				}
 			} else {
 				# No input shape: the op still needs the endpoint-context params
 				# (-region / -use_dual_stack / …) injected, otherwise the
@@ -1040,6 +1061,7 @@ proc compile_op {def op opdef protocol endpoint_params responsesVar exceptionsVa
 				z		{}
 				hp		{}
 				cs		{}
+				pe		{}
 			}
 			foreach v {
 				b
@@ -1052,6 +1074,7 @@ proc compile_op {def op opdef protocol endpoint_params responsesVar exceptionsVa
 				m
 				o
 				p
+				pe
 				q
 				R
 				s

@@ -162,6 +162,70 @@ test rest-xml-input-hostprefix-1.4 {endpoint hostPrefix is label-substituted and
 } -result 1
 #>>>
 
+# Content-Type: a blob payload goes out as application/octet-stream (no
+# mediaType on s3's Body), a -content_type member overrides it, and a request
+# with no body carries none unless the caller set one.
+test rest-xml-input-content_type-1.5 {s3 put_object: blob payload defaults to application/octet-stream} -setup { #<<<
+	::test_restxml::install
+} -body {
+	set req	[::test_restxml::capture {
+		aws s3 put_object -region us-east-1 -bucket b -key k -body hello
+	}]
+	list [dict get $req content_type] [dict get $req body]
+} -cleanup {
+	::test_restxml::uninstall
+	unset -nocomplain req
+} -result {application/octet-stream hello}
+#>>>
+test rest-xml-input-content_type-1.6 {s3 put_object: -content_type overrides the payload default} -setup { #<<<
+	::test_restxml::install
+} -body {
+	set req	[::test_restxml::capture {
+		aws s3 put_object -region us-east-1 -bucket b -key k -body hello -content_type text/html
+	}]
+	dict get $req content_type
+} -cleanup {
+	::test_restxml::uninstall
+	unset -nocomplain req
+} -result text/html
+#>>>
+test rest-xml-input-content_type-1.7 {s3 put_object: no body, no Content-Type} -setup { #<<<
+	::test_restxml::install
+} -body {
+	set req	[::test_restxml::capture {
+		aws s3 put_object -region us-east-1 -bucket b -key k
+	}]
+	list [dict get $req content_type] [dict get $req body]
+} -cleanup {
+	::test_restxml::uninstall
+	unset -nocomplain req
+} -result {{} {}}
+#>>>
+test rest-xml-input-content_type-1.8 {s3 put_object: no body, but an explicit -content_type is still sent} -setup { #<<<
+	::test_restxml::install
+} -body {
+	set req	[::test_restxml::capture {
+		aws s3 put_object -region us-east-1 -bucket b -key k -content_type text/plain
+	}]
+	dict get $req content_type
+} -cleanup {
+	::test_restxml::uninstall
+	unset -nocomplain req
+} -result text/plain
+#>>>
+test rest-xml-input-content_type-1.9 {structure payload is application/xml} -setup { #<<<
+	::test_restxml::install
+} -body {
+	set req	[::test_restxml::capture {
+		aws s3 put_bucket_tagging -region us-east-1 -bucket b -tagging {{"TagSet":[{"Key":"a","Value":"b"}]}}
+	}]
+	dict get $req content_type
+} -cleanup {
+	::test_restxml::uninstall
+	unset -nocomplain req
+} -result application/xml
+#>>>
+
 test rest-xml_lazy_compile-1.1 {lazy op compile needs nothing from build.tcl} -setup { #<<<
 	# protocol_vectors.test sources build.tcl, which defines global procs
 	# (resolve_shape_type, ...) that an unqualified call in the runtime would

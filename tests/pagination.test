@@ -497,13 +497,6 @@ test paginate-dispatch-9.2 {missing iteration body script errors} -setup { #<<<
 
 source [file join [file dirname [info script]] fixtures.tcl]
 
-tcltest::testConstraint aws_tcl_fixtures [expr { #<<<
-	[tcltest::testConstraint aws_creds] && [try {
-		fixture_stack_ready
-	} on error {} {return -level 0 false}]
-}]
-#>>>
-
 # The fixture stack deploys exactly 12 policies, 12 parameters, 3 log groups,
 # and (after `make seed-fixtures`) 12 S3 objects. Tests here assert those
 # exact counts and against the stack's output-provided prefixes.

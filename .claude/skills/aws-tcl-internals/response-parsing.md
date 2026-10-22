@@ -59,6 +59,14 @@ For shapes with members having `location: header` / `location: headers`,
 `compile_output` builds a `header_map` used at runtime to hoist header
 values into the response object at their top-level keys.
 
+## Success status
+
+`_req` treats any 2xx as success, like botocore, not just the modelled
+`http.responseCode` (passed as `-expecting_status`): S3 GetObject with
+`-range` answers 206, Lambda Invoke 202 / 204.  An operation with no
+output shape returns `{}` on every protocol (`_handle_xml_resp` for
+rest-xml, the `$response eq ""` branch in `_service_req` for query / ec2).
+
 ## Error-path decoding
 
 All protocols route non-2xx responses through `::aws::helpers::_aws_error`

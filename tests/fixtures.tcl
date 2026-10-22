@@ -1,7 +1,8 @@
 # Shared helper for the aws-tcl test fixture stack.
 #
 # Sourced by:
-#   - tests/pagination.test (for the aws_tcl_fixtures test constraint)
+#   - tests/pagination.test, tests/response_parsing.test (for the
+#     aws_tcl_fixtures test constraint)
 #   - tests/fixtures/seed_objects.tcl
 #   - tests/fixtures/empty_bucket.tcl
 #
@@ -10,6 +11,8 @@
 #   [fixture_stack_region]        - resolved region (env AWS_REGION or "us-east-1")
 #   [fixture_stack_output <key>]  - read a stack output value, cached per-process
 #   [fixture_stack_ready]         - true iff stack exists and is in a complete state
+#   aws_tcl_fixtures              - tcltest constraint: aws_creds and fixture_stack_ready
+#                                   (set only when sourced from a test file)
 #
 # On stack missing or not-complete, fixture_stack_output errors. Use
 # fixture_stack_ready to gate before calling.
@@ -81,3 +84,12 @@ interp alias {} fixture_stack_region {} ::fixture::stack_region
 interp alias {} fixture_stack_output {} ::fixture::output
 interp alias {} fixture_stack_ready  {} ::fixture::ready
 interp alias {} fixture_stack_status {} ::fixture::status
+
+if {[info commands ::tcltest::testConstraint] ne ""} { #<<<
+	tcltest::testConstraint aws_tcl_fixtures [expr {
+		[tcltest::testConstraint aws_creds] && [try {
+			fixture_stack_ready
+		} on error {} {return -level 0 false}]
+	}]
+}
+#>>>

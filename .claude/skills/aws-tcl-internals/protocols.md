@@ -250,6 +250,43 @@ protocol (cloudwatch and ~20 others) build with that fallback (json).
 Services offering *only* cbor build natively as `smithy-rpc-v2-cbor` —
 see `cbor.md`.
 
+## Content-Type
+
+The reference is the Smithy protocol tests (the botocore input vectors in
+`protocol_vectors.test`), not botocore itself: botocore never sets
+Content-Type for rest-xml or for rest-json blob/string payloads, and its
+own vector harness skips those expectations.
+
+| Protocol | Content-Type | Body when there's nothing to send |
+|---|---|---|
+| query, ec2 | `application/x-www-form-urlencoded; charset=utf-8` (all ops are POST) | never empty (`Action` / `Version`) |
+| json, json_1_0 | `application/x-amz-json-1.{1,0}` | always `{}` |
+| smithy-rpc-v2-cbor | `application/cbor` | no input shape: no body, no Content-Type |
+| rest-json | `application/json` | no body members (all uri/query/header bound): no body, no Content-Type — the vectors `forbidHeaders` it |
+| rest-xml | `application/xml` | no body members: no body, no Content-Type |
+
+An `httpPayload` member overrides the protocol type: blob → its
+`mediaType` or `application/octet-stream`, string → `mediaType` or
+`text/plain`, structure → the protocol type.  An unset payload sends no
+body, except a rest-json **structure** (not union) payload, which sends
+`{}` (`-pe`, `RestJsonHttpWithEmptyStructurePayload`).
+
+Where it's decided:
+
+- build time — `c` in build.tcl's per-op codegen (json / rest-json /
+  query / cbor), `content_type` in aws.tcl's lazy rest-xml compiler; the
+  rest-json no-body-members rule sets `t {}`; `pe` for the rest-json
+  structure payload
+- run time — `_service_req`: a member bound to the `Content-Type` header
+  (`-content_type` on s3 put_object etc.) replaces the default, and an
+  empty body drops the default (but not an explicit one: s3 put_object
+  with no `-body` and `-content_type text/plain` still sends it)
+
+`protocol_vectors.test` fails a case that sends a Content-Type the vector
+forbids, or sends one with a vector body of `""`; and `vec_cmp_json`
+distinguishes no body from `{}` (a vector with no `body` key leaves it
+unchecked).
+
 ## Signing
 
 All current protocols sign with sigv4 (`v4` version). The variant `s3v4`

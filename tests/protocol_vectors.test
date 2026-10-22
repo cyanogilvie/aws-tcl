@@ -865,8 +865,12 @@ proc vec_strip_bool_json {j booldefs} { #<<<
 }
 #>>>
 proc vec_cmp_json {got exp booldefs} { #<<<
-	if {$got eq ""} {set got {{}}}
-	if {$exp eq ""} {set exp {{}}}
+	# No body and {} differ: rest-json sends {} only when the input has body
+	# members (or an unset structure payload)
+	if {($got eq "") != ($exp eq "")} {
+		return "body presence mismatch:\n  got ($got)\n  exp ($exp)"
+	}
+	if {$got eq ""} {return ""}
 	if {![json valid $got] || ![json valid $exp]} {
 		# raw (string/blob payload) — compare bytes
 		if {$got eq $exp} {return ""}
@@ -986,13 +990,15 @@ proc vec_check_input {entry case cap} { #<<<
 			break
 		}
 	}
-	set d	[switch -exact -- $proto {
+	# A vector with no body key leaves the body unspecified (aws-json
+	# EmptyOperation, sent as {}), unlike "" which requires none
+	set d	[if {![json exists $ser body]} {list} else {switch -exact -- $proto {
 		query - ec2					{vec_cmp_form $gb $xb $booldefs}
 		rest-xml					{vec_cmp_xml  $gb $xb $booldefs}
 		json - json_1_0 - rest-json	{vec_cmp_json $gb $xb $booldefs}
 		smithy-rpc-v2-cbor			{vec_cmp_cbor $gb $xb $booldefs}
 		default						{return "unsupported protocol $proto"}
-	}]
+	}}]
 	if {$d ne ""} {return $d}
 
 	# URI: the captured path plus the dynamic query params; compared to the
@@ -1017,6 +1023,16 @@ proc vec_check_input {entry case cap} { #<<<
 		reuri normalize $uri
 	}}]
 	if {[{*}$norm $gu $booldefs] ne [{*}$norm $xu $booldefs]} {return "uri got ($gu) exp ($xu)"}
+
+	# No Content-Type where the vector forbids one, or has no body and doesn't
+	# expect one (a bodyless request carries no media type)
+	if {
+		![json exists $ser headers Content-Type] &&
+		[dict get $cap content_type] ne "" &&
+		("Content-Type" in [json get -default {} $ser forbidHeaders] || ([json exists $ser body] && $xb eq ""))
+	} {
+		return "unexpected Content-Type ([dict get $cap content_type])"
+	}
 
 	# Modeled headers (Content-Type compared charset-insensitively).
 	set gh	[dict get $cap headers]

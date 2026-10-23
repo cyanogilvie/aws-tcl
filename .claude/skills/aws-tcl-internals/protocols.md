@@ -294,6 +294,20 @@ is used for s3 (double-URL-encoding differences). The `signingName` used
 for the credential scope comes from the endpoint rules' `authSchemes`
 result, falling back to `endpointPrefix`.
 
-The `-sig_service` to `_service_req` is the signing name. For json
-protocols it comes from service metadata; for rest-xml it's resolved
-at call time from the endpoint rules' authScheme properties.
+The `-sig_service` to `_service_req` is the signing name. For the
+non-rest-xml protocols it is fixed at build time (`build.tcl`, the `s`
+static): metadata `signingName`, else `endpointPrefix`, else the service
+directory name (only the synthetic protocol-vector services lack an
+`endpointPrefix`). For rest-xml it's resolved at call time from the
+endpoint rules' authScheme `signingName`, falling back to the same
+metadata chain (`%default_signing_name%`).
+
+The fallback must be `endpointPrefix`, never the directory name: they
+differ for cloudwatch (monitoring), efs (elasticfilesystem), elb / elbv2
+(elasticloadbalancing), emr (elasticmapreduce), kinesis-video-*
+(kinesisvideo), mturk (mturk-requester), opensearch (es),
+resourcegroupstaggingapi (tagging), service-quotas (servicequotas) and
+stepfunctions (states), and AWS rejects a wrong scope with "Credential
+should be scoped to correct service".  Before 2.0a39 the directory name
+was used, so all of those failed every call.  `units.test`
+`signing_name-*` pins this.

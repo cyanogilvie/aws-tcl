@@ -77,6 +77,9 @@ in aws.tcl. It sniffs the body shape:
    decoded to the equivalent JSON document first (an `x-amzn-query-error`
    header's code replaces `__type`), then handled as below.
 3. Body starts with `{` → JSON error:
+   - A Coral `{"Output": {"__type": ..., "Message": ...}, "Version": "1.0"}`
+     envelope (no `x-amzn-errortype`; kinesisvideo sends it for a request
+     it can't route to an operation) is unwrapped to `Output` first.
    - If `code` key present: `{AWS <code> <x-amzn-requestid> "" []}` with
      `message` as error message.
    - Else if `__type` key present: same with `__type` as the code, and

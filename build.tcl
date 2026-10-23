@@ -986,7 +986,10 @@ proc compile_op {def op opdef protocol endpoint_params responsesVar exceptionsVa
 			if {[json exists $def metadata signingName]} {
 				set s	[json get $def metadata signingName]
 			} else {
-				set s	[json get $def metadata service_name_orig]
+				# Like botocore: signingName defaults to endpointPrefix, not the
+				# service's directory name (cloudwatch -> monitoring, elbv2 ->
+				# elasticloadbalancing, stepfunctions -> states, ...)
+				set s	[json get -default [json get $def metadata service_name_orig] $def metadata endpointPrefix]
 			}
 
 			if {$protocol eq "json" && [json exists $def metadata targetPrefix]} {

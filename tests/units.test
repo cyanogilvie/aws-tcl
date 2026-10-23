@@ -348,6 +348,15 @@ test _aws_error-json-1.4 {rest-json error with capitalised Message (lambda style
   -returnCodes error -errorCode {AWS AccessDeniedException req-abc {}} \
   -result {User: arn:aws:sts::123456789012:assumed-role/r/i is not authorized to perform: lambda:ListFunctions}
 #>>>
+test _aws_error-json-1.5 {Coral Output envelope, no x-amzn-errortype (kinesisvideo)} -setup { #<<<
+	set h [make_mock_h {{"Output":{"__type":"com.amazon.kinesis.video.v20170930#UnknownOperationException","Message":"Unable to determine operation name"},"Version":"1.0"}} 400 \
+		{content-type application/json x-amzn-requestid req-def}]
+} -body {
+	::aws::helpers::_aws_error $h "" ""
+} -cleanup $mock_cleanup \
+  -returnCodes error -errorCode {AWS com.amazon.kinesis.video.v20170930#UnknownOperationException req-def {}} \
+  -result {Unable to determine operation name}
+#>>>
 
 test _aws_error-xml-1.1 {rest-xml / query style Error element} -setup { #<<<
 	set h [make_mock_h {<?xml version="1.0"?>
@@ -763,6 +772,47 @@ test static_cx-1.5 {rest-xml: s3 write_get_object_response still pins UseObjectL
 } -body {
 	string match {*set cxparams {UseObjectLambdaEndpoint 1}*} [info body ::aws::s3::write_get_object_response]
 } -result 1
+#>>>
+proc _signing_name_of script { #<<<
+	# Like _endpoint_of, but returns the signing name the op hands to _service_req.
+	set child	[interp create]
+	try {
+		$child eval [list set ::auto_path $::auto_path]
+		$child eval [list tcl::tm::path add {*}[lreverse [tcl::tm::path list]]]
+		$child eval [list package require -exact aws [package present aws]]
+		$child eval {
+			proc ::aws::_service_req args {
+				dict get $args -s
+			}
+		}
+		$child eval $script
+	} finally {
+		interp delete $child
+	}
+}
+
+#>>>
+test signing_name-1.1 {no signingName in metadata or rules: falls back to endpointPrefix, not the service name} -body { #<<<
+	# One per protocol: smithy-rpc-v2-cbor, query, json, rest-json
+	lmap cmd {
+		{aws cloudwatch list_dashboards -region us-east-1}
+		{aws elbv2 describe_load_balancers -region us-east-1}
+		{aws stepfunctions list_state_machines -region us-east-1}
+		{aws efs describe_file_systems -region us-east-1}
+	} {
+		_signing_name_of $cmd
+	}
+} -cleanup {unset -nocomplain cmd} -result {monitoring elasticloadbalancing states elasticfilesystem}
+#>>>
+test signing_name-1.2 {metadata signingName and rest-xml fallback} -body { #<<<
+	lmap cmd {
+		{aws sts get_caller_identity -region us-east-1}
+		{aws cloudfront list_distributions -region us-east-1}
+		{aws route53 list_hosted_zones -region us-east-1}
+	} {
+		_signing_name_of $cmd
+	}
+} -cleanup {unset -nocomplain cmd} -result {sts cloudfront route53}
 #>>>
 # Option names and generated argspecs >>>
 

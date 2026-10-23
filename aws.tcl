@@ -1197,6 +1197,12 @@ namespace eval aws {
 				}
 			}
 			if {[string match "\{*" $body]} { # Guess json <<<
+				# Coral's {"Output": {"__type": ..., "Message": ...}, "Version": "1.0"}
+				# envelope, with no x-amzn-errortype (seen from kinesisvideo for
+				# a request it can't route to an operation)
+				if {[json exists $body Output __type]} {
+					set body	[json extract $body Output]
+				}
 				if {[json exists $body code]} {
 					# TODO: use [json get $body type]
 					throw [list AWS \
@@ -4959,6 +4965,7 @@ namespace eval aws {
 			%host_prefix%	[list [json get -default {} $opdef endpoint hostPrefix]] \
 			%resultWrapper%	[list [if {[info exists w]} {set w}]] \
 			%op%			[list $op] \
+			%default_signing_name%	[list [json get -default [json get -default [json get $service_def metadata service_name_orig] $service_def metadata endpointPrefix] $service_def metadata signingName]] \
 		] {
 			set ei	[list apply [list {endpoint region} {
 				set authscheme	[json extract $endpoint properties authSchemes 0]
@@ -5000,11 +5007,12 @@ namespace eval aws {
 			append path	%requestUri%
 			dict with params {}		;# The unpacked key variables are accessed by the request procs through upvar
 %transforms%
-			# Newer endpoint rules omit signingName when it matches the service's endpointPrefix; fall back to that.
+			# Newer endpoint rules omit signingName; fall back to the service
+			# metadata's (signingName, else endpointPrefix, as botocore does).
 			set signingName	[if {[json exists $endpoint properties authSchemes 0 signingName]} {
 				json get $endpoint properties authSchemes 0 signingName
 			} else {
-				json get $endpoint _ service
+				return -level 0 %default_signing_name%
 			}]
 			::aws::_service_req \
 				-s			$signingName \

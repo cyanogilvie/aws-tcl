@@ -1390,11 +1390,22 @@ namespace eval ::aws::%service_name% {
 	chantricks with_chan h {file tempfile tmpfn} {
 		puts -nonewline $h	[string map [list %ver% $ver] {
 			apply {{} {
-				# zipfs mounts are process-wide: another thread may have mounted it already
-				if {![dict exists [zipfs mount] [file join [zipfs root] aws-%ver%]]} {
-					zipfs mount [info script] aws-%ver%
+				# zipfs mounts are process-wide: another thread may have mounted it already,
+				# or be mounting it right now.  If Thread is loaded, serialise the check
+				# and mount on a process-wide lock (tsv::lock on a dedicated shared array)
+				# without making Thread a dependency
+				set mountpoint	[file join [zipfs root] aws-%ver%]
+				set mount {
+					if {![dict exists [zipfs mount] $mountpoint]} {
+						zipfs mount [info script] aws-%ver%
+					}
 				}
-				::tcl::tm::path add [file join [zipfs root] aws-%ver%]
+				if {[llength [info commands ::tsv::lock]]} {
+					tsv::lock _awstcl_zipfs_mount $mount
+				} else {
+					eval $mount
+				}
+				::tcl::tm::path add $mountpoint
 				source [file join [zipfs root] aws-%ver%/aws.tcl]
 			}}
 		}]

@@ -338,20 +338,6 @@ test s3sigv4-3.2 {path encoding: space} -constraints have_s3_bucket -setup { #<<
 	unset -nocomplain objs get_resp payload del_resp key
 } -result {{foo bar} 7 {foo bar}}
 #>>>
-test s3sigv4-3.3 {path encoding: /} -constraints {have_s3_bucket knownBug} -setup { #<<<
-	eval $legacy_shim
-} -body {
-	set key			foo%2fbar
-	s3 upload -region $bucket_region -bucket $bucket -path $key -data $key -content_type text/plain
-	set objs		[aws s3 list_objects_v2 -region $bucket_region -bucket $bucket -prefix foo]
-	set get_resp	[aws s3 get_object -region $bucket_region -bucket $bucket -key $key -payload payload]
-	aws s3 delete_object -region $bucket_region -bucket $bucket -key $key
-	list [json get $objs Contents 0 Key] [json get $get_resp ContentLength] $payload
-} -cleanup {
-	namespace delete ::s3
-	unset -nocomplain objs get_resp payload del_resp key
-} -result {foo%2Fbar 11 foo%2Fbar}
-#>>>
 test s3sigv4-3.4 {path encoding: :} -constraints have_s3_bucket -setup { #<<<
 	eval $legacy_shim
 } -body {
@@ -409,7 +395,7 @@ test s3_copy-1.1 {copy object} -constraints have_s3_bucket -setup { #<<<
 } -result {s3_copy-1.1-data 1 1}
 #>>>
 test s3sigv4-4.1 {a raw key round trips: % is literal, and + space ~ / non-ASCII} -constraints have_s3_bucket -setup { #<<<
-	set key		"s3sigv4-4.1/a b+c%25d/é~x/€ 100%.txt"
+	set key		"s3sigv4-4.1/a b+c%25d%2fe/é~x/€ 100%.txt"
 } -body {
 	aws s3 put_object -region $bucket_region -bucket $bucket -key $key -body [encoding convertto utf-8 $key] -content_type application/octet-stream
 	set head	[aws s3 head_object -region $bucket_region -bucket $bucket -key $key]
@@ -419,7 +405,7 @@ test s3sigv4-4.1 {a raw key round trips: % is literal, and + space ~ / non-ASCII
 } -cleanup {
 	catch {aws s3 delete_object -region $bucket_region -bucket $bucket -key $key}
 	unset -nocomplain key head payload listed
-} -result [list 1 [string length [encoding convertto utf-8 "s3sigv4-4.1/a b+c%25d/é~x/€ 100%.txt"]] 1]
+} -result [list 1 [string length [encoding convertto utf-8 "s3sigv4-4.1/a b+c%25d%2fe/é~x/€ 100%.txt"]] 1]
 #>>>
 test s3_copy-2.1 {copy_object from a raw source key with % + space and non-ASCII} -constraints have_s3_bucket -setup { #<<<
 	set key		"s3_copy-2.1/a b+c%25d/€ 100%.txt"

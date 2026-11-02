@@ -226,6 +226,111 @@ test rest-xml-input-content_type-1.9 {structure payload is application/xml} -set
 } -result application/xml
 #>>>
 
+# URI labels and s3's x-amz-copy-source are encoded as botocore does: a label
+# with percent_encode (serialize.py _render_uri_template: safe '/~' for a
+# greedy label, else only the unreserved characters), CopySource with
+# handlers.py handle_copy_source_param (safe '-._~/', a ?versionId= suffix
+# kept as it is).  Each value is the raw string: a % in it is a literal %.
+# The expected results are urllib.parse.quote's for the same arguments.
+proc ::test_restxml::wire_path {req normalize} { # The path as sent (and signed): _req's path canonicalized, as _aws_req does <<<
+	lindex [::aws::helpers::_canonical_path [dict get $req path] $normalize 1] 0
+}
+
+#>>>
+proc ::test_restxml::header {req name} { #<<<
+	set name	[string tolower $name]
+	lmap {k v} [dict get $req headers] {
+		if {[string tolower $k] ne $name} continue
+		set v
+	}
+}
+
+#>>>
+test rest-xml-input-uri_label-2.1 {greedy label: the raw key is encoded, keeping / and ~ (a % in it is literal)} -setup { #<<<
+	::test_restxml::install
+} -body {
+	set req	[::test_restxml::capture {
+		aws s3 put_object -region us-east-1 -bucket test-bucket -key "a b+c%25d/é~x/€ 100%.jpg" -body hello
+	}]
+	::test_restxml::wire_path $req 0
+} -cleanup {
+	::test_restxml::uninstall
+	unset -nocomplain req
+} -result {/a%20b%2Bc%2525d/%C3%A9~x/%E2%82%AC%20100%25.jpg}
+#>>>
+test rest-xml-input-uri_label-2.2 {greedy label: empty segments survive} -setup { #<<<
+	::test_restxml::install
+} -body {
+	set req	[::test_restxml::capture {
+		aws s3 get_object -region us-east-1 -bucket test-bucket -key "a//b/" -payload p
+	}]
+	::test_restxml::wire_path $req 0
+} -cleanup {
+	::test_restxml::uninstall
+	unset -nocomplain req p
+} -result {/a//b/}
+#>>>
+test rest-xml-input-uri_label-2.3 {plain label: everything but the unreserved characters is encoded, / included} -setup { #<<<
+	::test_restxml::install
+} -body {
+	set req	[::test_restxml::capture {
+		aws cloudfront get_distribution -region us-east-1 -id "a+b:c/d%e"
+	}]
+	::test_restxml::wire_path $req 1
+} -cleanup {
+	::test_restxml::uninstall
+	unset -nocomplain req
+} -result {/2020-05-31/distribution/a%2Bb%3Ac%2Fd%25e}
+#>>>
+test rest-xml-input-copy_source-2.4 {copy_object: -copy_source is encoded, keeping / (a % in it is literal)} -setup { #<<<
+	::test_restxml::install
+} -body {
+	set req	[::test_restxml::capture {
+		aws s3 copy_object -region us-east-1 -bucket test-bucket -key k -copy_source "src-bucket/a b+c%25d/é~x/€ 100%.jpg"
+	}]
+	::test_restxml::header $req x-amz-copy-source
+} -cleanup {
+	::test_restxml::uninstall
+	unset -nocomplain req
+} -result {src-bucket/a%20b%2Bc%2525d/%C3%A9~x/%E2%82%AC%20100%25.jpg}
+#>>>
+test rest-xml-input-copy_source-2.5 {copy_object: a ?versionId= suffix is kept as it is} -setup { #<<<
+	::test_restxml::install
+} -body {
+	set req	[::test_restxml::capture {
+		aws s3 copy_object -region us-east-1 -bucket test-bucket -key k -copy_source "src-bucket/a b.jpg?versionId=3/L4kqtJlcpXroDTDmJ+rmSpXd3dIbrHY"
+	}]
+	::test_restxml::header $req x-amz-copy-source
+} -cleanup {
+	::test_restxml::uninstall
+	unset -nocomplain req
+} -result {src-bucket/a%20b.jpg?versionId=3/L4kqtJlcpXroDTDmJ+rmSpXd3dIbrHY}
+#>>>
+test rest-xml-input-copy_source-2.6 {copy_object: the sub-delims are encoded} -setup { #<<<
+	::test_restxml::install
+} -body {
+	set req	[::test_restxml::capture {
+		aws s3 copy_object -region us-east-1 -bucket test-bucket -key k -copy_source "src-bucket/a:b@c!d\$e&f'g(h)i*j,k;l=m"
+	}]
+	::test_restxml::header $req x-amz-copy-source
+} -cleanup {
+	::test_restxml::uninstall
+	unset -nocomplain req
+} -result {src-bucket/a%3Ab%40c%21d%24e%26f%27g%28h%29i%2Aj%2Ck%3Bl%3Dm}
+#>>>
+test rest-xml-input-copy_source-2.7 {upload_part_copy: -copy_source is encoded too} -setup { #<<<
+	::test_restxml::install
+} -body {
+	set req	[::test_restxml::capture {
+		aws s3 upload_part_copy -region us-east-1 -bucket test-bucket -key k -part_number 1 -upload_id u -copy_source "src-bucket/a b+c.jpg"
+	}]
+	::test_restxml::header $req x-amz-copy-source
+} -cleanup {
+	::test_restxml::uninstall
+	unset -nocomplain req
+} -result {src-bucket/a%20b%2Bc.jpg}
+#>>>
+
 test rest-xml_lazy_compile-1.1 {lazy op compile needs nothing from build.tcl} -setup { #<<<
 	# protocol_vectors.test sources build.tcl, which defines global procs
 	# (resolve_shape_type, ...) that an unqualified call in the runtime would

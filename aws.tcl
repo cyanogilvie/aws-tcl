@@ -750,6 +750,21 @@ namespace eval aws {
 		# Shared canonicalization helpers for sigv4 / sigv4a <<<
 		# All return pure data; no upvar, no side effects.
 
+		proc _quote_copy_source value { #<<<
+			# s3 CopyObject / UploadPartCopy's CopySource (x-amz-copy-source), as botocore's
+			# handle_copy_source_param (handlers.py) does: percent-encode the raw
+			# bucket/key, keeping only the unreserved characters and /, and keep a
+			# ?versionId= suffix as it is.  A % in the key is a literal %
+			if {[regexp -indices {\?versionId=\S+$} $value m]} {
+				set suffix	[string range $value [lindex $m 0] end]
+				set value	[string range $value 0 [lindex $m 0]-1]
+			} else {
+				set suffix	""
+			}
+			string cat [join [lmap e [split $value /] {sigencode $e}] /] $suffix
+		}
+
+		#>>>
 		proc _canonical_path {path do_normalize disable_double_encoding} { #<<<
 			# Split, optionally normalize, and percent-encode $path into its
 			# canonical forms. Returns {canonical_uri canonical_uri_sig}.
@@ -3248,9 +3263,10 @@ namespace eval aws {
 			set rep	[if {[info exists _a_$arg]} {
 				_serialize_header [set _a_$arg] $spec
 			}]
-			set repe	[reuri encode path $rep]
-			#lappend uri_map_out	"{$pat}" $repe "{$pat+}" [string map {%2F /} $repe]
-			lappend uri_map_out	"{$pat}" $repe "{$pat+}" [reuri::path join {*}[reuri::path get [string map {+ %2B} $rep]]]
+			# As botocore's _render_uri_template (serialize.py) does: percent_encode the raw
+			# value, keeping only the unreserved characters (and / for a greedy {Key+}).  A %
+			# in the value is a literal %, so it isn't parsed as a path first
+			lappend uri_map_out	"{$pat}" [reuri encode awssig $rep] "{$pat+}" [join [lmap e [split $rep /] {reuri encode awssig $e}] /]
 		}
 		#puts stderr "uri_map_out: ($uri_map_out)"
 
@@ -3275,6 +3291,9 @@ namespace eval aws {
 				set hv	[_serialize_header $v $spec]
 				# An empty list header is omitted rather than sent blank.
 				if {[lindex $spec 0] eq "hlist" && $hv eq ""} continue
+				if {[string equal -nocase $header x-amz-copy-source] && [namespace tail $service_ns] eq "s3"} {
+					set hv	[helpers::_quote_copy_source $hv]
+				}
 				lappend headers $header $hv
 			}
 		}

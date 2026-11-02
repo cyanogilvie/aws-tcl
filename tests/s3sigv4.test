@@ -408,6 +408,32 @@ test s3_copy-1.1 {copy object} -constraints have_s3_bucket -setup { #<<<
 	unset -nocomplain key res
 } -result {s3_copy-1.1-data 1 1}
 #>>>
+test s3sigv4-4.1 {a raw key round trips: % is literal, and + space ~ / non-ASCII} -constraints have_s3_bucket -setup { #<<<
+	set key		"s3sigv4-4.1/a b+c%25d/é~x/€ 100%.txt"
+} -body {
+	aws s3 put_object -region $bucket_region -bucket $bucket -key $key -body [encoding convertto utf-8 $key] -content_type application/octet-stream
+	set head	[aws s3 head_object -region $bucket_region -bucket $bucket -key $key]
+	aws s3 get_object -region $bucket_region -bucket $bucket -key $key -payload payload
+	set listed	[aws lmap o -type Object s3 list_objects_v2 -region $bucket_region -bucket $bucket -prefix s3sigv4-4.1/ {json get $o Key}]
+	list [expr {$listed eq [list $key]}] [json get $head ContentLength] [expr {[encoding convertfrom utf-8 $payload] eq $key}]
+} -cleanup {
+	catch {aws s3 delete_object -region $bucket_region -bucket $bucket -key $key}
+	unset -nocomplain key head payload listed
+} -result [list 1 [string length [encoding convertto utf-8 "s3sigv4-4.1/a b+c%25d/é~x/€ 100%.txt"]] 1]
+#>>>
+test s3_copy-2.1 {copy_object from a raw source key with % + space and non-ASCII} -constraints have_s3_bucket -setup { #<<<
+	set key		"s3_copy-2.1/a b+c%25d/€ 100%.txt"
+} -body {
+	aws s3 put_object -region $bucket_region -bucket $bucket -key $key -body s3_copy-2.1-data -content_type text/plain
+	aws s3 copy_object -region $bucket_region -bucket $bucket -key $key.copy -copy_source $bucket/$key
+	aws s3 get_object -region $bucket_region -bucket $bucket -key $key.copy -payload payload
+	set payload
+} -cleanup {
+	catch {aws s3 delete_object -region $bucket_region -bucket $bucket -key $key}
+	catch {aws s3 delete_object -region $bucket_region -bucket $bucket -key $key.copy}
+	unset -nocomplain key payload
+} -result s3_copy-2.1-data
+#>>>
 
 #set aws::debug 1
 #try {

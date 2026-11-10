@@ -396,6 +396,14 @@ test _aws_error-1.3 {empty body uses status code} -setup { #<<<
 } -cleanup $mock_cleanup \
   -returnCodes error -errorCode {AWS 503} -result {AWS http code 503}
 #>>>
+test _aws_error-json-1.6 {JSON body with no error code: the message carries the status (bedrock-runtime 503)} -setup { #<<<
+	set h [make_mock_h {{}} 503 \
+		{content-type application/json x-amzn-requestid req-503}]
+} -body {
+	::aws::helpers::_aws_error $h "" ""
+} -cleanup $mock_cleanup \
+  -returnCodes error -errorCode {AWS <unknown> req-503 {}} -result {Unhandled AWS error type (http 503)}
+#>>>
 # Error response parsing >>>
 
 # Retry classifier + backoff + idempotency tokens <<<
@@ -419,7 +427,8 @@ test classify-1.2 {transient error codes are retryable as transient} -body { #<<
 	set kinds {}
 	foreach code {
 		InternalError InternalServerError InternalServerException
-		ServiceUnavailable RequestTimeout RequestTimeoutException
+		ServiceUnavailable ServiceUnavailableException
+		RequestTimeout RequestTimeoutException
 		IDPCommunicationError InternalFailure BadGateway GatewayTimeout
 	} {
 		lappend kinds [lindex [::aws::helpers::_classify_error \
@@ -478,6 +487,12 @@ test classify-1.9 {x-amzn-errortype ":<uri>" suffix is ignored} -body { #<<<
 		lindex [::aws::helpers::_classify_error [dict create -errorcode [list AWS $code rq {}]]] 0
 	}
 } -cleanup {unset -nocomplain code} -result {throttle transient none}
+#>>>
+test classify-1.10 {an unrecognised code is retried on a retryable HTTP status} -body { #<<<
+	lmap status {503 500 429 400 {}} {
+		::aws::helpers::_classify_error [dict create -errorcode {AWS <unknown> rq {}}] $status
+	}
+} -cleanup {unset -nocomplain status} -result {{transient <unknown>} {transient <unknown>} {throttle <unknown>} {none <unknown>} {none <unknown>}}
 #>>>
 
 test backoff-1.1 {exponential with jitter — bounded by cap} -body { #<<<

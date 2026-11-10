@@ -42,13 +42,18 @@
   PriorRequestNotComplete / EC2ThrottledException.
 - `_transient_codes`: InternalError / InternalFailure /
   InternalServerError / InternalServerException / ServiceUnavailable /
-  BadGateway / GatewayTimeout / RequestTimeout / RequestTimeoutException
+  ServiceUnavailableException / BadGateway / GatewayTimeout / RequestTimeout / RequestTimeoutException
   / IDPCommunicationError / RequestTimeTooSkewed (currently classified
   as `clockskew` and handled on the transient path).
 - `_retry_statuses`: 408 / 425 / 429 / 500 / 502 / 503 / 504 / 509 —
-  used when the server response had no parseable body and `_aws_error`
-  falls back to `throw [list AWS <http-code>]`. 429 is treated as
-  throttle, the rest as transient.
+  a response with one of these statuses is retried whatever code its
+  body gave, as botocore's standard mode does: `_aws_req` passes the
+  try's HTTP status to `_classify_error` (unset before each try, so a
+  connection error doesn't inherit the last response's).  This covers
+  the empty-body `throw [list AWS <http-code>]` and a body with no
+  error code in it (bedrock-runtime answers a 503
+  ServiceUnavailableException with `{}`: errorCode `AWS <unknown>`).
+  429 is treated as throttle, the rest as transient.
 
 Non-`AWS` errorcodes (socket / DNS / TLS errors from `rl_http`) are
 classified as transient and retried.

@@ -350,7 +350,8 @@ The retry classifier recognises:
   `ProvisionedThroughputExceededException`, etc.)
 - Transient codes (`InternalError`, `ServiceUnavailable`,
   `RequestTimeout`, …)
-- HTTP statuses `408`, `425`, `429`, `500`, `502`, `503`, `504`, `509`
+- HTTP statuses `408`, `425`, `429`, `500`, `502`, `503`, `504`, `509`,
+  whatever error code the response body gave
 
 Rate-limit state is kept in process-scoped
 `tsv` arrays, so throttling observed on one thread influences

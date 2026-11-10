@@ -77,8 +77,9 @@ namespace eval aws {
 		}
 		variable _transient_codes {
 			InternalError InternalFailure InternalServerError
-			InternalServerException ServiceUnavailable BadGateway
-			GatewayTimeout RequestTimeout RequestTimeoutException
+			InternalServerException ServiceUnavailable
+			ServiceUnavailableException BadGateway GatewayTimeout
+			RequestTimeout RequestTimeoutException
 			IDPCommunicationError RequestTimeTooSkewed
 		}
 		# HTTP statuses that are always retryable regardless of parsed body
@@ -465,13 +466,16 @@ namespace eval aws {
 		}
 
 		#>>>
-		proc _classify_error options { #<<<
+		proc _classify_error {options {status ""}} { #<<<
 			# Classify a caught error. Returns one of:
 			#   {throttle <code>}  — server told us to slow down
 			#   {transient <code>} — server hiccup or connection error, retry
 			#   {clockskew <code>} — signing clock skew, retry after resync
 			#   {none <code>}      — not retryable
-			# $options is the dict from `on error` / `trap`.
+			# $options is the dict from `on error` / `trap`; $status is the
+			# response's HTTP status, if there was a response.  A retryable
+			# status is retried whatever code the body gave (or failed to
+			# give), as botocore's standard mode does.
 			variable _throttle_codes
 			variable _transient_codes
 			variable _retry_statuses
@@ -498,6 +502,9 @@ namespace eval aws {
 			}
 			if {[string is integer -strict $code] && $code in $_retry_statuses} {
 				return [expr {$code == 429 ? "throttle $code" : "transient $code"}]
+			}
+			if {$status in $_retry_statuses} {
+				return [list [expr {$status == 429 ? "throttle" : "transient"}] $code]
 			}
 			return [list none $code]
 		}
@@ -1248,13 +1255,22 @@ namespace eval aws {
 						"" \
 					] [json get $body [expr {[json exists $body message] ? "message" : "Message"}]]
 				} else {
+					# A body with no error code in it (bedrock-runtime answers a
+					# 503 ServiceUnavailableException with "{}"): the status and
+					# headers are all there is to go on
 					set headers	[$h headers]
-					log error "Unhandled AWS error: $body"
+					set status	[$h code]
+					log error "Unhandled AWS error, http $status: $body" {
+						{
+							"status":	"~N:status",
+							"headers":	"~S:headers"
+						}
+					}
 					throw [list AWS \
 						[if {[dict exists $headers x-amzn-errortype]} {dict get $headers x-amzn-errortype} else {return -level 0 "<unknown>"}] \
 						[dict get [$h headers] x-amzn-requestid] \
 						"" \
-					] "Unhandled AWS error type"
+					] "Unhandled AWS error type (http $status)"
 				}
 				#>>>
 			} else { # Guess XML <<<
@@ -1327,8 +1343,8 @@ namespace eval aws {
 				} trap {AWS} {errmsg options} {
 					return -options $options $errmsg
 				} on error {errmsg options} {
-					log error "Unhandled AWS error: [dict get $options -errorinfo]"
-					throw {AWS UNKNOWN} $errmsg
+					log error "Unhandled AWS error, http [$h code]: [dict get $options -errorinfo]"
+					throw {AWS UNKNOWN} "$errmsg (http [$h code])"
 				} finally {
 					$doc delete
 				}
@@ -1588,6 +1604,8 @@ namespace eval aws {
 
 			for {set try 1} {$try <= $retries} {incr try} {
 				_rate_before_send $rate_key
+				# This try's status only: a connection error leaves it unset
+				unset -nocomplain status
 				try {
 					return [_req $method $endpoint $path \
 						-region						$region \
@@ -1612,7 +1630,7 @@ namespace eval aws {
 						-max_keepalive_count		$max_keepalive_count \
 					]
 				} on error {errmsg options} {
-					lassign [_classify_error $options] kind code
+					lassign [_classify_error $options [if {[info exists status]} {set status}]] kind code
 					if {$kind eq "none" || $try >= $retries} {
 						return -options $options $errmsg
 					}

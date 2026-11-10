@@ -27,6 +27,8 @@ namespace eval ::test_retry {
 	#   {err aws-code msg {headers {}}}— throw an AWS error with that code
 	#   {err-raw code msg}             — throw a non-AWS errorcode (simulates
 	#                                    a socket error / rl_http failure)
+	#   {err-status aws-code msg st}   — throw an AWS error after a response
+	#                                    with HTTP status $st, as _aws_error does
 	proc mock_req_install {} {
 		rename ::aws::helpers::_req ::aws::helpers::_req_orig
 		proc ::aws::helpers::_req {method endpoint path args} {
@@ -70,6 +72,11 @@ namespace eval ::test_retry {
 				err {
 					lassign $step _ code msg hdrs
 					if {$hdrs ne ""} {set response_headers $hdrs}
+					throw [list AWS $code req-id] $msg
+				}
+				err-status {
+					lassign $step _ code msg st
+					set status $st
 					throw [list AWS $code req-id] $msg
 				}
 				err-raw {
@@ -277,6 +284,32 @@ test retry-1.10 {retries namespace-qualified throttle codes, surfaces the qualif
 	unset -nocomplain rc res ei
 	::test_retry::cleanup
 } -result {rc 1 attempts 3 code com.amazonaws.dynamodb.v20120810#ProvisionedThroughputExceededException}
+#>>>
+test retry-1.11 {retries a 503 whose body had no error code (bedrock-runtime ServiceUnavailableException)} -setup $retry_setup -body { #<<<
+	set ::test_retry::script {
+		{err-status <unknown> {Unhandled AWS error type (http 503)} 503}
+		{ok  {{"ok":1}} 200 {}}
+	}
+	set res [::test_retry::do_req -retries 5]
+	list attempts [llength $::test_retry::call_log] res $res
+} -cleanup {
+	unset -nocomplain res
+	::test_retry::cleanup
+} -result {attempts 2 res {{"ok":1}}}
+#>>>
+test retry-1.12 {a connection error on a retry doesn't inherit the last try's status} -setup $retry_setup -body { #<<<
+	# A 503 first, then an AWS-coded error with no response behind it:
+	# a stale 503 status must not make it retryable
+	set ::test_retry::script {
+		{err-status Foo {first} 503}
+		{err Bar {no response}}
+	}
+	set rc [catch {::test_retry::do_req -retries 5} res ei]
+	list rc $rc attempts [llength $::test_retry::call_log] code [lindex [dict get $ei -errorcode] 1]
+} -cleanup {
+	unset -nocomplain rc res ei
+	::test_retry::cleanup
+} -result {rc 1 attempts 2 code Bar}
 #>>>
 
 # File-level teardown: drop the ::test_retry namespace and the only

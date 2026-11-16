@@ -419,7 +419,8 @@ test classify-1.2 {transient error codes are retryable as transient} -body { #<<
 	set kinds {}
 	foreach code {
 		InternalError InternalServerError InternalServerException
-		ServiceUnavailable RequestTimeout RequestTimeoutException
+		ServiceUnavailable ServiceUnavailableException
+		RequestTimeout RequestTimeoutException
 		IDPCommunicationError InternalFailure BadGateway GatewayTimeout
 	} {
 		lappend kinds [lindex [::aws::helpers::_classify_error \
@@ -438,6 +439,18 @@ test classify-1.4 {5xx body-less statuses are transient} -body { #<<<
 			[dict create -errorcode [list AWS $c]]] 0
 	}
 } -cleanup {unset -nocomplain c} -result {transient transient transient transient transient}
+#>>>
+test classify-1.4.1 {the HTTP status decides when the code doesn't} -body { #<<<
+	lmap st {503 500 429 400 404 {}} {
+		::aws::helpers::_classify_error \
+			[dict create -errorcode [list AWS <unknown> rq]] $st
+	}
+} -cleanup {unset -nocomplain st} -result {{transient <unknown>} {transient <unknown>} {throttle <unknown>} {none <unknown>} {none <unknown>} {none <unknown>}}
+#>>>
+test classify-1.4.2 {a non-retryable code from a 503 is retried} -body { #<<<
+	::aws::helpers::_classify_error \
+		[dict create -errorcode [list AWS ValidationException rq]] 503
+} -result {transient ValidationException}
 #>>>
 test classify-1.5 {RequestTimeTooSkewed becomes clockskew} -body { #<<<
 	::aws::helpers::_classify_error [dict create -errorcode {AWS RequestTimeTooSkewed req}]

@@ -77,7 +77,8 @@ namespace eval aws {
 		}
 		variable _transient_codes {
 			InternalError InternalFailure InternalServerError
-			InternalServerException ServiceUnavailable BadGateway
+			InternalServerException ServiceUnavailable
+			ServiceUnavailableException BadGateway
 			GatewayTimeout RequestTimeout RequestTimeoutException
 			IDPCommunicationError RequestTimeTooSkewed
 		}
@@ -465,13 +466,14 @@ namespace eval aws {
 		}
 
 		#>>>
-		proc _classify_error options { #<<<
+		proc _classify_error {options {status ""}} { #<<<
 			# Classify a caught error. Returns one of:
 			#   {throttle <code>}  — server told us to slow down
 			#   {transient <code>} — server hiccup or connection error, retry
 			#   {clockskew <code>} — signing clock skew, retry after resync
 			#   {none <code>}      — not retryable
-			# $options is the dict from `on error` / `trap`.
+			# $options is the dict from `on error` / `trap`, $status the
+			# response's HTTP status, if the error came from one.
 			variable _throttle_codes
 			variable _transient_codes
 			variable _retry_statuses
@@ -498,6 +500,12 @@ namespace eval aws {
 			}
 			if {[string is integer -strict $code] && $code in $_retry_statuses} {
 				return [expr {$code == 429 ? "throttle $code" : "transient $code"}]
+			}
+			# The status decides whatever the body named, as in botocore's
+			# standard mode: Bedrock answers a 503 with a body of {}, which
+			# names no code at all
+			if {$status ne "" && $status in $_retry_statuses} {
+				return [list [expr {$status == 429 ? "throttle" : "transient"}] $code]
 			}
 			return [list none $code]
 		}
@@ -1588,6 +1596,9 @@ namespace eval aws {
 
 			for {set try 1} {$try <= $retries} {incr try} {
 				_rate_before_send $rate_key
+				# _req sets it once a response arrives: none from an attempt
+				# that failed before one, rather than the last attempt's
+				unset -nocomplain status
 				try {
 					return [_req $method $endpoint $path \
 						-region						$region \
@@ -1612,7 +1623,7 @@ namespace eval aws {
 						-max_keepalive_count		$max_keepalive_count \
 					]
 				} on error {errmsg options} {
-					lassign [_classify_error $options] kind code
+					lassign [_classify_error $options [if {[info exists status]} {set status}]] kind code
 					if {$kind eq "none" || $try >= $retries} {
 						return -options $options $errmsg
 					}
@@ -1636,7 +1647,7 @@ namespace eval aws {
 						# and retry will often fix transient skew.
 						log notice "aws req got RequestTimeTooSkewed, backoff ${delay_ms}ms (attempt $try/$retries)"
 					} else {
-						log notice "aws req transient error ($code), backoff ${delay_ms}ms (attempt $try/$retries)"
+						log notice "aws req transient error ($code[if {[info exists status]} {string cat ", HTTP $status"}]), backoff ${delay_ms}ms (attempt $try/$retries)"
 					}
 					_sleep_ms $delay_ms
 					continue

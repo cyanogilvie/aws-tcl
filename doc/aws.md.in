@@ -349,8 +349,9 @@ The retry classifier recognises:
 - AWS throttling codes (`Throttling`, `SlowDown`,
   `ProvisionedThroughputExceededException`, etc.)
 - Transient codes (`InternalError`, `ServiceUnavailable`,
-  `RequestTimeout`, …)
-- HTTP statuses `408`, `425`, `429`, `500`, `502`, `503`, `504`, `509`
+  `ServiceUnavailableException`, `RequestTimeout`, …)
+- HTTP statuses `408`, `425`, `429`, `500`, `502`, `503`, `504`, `509`,
+  whatever code the response body names, or none
 
 Rate-limit state is kept in process-scoped
 `tsv` arrays, so throttling observed on one thread influences

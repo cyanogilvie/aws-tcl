@@ -24,7 +24,9 @@ namespace eval ::test_retry {
 	# Programmable mock of ::aws::helpers::_req. $script is a list of
 	# entries consumed one per call:
 	#   {ok body status headers}       — return $body with the given status
-	#   {err aws-code msg {headers {}}}— throw an AWS error with that code
+	#   {err aws-code msg {headers {}} {status {}}}
+	#                                  — throw an AWS error with that code,
+	#                                    from a response with that status
 	#   {err-raw code msg}             — throw a non-AWS errorcode (simulates
 	#                                    a socket error / rl_http failure)
 	proc mock_req_install {} {
@@ -68,8 +70,9 @@ namespace eval ::test_retry {
 					return $body
 				}
 				err {
-					lassign $step _ code msg hdrs
+					lassign $step _ code msg hdrs st
 					if {$hdrs ne ""} {set response_headers $hdrs}
+					if {$st ne ""} {set status $st}
 					throw [list AWS $code req-id] $msg
 				}
 				err-raw {
@@ -177,6 +180,7 @@ test retry-1.3 {retries on all throttling error codes} -setup $retry_setup -body
 test retry-1.4 {retries on transient error codes} -setup $retry_setup -body { #<<<
 	foreach code {
 		InternalError InternalServerError ServiceUnavailable
+		ServiceUnavailableException
 		RequestTimeout RequestTimeoutException BadGateway GatewayTimeout
 	} {
 		set ::test_retry::call_log {}
@@ -193,6 +197,51 @@ test retry-1.4 {retries on transient error codes} -setup $retry_setup -body { #<
 	unset -nocomplain code
 	::test_retry::cleanup
 } -result ok
+#>>>
+test retry-1.4.1 {retries a 503 whose body names no code (Bedrock's {})} -setup $retry_setup -body { #<<<
+	set ::test_retry::script {
+		{err <unknown> {Unhandled AWS error type} {} 503}
+		{ok  {{"ok":1}} 200 {}}
+	}
+	set res [::test_retry::do_req -retries 5]
+	list attempts [llength $::test_retry::call_log] res $res
+} -cleanup {
+	unset -nocomplain res
+	::test_retry::cleanup
+} -result {attempts 2 res {{"ok":1}}}
+#>>>
+test retry-1.4.2 {a 429 whose body names an unknown code is a throttle} -setup $retry_setup -body { #<<<
+	set ::test_retry::script {
+		{err SomeNewLimitException {slow down} {} 429}
+		{ok  {} 200 {}}
+	}
+	::test_retry::do_req -retries 5
+	llength $::test_retry::call_log
+} -cleanup {::test_retry::cleanup} -result 2
+#>>>
+test retry-1.4.3 {a 400 whose body names an unknown code isn't retried} -setup $retry_setup -body { #<<<
+	set ::test_retry::script {
+		{err <unknown> {Unhandled AWS error type} {} 400}
+	}
+	list [catch {::test_retry::do_req -retries 5} r o] [lrange [dict get $o -errorcode] 0 1] [llength $::test_retry::call_log]
+} -cleanup {
+	unset -nocomplain r o
+	::test_retry::cleanup
+} -result {1 {AWS <unknown>} 1}
+#>>>
+test retry-1.4.4 {an attempt's status isn't carried into the next} -setup $retry_setup -body { #<<<
+	# The second attempt fails with no response status: the first's 503
+	# mustn't make it retryable
+	set ::test_retry::script {
+		{err <unknown> {Unhandled AWS error type} {} 503}
+		{err NotRetryableException {no status}}
+		{ok  {} 200 {}}
+	}
+	list [catch {::test_retry::do_req -retries 5} r o] [lrange [dict get $o -errorcode] 0 1] [llength $::test_retry::call_log]
+} -cleanup {
+	unset -nocomplain r o
+	::test_retry::cleanup
+} -result {1 {AWS NotRetryableException} 2}
 #>>>
 test retry-1.5 {does NOT retry on non-retryable error} -setup $retry_setup -body { #<<<
 	set ::test_retry::script {

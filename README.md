@@ -4,7 +4,7 @@ aws - AWS service bindings for Tcl, modelled on the AWS CLI
 
 ## SYNOPSIS
 
-**package require aws** ?2.0a41?
+**package require aws** ?2.0a42?
 
 **package require aws::**\<*service*\>
 
@@ -335,8 +335,9 @@ The retry classifier recognises:
 - AWS throttling codes (`Throttling`, `SlowDown`,
   `ProvisionedThroughputExceededException`, etc.)
 - Transient codes (`InternalError`, `ServiceUnavailable`,
-  `RequestTimeout`, …)
-- HTTP statuses `408`, `425`, `429`, `500`, `502`, `503`, `504`, `509`
+  `ServiceUnavailableException`, `RequestTimeout`, …)
+- HTTP statuses `408`, `425`, `429`, `500`, `502`, `503`, `504`, `509`,
+  whatever code the response body names, or none
 
 Rate-limit state is kept in process-scoped `tsv` arrays, so throttling
 observed on one thread influences subsequent sends from other threads
